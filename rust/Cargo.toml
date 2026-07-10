@@ -1,0 +1,8 @@
+[package]
+name = "wayland-session-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Checkpoint and restore supervised Wayland sessions"
+
+[dependencies]

@@ -1,0 +1,6 @@
+.direnv/
+.pre-commit-config.yaml
+result
+rust/target/
+tests/evidence/*
+!tests/evidence/.gitkeep
