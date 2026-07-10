@@ -5,6 +5,7 @@
 }:
 {
   package = self.packages.${system}.default;
+  feasibility = import ./feasibility.nix { inherit pkgs self; };
   cargo-test =
     pkgs.runCommand "wayland-session-supervisor-cargo-test"
       {
