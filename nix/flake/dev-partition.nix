@@ -22,6 +22,9 @@
         };
       };
 
+      # Cargo hooks use the developer's populated registry cache. The package
+      # and explicit flake checks remain fully sandboxed.
+      pre-commit.check.enable = false;
       pre-commit.settings.hooks = {
         treefmt.enable = true;
         deadnix.enable = true;

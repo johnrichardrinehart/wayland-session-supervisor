@@ -6,3 +6,4 @@ license = "MIT"
 description = "Checkpoint and restore supervised Wayland sessions"
 
 [dependencies]
+libc = "0.2"
