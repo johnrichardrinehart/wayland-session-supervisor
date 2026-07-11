@@ -102,5 +102,19 @@ This proves the central exact-restoration premise for an encapsulated headless
 Wayland domain across a cold guest reboot. `application-reboot` extends it to
 Sway, Chromium, foot with an interactive shell, mpv, and aplay; it also proves
 restored compositor IPC, post-restore input control, and connection of a new
-Wayland client. Native DRM/GPU/input/audio hardware remains outside the proven
-headless adapter boundary.
+Wayland client.
+
+`niri-application-reboot` independently runs Niri's nested winit backend over a
+supervised headless Weston software-rendering socket. It checkpoints Niri,
+Weston, Firefox/geckodriver, kitty, tmux, and zsh as one domain, crosses a real
+guest reboot, and proves exact Firefox window/tab/page-memory state, Niri window
+identity/workspace placement, complete kitty contents, tmux topology/environment,
+and zsh process state. Firefox sandbox namespaces are disabled because CRIU 4.2
+cannot represent nested IPC namespaces; the test therefore does not claim the
+Firefox sandbox itself as a supported resource boundary. `/dev/udmabuf` is
+removed before launch so software rendering uses checkpointable shared memory
+rather than retaining a host-created character-device handle. Managed loopback
+TCP peers are restored with CRIU's established-TCP support.
+
+Native DRM/GPU/input/audio hardware remains outside the proven headless adapter
+boundary.

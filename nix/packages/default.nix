@@ -29,4 +29,5 @@ in
 {
   default = package;
   wayland-session-supervisor = package;
+  our-criu = pkgs.callPackage ./criu.nix { };
 }

@@ -1,5 +1,10 @@
-{ pkgs }:
+{
+  pkgs,
+  self,
+  system,
+}:
 let
+  criu = self.packages.${system}.our-criu;
   fixtureSources = pkgs.lib.fileset.toSource {
     root = ../..;
     fileset = ../../tests/fixtures/wayland-state-client.c;
@@ -57,7 +62,7 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     virtualisation.memorySize = 2048;
     environment.systemPackages = [
-      pkgs.criu
+      criu
       pkgs.jq
       sessionLauncher
     ];

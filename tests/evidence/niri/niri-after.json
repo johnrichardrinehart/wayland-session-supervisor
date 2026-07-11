@@ -1,0 +1,186 @@
+{
+  "firefox": {
+    "handles": [
+      "2db400be-cfe8-41f0-9c3b-784bfaed76fd",
+      "b70f723f-305a-42b0-b2f1-6d42e871e40c",
+      "ad0eec97-26fe-4588-a3fa-ba03c29225f8"
+    ],
+    "selected": "ad0eec97-26fe-4588-a3fa-ba03c29225f8",
+    "tabs": [
+      {
+        "handle": "2db400be-cfe8-41f0-9c3b-784bfaed76fd",
+        "memory": "alpha-memory-token",
+        "title": "niri-alpha",
+        "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/alpha.html"
+      },
+      {
+        "handle": "b70f723f-305a-42b0-b2f1-6d42e871e40c",
+        "memory": "beta-memory-token",
+        "title": "niri-beta",
+        "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/beta.html"
+      },
+      {
+        "handle": "ad0eec97-26fe-4588-a3fa-ba03c29225f8",
+        "memory": "gamma-memory-token",
+        "title": "niri-gamma",
+        "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/gamma.html"
+      }
+    ]
+  },
+  "kitty": {
+    "contents": [
+      "niri-kitty-scrollback-001",
+      "niri-kitty-scrollback-002",
+      "niri-kitty-scrollback-003",
+      "niri-kitty-scrollback-004",
+      "niri-kitty-scrollback-005",
+      "niri-kitty-scrollback-006",
+      "niri-kitty-scrollback-007",
+      "niri-kitty-scrollback-008",
+      "niri-kitty-scrollback-009",
+      "niri-kitty-scrollback-010",
+      "niri-kitty-scrollback-011",
+      "niri-kitty-scrollback-012",
+      "niri-kitty-scrollback-013",
+      "niri-kitty-scrollback-014",
+      "niri-kitty-scrollback-015",
+      "niri-kitty-scrollback-016",
+      "niri-kitty-scrollback-017",
+      "niri-kitty-scrollback-018",
+      "niri-kitty-scrollback-019",
+      "niri-kitty-scrollback-020",
+      "niri-kitty-scrollback-021",
+      "niri-kitty-scrollback-022",
+      "niri-kitty-scrollback-023",
+      "niri-kitty-scrollback-024",
+      "niri-kitty-scrollback-025",
+      "niri-kitty-scrollback-026",
+      "niri-kitty-scrollback-027",
+      "niri-kitty-scrollback-028",
+      "niri-kitty-scrollback-029",
+      "niri-kitty-scrollback-030",
+      "niri-kitty-scrollback-031",
+      "niri-kitty-scrollback-032",
+      "niri-kitty-scrollback-033",
+      "niri-kitty-scrollback-034",
+      "niri-kitty-scrollback-035",
+      "niri-kitty-scrollback-036",
+      "niri-kitty-scrollback-037",
+      "niri-kitty-scrollback-038",
+      "niri-kitty-scrollback-039",
+      "niri-kitty-scrollback-040",
+      "niri-kitty-scrollback-041",
+      "niri-kitty-scrollback-042",
+      "niri-kitty-scrollback-043",
+      "niri-kitty-scrollback-044",
+      "niri-kitty-scrollback-045",
+      "niri-kitty-scrollback-046",
+      "niri-kitty-scrollback-047",
+      "niri-kitty-scrollback-048",
+      "niri-kitty-scrollback-049",
+      "niri-kitty-scrollback-050",
+      "niri-kitty-scrollback-051",
+      "niri-kitty-scrollback-052",
+      "niri-kitty-scrollback-053",
+      "niri-kitty-scrollback-054",
+      "niri-kitty-scrollback-055",
+      "niri-kitty-scrollback-056",
+      "niri-kitty-scrollback-057",
+      "niri-kitty-scrollback-058",
+      "niri-kitty-scrollback-059",
+      "niri-kitty-scrollback-060",
+      "niri-kitty-scrollback-061",
+      "niri-kitty-scrollback-062",
+      "niri-kitty-scrollback-063",
+      "niri-kitty-scrollback-064",
+      "niri-kitty-scrollback-065",
+      "niri-kitty-scrollback-066",
+      "niri-kitty-scrollback-067",
+      "niri-kitty-scrollback-068",
+      "niri-kitty-scrollback-069",
+      "niri-kitty-scrollback-070",
+      "niri-kitty-scrollback-071",
+      "niri-kitty-scrollback-072",
+      "niri-kitty-scrollback-073",
+      "niri-kitty-scrollback-074",
+      "niri-kitty-scrollback-075",
+      "niri-kitty-scrollback-076",
+      "niri-kitty-scrollback-077",
+      "niri-kitty-scrollback-078",
+      "niri-kitty-scrollback-079",
+      "niri-kitty-scrollback-080"
+    ],
+    "sha256": "af851a30e46940be4257586a4b7b4a196dd1d06b2db1efcfad55c8b45babea05"
+  },
+  "niri": {
+    "windows": [
+      {
+        "app_id": "niri-kitty",
+        "id": 2,
+        "title": "niri-kitty",
+        "workspace_id": 1
+      },
+      {
+        "app_id": "firefox",
+        "id": 3,
+        "title": "niri-beta \u2014 Mozilla Firefox",
+        "workspace_id": 1
+      },
+      {
+        "app_id": "firefox",
+        "id": 4,
+        "title": "niri-gamma \u2014 Mozilla Firefox",
+        "workspace_id": 1
+      }
+    ]
+  },
+  "phase": "after",
+  "schema": 1,
+  "tmux": {
+    "cwd": "/var/lib/wayland-session-supervisor/niri-zsh-cwd",
+    "environment": [
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/niri/no-session-bus",
+      "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/niri/no-system-bus",
+      "INVOCATION_ID=ce83f1407b884bd1b9754e6399e5d822",
+      "IO_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-niri.service/io.pressure",
+      "IO_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
+      "LANG=en_US.UTF-8",
+      "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-niri.service/memory.pressure",
+      "MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
+      "NIRI_SOCKET=/run/wayland-session-supervisor/niri/niri.wayland-1.34.sock",
+      "NO_AT_BRIDGE=1",
+      "PATH=/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11/bin:/nix/store/f4bixss3h2i80asiz45aj4qmplvmam4k-findutils-4.10.0/bin:/nix/store/qa8s38m1z9q8nf0kfn5nqjw81bq702n3-firefox-152.0.5/bin:/nix/store/fqxrk2j7a3pcqclkk269ggaq2di780i5-geckodriver-0.37.0/bin:/nix/store/1bp02949k0xdihbgphpwbzba1741pknk-jq-1.8.2-bin/bin:/nix/store/d5fbir5hiav2n6jg78c2jv0wimcx53h1-kitty-0.47.4/bin:/nix/store/xhrfr96c0avcivsr5dh9nyv23k1wyij7-niri-26.04/bin:/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin:/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin:/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/bin:/nix/store/gmsffw72sk5bv7fy9n4fiw9fsyfbwszm-zsh-5.9.1/bin:/nix/store/5m1wvvyzz84zaz4qq2k6ny9zbnnyiylw-niri-firefox-driver/bin:/nix/store/hharigj3x5fda73lw1vbn7fnv568iixn-e2fsprogs-1.47.4-bin/bin:/nix/store/x3rr4i8i7bjj4mdpilvlh5vz5ja4914k-dosfstools-4.2/bin:/nix/store/gg03sn8qmgwckbms1xgg6krcq00v8wc2-util-linux-minimal-2.42.2-bin/bin:/nix/store/3v7kqg55hx4awhy5hdckniypbgqbqfmx-systemd-261/bin/",
+      "PWD=/",
+      "SHLVL=0",
+      "SYSTEMD_EXEC_PID=861",
+      "TMPDIR=/run/wayland-session-supervisor/niri/tmp",
+      "USER=root",
+      "WAYLAND_DISPLAY=wayland-1",
+      "WSS_CONTROL_SOCKET=/run/wayland-session-supervisor/niri/control.sock",
+      "WSS_DISPLAY_BACKEND=headless",
+      "WSS_EGRESS_SPOOL=/run/wayland-session-supervisor/niri/adapter-egress.stream",
+      "WSS_NIRI_TMUX_ENV=preserved",
+      "WSS_SESSION_NAME=niri",
+      "WSS_SESSION_STATE_DIR=/var/lib/wayland-session-supervisor/sessions/niri",
+      "XDG_RUNTIME_DIR=/run/wayland-session-supervisor/niri",
+      "_=/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin/tmux"
+    ],
+    "pane_pid": 90,
+    "sessions": [
+      "0|1"
+    ],
+    "windows": [
+      "0|0|zsh|1|addd,41x42,0,0,0"
+    ]
+  },
+  "zsh": {
+    "cwd": "/var/lib/wayland-session-supervisor/niri-zsh-cwd",
+    "exported": "preserved-zsh-environment",
+    "history": "f2a126a3ddd42528c1ba93f8c9725f225eb8b96d102b22495ba2ce9d096fff67",
+    "job_alive": true,
+    "job_pid": 101,
+    "last_status": 1,
+    "local": "preserved-zsh-local",
+    "pid": 90
+  }
+}

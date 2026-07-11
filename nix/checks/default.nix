@@ -7,6 +7,7 @@
   package = self.packages.${system}.default;
   cargo-test = self.packages.${system}.default;
   application-reboot = import ./application-reboot.nix { inherit pkgs self system; };
+  niri-application-reboot = import ./niri-application-reboot.nix { inherit pkgs self system; };
   checkpoint = import ./checkpoint.nix { inherit pkgs self system; };
   core-integration =
     pkgs.runCommand "wayland-session-supervisor-core-integration"
@@ -73,5 +74,5 @@
         test "$(cat terminated)" = terminated
         touch $out
       '';
-  feasibility = import ./feasibility.nix { inherit pkgs; };
+  feasibility = import ./feasibility.nix { inherit pkgs self system; };
 }

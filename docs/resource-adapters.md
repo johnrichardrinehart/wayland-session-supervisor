@@ -41,4 +41,8 @@ and verifies descriptor hygiene and private paths. `application-reboot`
 independently interprets deterministic PCM bytes written by its fixture,
 validates them against generated media, and proves that a newly started outer
 supervisor can deliver a virtual-keyboard event through restored Sway to a
-restored foot client after reboot.
+restored foot client after reboot. `niri-application-reboot` uses the same
+private runtime boundary with Niri nested over a supervised headless Weston
+socket; both Wayland peers and all software-rendering state remain inside the
+checkpoint domain. The VM deliberately removes `/dev/udmabuf`, so this proof
+does not externalize or claim restoration of a host GPU/device descriptor.

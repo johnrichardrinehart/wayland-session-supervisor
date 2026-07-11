@@ -3,32 +3,25 @@
 Derivations include only inputs they consume.
 
 - The Rust package uses `lib.fileset.toSource` over `rust/Cargo.toml`, `rust/Cargo.lock`, and `rust/src/*.rs`. Documentation, checks, fixtures, and repository metadata cannot rebuild it.
-- VM fixture derivations use one-file `lib.fileset` sources. Each VM check therefore depends on its own Nix expression, its explicitly referenced fixture, the package, and declared Nix packages—not the complete repository source.
+- `packages.our-criu` is defined once in `nix/packages/criu.nix` and exported through `overlays.default` as `pkgs.our-criu`; checks and the NixOS module reuse that derivation rather than carrying local overrides.
+- VM fixture derivations use one-file `lib.fileset` sources. Each VM check depends on its own Nix expression, explicitly referenced fixtures, packages, and generated inputs—not the complete repository source.
 - `checks.package` and `checks.cargo-test` intentionally share the package derivation.
 - The formatter executable is configuration-only and has no repository source input.
-- The treefmt check intentionally consumes every file selected by treefmt because those files are the check's actual inputs. A formatted-file edit should change that check; it must not change unrelated build or VM derivations.
-- Development hooks similarly consume the files they lint when invoked; their tool wrappers remain configuration-only.
+- Treefmt receives an explicit extension-filtered `builtins.path` because `self` is string-like inside the development partition and cannot be passed to `lib.fileset`. Only `.nix`, `.rs`, `.yml`, and `.yaml` files enter that check; retained JSON evidence and documentation cannot invalidate it.
+- Development hook wrappers are configuration-only; hooks consume only their configured file classes when invoked.
 
 ## Stability evidence
 
-The source-closure audit recorded derivation paths before and after an added comment in `nix/checks/checkpoint.nix`:
+`tests/evidence/derivation-stability.json` is the authoritative, machine-readable
+matrix. It records final derivation paths for packages, formatter, development
+shell/hooks, and every check, then records temporary mutation probes for actual
+inputs and unrelated tracked evidence. The matrix specifically proves that:
 
-| Output | Stable across unrelated checkpoint edit? |
-| --- | --- |
-| package / cargo-test | yes |
-| core-integration | yes |
-| feasibility | yes |
-| application-reboot | yes |
-| formatter executable | yes |
-| treefmt check | intentionally no: the edited Nix file is an actual formatter input |
+- changing `nix/checks/checkpoint.nix` does not change either application reboot check;
+- changing the corresponding application expression or fixture does change its check;
+- changing Rust changes the package and package-dependent checks;
+- changing development/treefmt configuration changes formatter, development, and treefmt outputs; and
+- changing retained JSON evidence changes none of those derivations.
 
-The application-reboot derivation remained
-`/nix/store/15v10m942hl1n3fj08yih7l6x2l2firg-vm-test-run-wayland-session-supervisor-application-reboot.drv`.
-
-Positive controls were also run:
-
-- Editing `tests/fixtures/application-shell.sh` changed application-reboot from `15v10…` to `aicpbc…`.
-- Editing `README.md` left the package at `w5hg6…`.
-- Editing `rust/src/main.rs` changed the package from `w5hg6…` to `n272z…`.
-
-These probes used temporary edits that were restored immediately. They establish both isolation and sensitivity: unrelated files are absent, while actual inputs remain effective.
+All temporary mutations are restored before verification. This establishes both
+isolation and sensitivity without embedding stale store paths in prose.

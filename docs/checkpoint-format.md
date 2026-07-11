@@ -40,7 +40,10 @@ schemas are rejected. It compares:
 An incompatibility writes `restore-failure.json` inside the preserved
 checkpoint and exits without creating a process tree. There is no relaunch or
 reconstruction fallback. Compatible restore recreates only the runtime files
-recorded as reproducible and then asks CRIU to restore the exact process tree.
+recorded as reproducible and then asks the shared `our-criu` 4.2 package to
+restore the exact process tree. File locks, large deleted mappings, immutable
+store inode remapping, and established TCP connections whose peers are both in
+the managed domain are restored explicitly.
 
 The configurable compositor command therefore has two roles: it selects the
 compositor for a new session and supplies the expected identity for restore.

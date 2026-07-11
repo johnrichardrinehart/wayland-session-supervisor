@@ -5,25 +5,8 @@
 }:
 let
   supervisor = self.packages.${system}.default;
-  # CRIU 4.1.1 truncates a Sway page-transfer pipe at 408 of 440 pages.
-  # Keep the newer backend local to this feasibility check until Nixpkgs
-  # advances its default package.
-  criu = pkgs.criu.overrideAttrs (old: {
-    version = "4.2";
-    # Upstream's descriptor generation has a parallel Make dependency race.
-    enableParallelBuilding = false;
-    postPatch = (old.postPatch or "") + ''
-      substituteInPlace images/Makefile \
-        --replace-fail 'protoc --proto_path=/usr/include --proto_path=$(obj)/ --c_out=$(obj)/ $<' \
-        'protoc --proto_path=$(obj)/ --c_out=$(obj)/ $(DESCRIPTOR_DIR)/descriptor.proto'
-    '';
-    src = pkgs.fetchFromGitHub {
-      owner = "checkpoint-restore";
-      repo = "criu";
-      rev = "v4.2";
-      hash = "sha256-yZWIpCNTRG0LNGt01BvT3ILl3elzKtCfRKWR0rzJqAU=";
-    };
-  });
+  # Nixpkgs CRIU 4.1.1 truncates this workload's page-transfer pipe.
+  criu = self.packages.${system}.our-criu;
   pages = pkgs.runCommand "wss-browser-pages" { } ''
         mkdir -p $out
         for name in alpha beta gamma; do

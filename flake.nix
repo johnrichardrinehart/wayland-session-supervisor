@@ -45,6 +45,9 @@
           };
         };
 
-      flake.nixosModules = import ./nix/nixosModules;
+      flake = {
+        nixosModules = import ./nix/nixosModules;
+        overlays.default = import ./nix/overlays;
+      };
     };
 }

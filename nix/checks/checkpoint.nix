@@ -64,6 +64,7 @@ let
     '';
   };
   supervisor = self.packages.${system}.default;
+  criu = self.packages.${system}.our-criu;
   failingCriu = pkgs.writeShellScript "failing-criu" ''
     if [ "''${1:-}" = --version ]; then
       echo 'Version: test-failure'
@@ -80,7 +81,7 @@ pkgs.testers.runNixOSTest {
     virtualisation.memorySize = 2048;
     environment.systemPackages = [
       pkgs.coreutils
-      pkgs.criu
+      criu
       pkgs.jq
       supervisor
     ];
@@ -173,7 +174,7 @@ pkgs.testers.runNixOSTest {
       "--setenv=PATH=${
         pkgs.lib.makeBinPath [
           pkgs.coreutils
-          pkgs.criu
+          criu
         ]
       } "
       f"${supervisor}/bin/wayland-session-supervisor restore {common} {command}"

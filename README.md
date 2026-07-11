@@ -11,6 +11,8 @@ Enter the nix-direnv environment or run:
 ```console
 nix develop
 nix flake check
+nix build .#checks.x86_64-linux.application-reboot -L
+nix build .#checks.x86_64-linux.niri-application-reboot -L
 ```
 
 The flake exposes the package, NixOS module, formatter, development shell, and checks. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition.
@@ -32,12 +34,12 @@ wayland-session-supervisor restore --session desktop -- /run/current-system/sw/b
 The executable intentionally resolves the following runtime tools through `PATH`:
 
 - `unshare` and `setsid` from `util-linux`: support the non-kernel/synthetic-cgroup integration path. Production kernel-cgroup sessions use `clone3(CLONE_NEWPID | CLONE_INTO_CGROUP)` so PID 1 is born atomically in the managed cgroup; the dependency remains explicit for the supported fallback path.
-- `criu`: captures and restores the complete process tree. The application VM currently requires CRIU 4.2; Nixpkgs CRIU 4.1.1 fails its Sway workload during page transfer.
+- `our-criu`: the repository-wide CRIU 4.2 package exposed as `packages.<system>.our-criu` and `overlays.default` (`pkgs.our-criu`). It captures and restores the complete process tree; Nixpkgs CRIU 4.1.1 truncates the Sway workload during page transfer.
 - `wtype`: implements the test-supported compositor-compatible virtual-keyboard adapter for `input.sock`.
 - `uname` from `coreutils`: records and validates kernel compatibility.
 - The configured compositor executable when its first argv element is a name rather than an immutable path.
 
-The NixOS module puts `util-linux`, `criu`, `coreutils`, and `wtype` on the service `PATH`. Direct CLI users must provide them explicitly; no ambient fallback or shell interpolation is used.
+The NixOS module defaults `criuPackage` to the shared CRIU 4.2 derivation and puts it with `util-linux`, `coreutils`, and `wtype` on the service `PATH`. Direct CLI users must provide them explicitly; no ambient fallback or shell interpolation is used.
 
 Creating PID namespaces and checkpointing processes require the corresponding Linux capabilities. The provided NixOS service runs with the required authority and delegates its cgroup.
 

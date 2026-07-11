@@ -155,6 +155,28 @@ opaque event through its generic ingress adapter; an existing restored managed
 fixture must observe it and update its in-memory counter. A new client must then
 connect and create a surface without disturbing restored placement.
 
+## Niri/Firefox/kitty/zsh proof
+
+`checks.x86_64-linux.niri-application-reboot` is a second, independent real
+reboot proof rather than an argv smoke test. Niri runs nested over a managed
+headless Weston socket. Firefox is controlled through an in-domain geckodriver;
+three deterministic local pages are split across a tab and a second browser
+window. Before and after probes compare WebDriver handles, selected-window
+identity, titles, URLs, memory-only JavaScript tokens, and Niri IPC window IDs,
+application IDs, titles, and workspace IDs.
+
+Kitty displays a tmux-attached zsh pane containing 80 deterministic lines. The
+probe compares complete pane contents, tmux sessions/windows/layout and global
+environment, the actual pane CWD, plus zsh PID, exported/local variables, CWD,
+in-memory history digest, live background job, and last status. After restore,
+Niri IPC must respond and spawn a new kitty window. Retained results are under
+`tests/evidence/niri/`.
+
+The Firefox fixture disables content, RDD, socket, utility, and GMP sandboxing:
+CRIU 4.2 refuses nested IPC namespaces, and the test must not silently omit
+those processes. This is an explicit test-backend limitation, not a claim that
+sandboxed Firefox is currently restorable.
+
 ## Ordered VM test
 
 1. Boot the VM and record boot ID A and supervisor instance A.

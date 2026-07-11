@@ -187,14 +187,16 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
             staging.as_os_str(),
             OsStr::new("--shell-job"),
             OsStr::new("--file-locks"),
-            // Chromium maps deleted temporary files larger than CRIU's 1 MiB
+            // Both peers of managed loopback connections are in the domain.
+            OsStr::new("--tcp-established"),
+            // Managed applications can map deleted temporary files larger than CRIU's 1 MiB
             // default. Preserve those mappings as checkpoint images rather than
             // depending on volatile runtime-directory contents.
             OsStr::new("--ghost-limit"),
             OsStr::new("1073741824"),
-            // Chromium watches immutable resources below /nix/store. Overlayfs
-            // file handles are not always openable directly, so provide the
-            // stable path as an inode-remap search root.
+            // Managed applications watch immutable resources below /nix/store.
+            // Overlayfs file handles are not always openable directly, so use
+            // the stable store path as an inode-remap search root.
             OsStr::new("--irmap-scan-path"),
             OsStr::new("/nix/store"),
             OsStr::new("--log-file"),
@@ -289,6 +291,7 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             checkpoint.as_os_str(),
             OsStr::new("--shell-job"),
             OsStr::new("--file-locks"),
+            OsStr::new("--tcp-established"),
             OsStr::new("--restore-detached"),
             OsStr::new("--pidfile"),
             restored_pid_file.as_os_str(),
@@ -361,13 +364,24 @@ fn process_tree_pids(root: u32) -> io::Result<BTreeSet<u32>> {
     let mut result = BTreeSet::from([root]);
     let mut pending = vec![root];
     while let Some(pid) = pending.pop() {
-        let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?;
-        for child in children.split_whitespace() {
-            let child = child
-                .parse::<u32>()
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            if result.insert(child) {
-                pending.push(child);
+        let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for task in tasks.filter_map(Result::ok) {
+            let children = match fs::read_to_string(task.path().join("children")) {
+                Ok(children) => children,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            for child in children.split_whitespace() {
+                let child = child
+                    .parse::<u32>()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                if result.insert(child) {
+                    pending.push(child);
+                }
             }
         }
     }

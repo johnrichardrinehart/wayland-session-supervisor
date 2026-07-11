@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "boot_before": "34470fba-7781-4555-a54b-359786245b70",
-  "boot_after": "53f8b3f1-33bc-4672-8316-45b96f456949",
+  "boot_before": "a6c2afec-2dbc-4e26-99d3-0c8cf0376f76",
+  "boot_after": "ac8f644a-51e6-4693-887b-3366b3ad04e4",
   "rebooted": true,
   "verdict": "pass"
 }

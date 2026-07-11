@@ -16,6 +16,12 @@ in
       defaultText = lib.literalExpression "wayland-session-supervisor.packages.${pkgs.system}.default";
       description = "The wayland-session-supervisor package to run.";
     };
+    criuPackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.our-criu or (pkgs.callPackage ../packages/criu.nix { });
+      defaultText = lib.literalExpression "pkgs.our-criu";
+      description = "CRIU package used for checkpoint and restore.";
+    };
     sessionName = lib.mkOption {
       type = lib.types.strMatching "[A-Za-z0-9._-]+";
       default = "default";
@@ -45,7 +51,7 @@ in
       wantedBy = [ "graphical.target" ];
       path = [
         pkgs.coreutils
-        pkgs.criu
+        cfg.criuPackage
         pkgs.util-linux
         pkgs.wtype
       ];
