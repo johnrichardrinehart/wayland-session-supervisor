@@ -335,7 +335,9 @@ fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> 
 
 struct ResourceAdapters {
     control_socket: UnixDatagram,
+    input_socket: UnixDatagram,
     ingress_log: PathBuf,
+    runtime_dir: PathBuf,
 }
 
 pub(crate) fn start_restored_adapters(runtime_dir: &Path, state_dir: &Path) -> io::Result<()> {
@@ -345,10 +347,13 @@ pub(crate) fn start_restored_adapters(runtime_dir: &Path, state_dir: &Path) -> i
 impl ResourceAdapters {
     fn create(runtime_dir: &Path, _state_dir: &Path) -> io::Result<Self> {
         let control_path = runtime_dir.join("control.sock");
-        match fs::remove_file(&control_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        let input_path = runtime_dir.join("input.sock");
+        for path in [&control_path, &input_path] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
         OpenOptions::new()
             .create(true)
@@ -356,17 +361,23 @@ impl ResourceAdapters {
             .mode(0o600)
             .open(runtime_dir.join("adapter-egress.stream"))?;
         let control_socket = UnixDatagram::bind(&control_path)?;
+        let input_socket = UnixDatagram::bind(&input_path)?;
         fs::set_permissions(&control_path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(&input_path, fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             control_socket,
+            input_socket,
             ingress_log: runtime_dir.join("adapter-ingress.log"),
+            runtime_dir: runtime_dir.to_path_buf(),
         })
     }
 
     fn activate(self) -> io::Result<()> {
         let Self {
             control_socket,
+            input_socket,
             ingress_log,
+            runtime_dir,
         } = self;
 
         thread::Builder::new()
@@ -386,6 +397,36 @@ impl ResourceAdapters {
                         .is_err()
                     {
                         break;
+                    }
+                }
+            })?;
+        thread::Builder::new()
+            .name(String::from("wss-input-adapter"))
+            .spawn(move || {
+                let mut message = [0_u8; 4096];
+                while let Ok(size) = input_socket.recv(&mut message) {
+                    let Ok(text) = std::str::from_utf8(&message[..size]) else {
+                        continue;
+                    };
+                    let display = fs::read_dir(&runtime_dir).ok().and_then(|entries| {
+                        entries.filter_map(Result::ok).find_map(|entry| {
+                            let name = entry.file_name();
+                            let value = name.to_string_lossy();
+                            (value.starts_with("wayland-") && !value.ends_with(".lock"))
+                                .then(|| name.into_string().ok())
+                                .flatten()
+                        })
+                    });
+                    let Some(display) = display else { continue };
+                    let status = Command::new("wtype")
+                        .arg(text)
+                        .arg("-k")
+                        .arg("Return")
+                        .env("XDG_RUNTIME_DIR", &runtime_dir)
+                        .env("WAYLAND_DISPLAY", display)
+                        .status();
+                    if let Err(error) = status {
+                        eprintln!("input adapter failed to start wtype: {error}");
                     }
                 }
             })?;
@@ -477,7 +518,7 @@ fn write_resource_manifest(state_dir: &Path) -> io::Result<()> {
         .mode(0o600)
         .open(&temporary)?;
     output.write_all(
-        b"schema=1\ndisplay=headless\ngpu=encapsulated-none\nadapter-ingress=private-control-log\nadapter-egress=private-append-spool\nruntime=private-directory\nwayland-socket=session-internal\nnative-drm=unsupported\nnative-device-adapters=unsupported\n",
+        b"schema=1\ndisplay=headless\ngpu=encapsulated-none\nadapter-ingress=private-control-log\ninput=private-wayland-virtual-keyboard\nadapter-egress=private-append-spool\nruntime=private-directory\nwayland-socket=session-internal\nnative-drm=unsupported\nnative-device-adapters=unsupported\n",
     )?;
     output.sync_all()?;
     fs::rename(temporary, final_path)

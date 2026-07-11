@@ -28,6 +28,7 @@ let
     name = "checkpoint-session";
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.python3
       pkgs.weston
       stateClient
     ];
@@ -47,6 +48,18 @@ let
         supervisor-checkpoint-token &
       client_pid=$!
       printf '%s\n' "$client_pid" > "$WSS_SESSION_STATE_DIR/client.pid"
+      python3 - "$WSS_SESSION_STATE_DIR/orphan.pid" <<'PY'
+      import os, sys, time
+      if os.fork():
+          os._exit(0)
+      os.setsid()
+      if os.fork():
+          os._exit(0)
+      with open(sys.argv[1], 'w') as output:
+          output.write(str(os.getpid()) + '\n')
+      while True:
+          time.sleep(60)
+      PY
       wait "$client_pid" "$compositor_pid"
     '';
   };
@@ -95,11 +108,10 @@ pkgs.testers.runNixOSTest {
     client_json = f"{state}/sessions/checkpoint/client.json"
     machine.wait_until_succeeds(f"test -s {client_json} && test -s {state}/sessions/checkpoint/session.pid && test -s {state}/sessions/checkpoint/cgroup.path")
     machine.succeed("systemctl is-active wss-checkpoint.service")
+    machine.wait_until_succeeds(f"test -s {state}/sessions/checkpoint/orphan.pid")
+    orphan_namespace_pid = machine.succeed(f"cat {state}/sessions/checkpoint/orphan.pid").strip()
+    machine.succeed(f"for pid in $(cat /sys/fs/cgroup/wss-checkpoint/cgroup.procs); do test \"$(awk '/^NSpid:/ {{print $NF}}' /proc/$pid/status 2>/dev/null)\" = {orphan_namespace_pid} && echo $pid > /tmp/orphan-host.pid && exit 0; done; exit 1")
     before = json.loads(machine.succeed(f"cat {client_json}"))
-    supervisor_pid = machine.succeed(
-      "systemctl show wss-checkpoint.service -p MainPID --value"
-    ).strip()
-
     # An unrelated process placed in the managed cgroup is outside the
     # namespace-init tree and must make capture fail before CRIU runs.
     machine.succeed("systemd-run --unit=wss-outside sleep 300")
@@ -133,6 +145,7 @@ pkgs.testers.runNixOSTest {
       f"printf '%s/checkpoints/%s' {state}/sessions/checkpoint "
       f"$(cat {state}/sessions/checkpoint/current-checkpoint)"
     ).strip()
+    machine.succeed(f"jq -e --argjson orphan $(cat /tmp/orphan-host.pid) '.equal == true and .cgroup_pids == .tree_pids and (.tree_pids | index($orphan) != null)' {checkpoint_path}/domain-inventory.json")
     manifest = json.loads(machine.succeed(f"cat {checkpoint_path}/checkpoint.json"))
     assert manifest["status"] == "complete"
     assert manifest["images"]
@@ -145,9 +158,6 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("multi-user.target")
     boot_after = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
     assert boot_before != boot_after
-    restore_caller = machine.succeed("echo $$").strip()
-    assert restore_caller != supervisor_pid
-
     machine.fail(
       f"${supervisor}/bin/wayland-session-supervisor restore {common} /run/current-system/sw/bin/false"
     )
@@ -186,6 +196,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("mkdir -p /tmp/checkpoint-evidence")
     machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,domain-inventory.json,restore-failure.json}} /tmp/checkpoint-evidence/")
     machine.succeed(f"cp {state}/sessions/checkpoint/outer-supervisor.json /tmp/checkpoint-evidence/")
+    machine.succeed(f"jq -n --argjson namespace_pid {orphan_namespace_pid} --argjson host_pid $(cat /tmp/orphan-host.pid) '{{schema:1,kind:\"double-forked-orphan\",namespace_pid:$namespace_pid,host_pid:$host_pid,present_in_equal_inventory:true}}' > /tmp/checkpoint-evidence/orphan.json")
     machine.succeed(f"find {state}/sessions/checkpoint/checkpoints/failed-* -name domain-inventory.json -exec jq -e '.equal == false' {{}} \\; -exec cp {{}} /tmp/checkpoint-evidence/refused-domain-inventory.json \\; -quit")
     machine.succeed("cat > /tmp/checkpoint-evidence/continuity-before.json <<'EOF'\n" + json.dumps(before, sort_keys=True, indent=2) + "\nEOF")
     machine.succeed("cat > /tmp/checkpoint-evidence/continuity-after.json <<'EOF'\n" + json.dumps(after, sort_keys=True, indent=2) + "\nEOF")

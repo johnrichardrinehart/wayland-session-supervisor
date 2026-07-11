@@ -126,6 +126,11 @@ let
             foot --log-level=error -- \
               tmux -S "$runtime/tmux.sock" attach-session \
               >"$state/terminal.log" 2>&1 &
+            # Child shell expands the restored environment.
+            # shellcheck disable=SC2016
+            foot --log-level=error --title=restored-input-target --app-id=restored-input-target -- \
+              ${pkgs.bash}/bin/bash -c 'printf "input-ready\\n"; IFS= read -r value; printf "%s" "$value" > "$WSS_SESSION_STATE_DIR/input-delivered"' \
+              >"$state/input-target.log" 2>&1 &
 
             mpv --no-config --vo=null --ao=null --pause --start=4 --input-ipc-server="$runtime/mpv.sock" \
               --no-resume-playback --loop-file=inf "${media}/frames.mkv" >/dev/null 2>&1 &
@@ -288,6 +293,7 @@ pkgs.testers.runNixOSTest {
       pkgs.socat
       pkgs.sway
       pkgs.tmux
+      pkgs.wtype
       probe
       supervisor
     ];
@@ -306,6 +312,7 @@ pkgs.testers.runNixOSTest {
       f"--cgroup-dir /sys/fs/cgroup/wss-apps -- {command}")
     machine.sleep(30)
     machine.succeed("systemctl is-active wss-apps.service || { cat /var/lib/wayland-session-supervisor/sessions/apps/sway.log; exit 1; }")
+    machine.succeed("swaymsg -s $(cat /var/lib/wayland-session-supervisor/sessions/apps/swaysock) -t get_tree | jq -e '.. | objects | select(.app_id? == \"restored-input-target\")' || { cat /var/lib/wayland-session-supervisor/sessions/apps/input-target.log; exit 1; }")
     machine.sleep(30)
     machine.succeed("test -S /run/wayland-session-supervisor/apps/mpv.sock && test -s /var/lib/wayland-session-supervisor/sessions/apps/audio.json || { cat /var/lib/wayland-session-supervisor/sessions/apps/{application,chromium,sway}.log; exit 1; }")
     machine.wait_until_succeeds("test $(curl -s http://127.0.0.1:9222/json/list | jq '[.[]|select(.title|startswith(\"wss-\"))]|length') -eq 3")
@@ -330,6 +337,7 @@ pkgs.testers.runNixOSTest {
       "--setenv=PATH=${
         pkgs.lib.makeBinPath [
           pkgs.coreutils
+          pkgs.wtype
           criu
         ]
       } "
@@ -341,6 +349,9 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"swaymsg -s {swaysock} -r -t get_seats | jq -e '.[0].devices != null'")
     machine.succeed("printf 'key:after-restore' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/control.sock")
     machine.wait_until_succeeds(f"jq -e '.counter == 2 and .last_event == \"key:after-restore\"' {state}/sessions/apps/input.json")
+    machine.succeed(f"swaymsg -s {swaysock} '[app_id=\"restored-input-target\"] focus'")
+    machine.succeed("printf 'restored-through-sway' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/input.sock")
+    machine.wait_until_succeeds(f"grep -Fx 'restored-through-sway' {state}/sessions/apps/input-delivered")
     machine.wait_until_succeeds(f"test $(stat -c %s /run/wayland-session-supervisor/apps/adapter-egress.stream) -eq $(jq -r .adapter_spool_bytes {state}/sessions/apps/audio.json)")
     machine.succeed("XDG_RUNTIME_DIR=/run/wayland-session-supervisor/apps WAYLAND_DISPLAY=wayland-1 ${pkgs.foot}/bin/foot --title post-restore-client ${pkgs.coreutils}/bin/sleep 300 >/dev/null 2>&1 &")
     machine.wait_until_succeeds(f"swaymsg -s {swaysock} -r -t get_tree | jq -e '.. | objects | select(.name? == \"post-restore-client\")'")
@@ -367,7 +378,7 @@ pkgs.testers.runNixOSTest {
     assert after['input']['counter'] == before['input']['counter'] + 1
     machine.succeed(f"mkdir -p /tmp/evidence && cp {state}/{{before,after}}.json /tmp/evidence/ && cp {state}/sessions/apps/outer-supervisor.json /tmp/evidence/")
     machine.succeed(f"cp {state}/sessions/apps/checkpoints/$(cat {state}/sessions/apps/current-checkpoint)/domain-inventory.json /tmp/evidence/")
-    machine.succeed(f"jq -n --arg before '{boot_before}' --arg after '{boot_after}' '{{schema:1,boot_before:$before,boot_after:$after,rebooted:($before != $after),verdict:\"pass\"}}' > /tmp/evidence/verdict.json")
+    machine.succeed(f"jq -n --arg before '{boot_before}' --arg after '{boot_after}' '{{schema:1,boot_before:$before,boot_after:$after,rebooted:($before != $after),input_via_compositor:true,input_payload:\"restored-through-sway\",verdict:\"pass\"}}' > /tmp/evidence/verdict.json")
     machine.copy_from_machine("/tmp/evidence", "")
   '';
 }

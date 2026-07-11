@@ -33,10 +33,11 @@ The executable intentionally resolves the following runtime tools through `PATH`
 
 - `unshare` and `setsid` from `util-linux`: support the non-kernel/synthetic-cgroup integration path. Production kernel-cgroup sessions use `clone3(CLONE_NEWPID | CLONE_INTO_CGROUP)` so PID 1 is born atomically in the managed cgroup; the dependency remains explicit for the supported fallback path.
 - `criu`: captures and restores the complete process tree. The application VM currently requires CRIU 4.2; Nixpkgs CRIU 4.1.1 fails its Sway workload during page transfer.
+- `wtype`: implements the test-supported compositor-compatible virtual-keyboard adapter for `input.sock`.
 - `uname` from `coreutils`: records and validates kernel compatibility.
 - The configured compositor executable when its first argv element is a name rather than an immutable path.
 
-The NixOS module puts `util-linux`, `criu`, and `coreutils` on the service `PATH`. Direct CLI users must provide them explicitly; no ambient fallback or shell interpolation is used.
+The NixOS module puts `util-linux`, `criu`, `coreutils`, and `wtype` on the service `PATH`. Direct CLI users must provide them explicitly; no ambient fallback or shell interpolation is used.
 
 Creating PID namespaces and checkpointing processes require the corresponding Linux capabilities. The provided NixOS service runs with the required authority and delegates its cgroup.
 

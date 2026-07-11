@@ -47,6 +47,7 @@ in
         pkgs.coreutils
         pkgs.criu
         pkgs.util-linux
+        pkgs.wtype
       ];
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (

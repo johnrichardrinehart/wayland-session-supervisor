@@ -6,7 +6,7 @@
     "chunk_samples": 4800,
     "consumed_samples": 2865600,
     "expected_waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
-    "pid": 122,
+    "pid": 124,
     "stream_id": "wss-aplay-stream",
     "waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
     "waveform_valid": true
@@ -37,9 +37,9 @@
     "processes": [
       {
         "cmdline_sha256": "7fda1167426529a953f93ab14c276e8068a66e6924f2cdee74c173d89c2b375e",
-        "host_pid": 874,
+        "host_pid": 877,
         "namespace_pid": 18,
-        "starttime": 1199
+        "starttime": 1187
       }
     ],
     "tabs": [
@@ -50,7 +50,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/alpha.html",
         "value": "memory-alpha",
         "visibility": "visible",
-        "window_id": 1810731280
+        "window_id": 143262572
       },
       {
         "memory": "memory-beta",
@@ -59,7 +59,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/beta.html",
         "value": "memory-beta",
         "visibility": "hidden",
-        "window_id": 1810731280
+        "window_id": 143262572
       },
       {
         "memory": "memory-gamma",
@@ -68,7 +68,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/gamma.html",
         "value": "memory-gamma",
         "visibility": "visible",
-        "window_id": 1810731283
+        "window_id": 143262575
       }
     ],
     "windows": [
@@ -80,7 +80,7 @@
           "wss-alpha",
           "wss-beta"
         ],
-        "window_id": 1810731280
+        "window_id": 143262572
       },
       {
         "selected_tabs": [
@@ -89,14 +89,14 @@
         "tabs": [
           "wss-gamma"
         ],
-        "window_id": 1810731283
+        "window_id": 143262575
       }
     ]
   },
   "input": {
     "counter": 1,
     "last_event": "key:before-capture",
-    "pid": 119
+    "pid": 120
   },
   "mpv": {
     "frame": 120,
@@ -112,7 +112,7 @@
     "function": "71b1bc8f56ad15d752780a52f13533af97333b0e5d64c9010ca6208569fa7c1b",
     "history": "34481cb0df4b979055e3d389b1e1fe87132e707e7d96e268793748b2957a71fb",
     "job_alive": true,
-    "job_pid": 126,
+    "job_pid": 127,
     "last_status": 1,
     "local": "local-across-reboot",
     "pid": 115
