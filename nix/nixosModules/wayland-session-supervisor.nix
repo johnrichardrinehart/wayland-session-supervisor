@@ -11,6 +11,7 @@ let
   normalUsers = lib.attrNames (lib.filterAttrs (_: account: account.isNormalUser) config.users.users);
   inferredUser = if builtins.length normalUsers == 1 then builtins.head normalUsers else null;
   user = if cfg.user != null then cfg.user else inferredUser;
+  userUid = config.users.users.${user}.uid;
   authenticated = supportedAuthenticatedDesktop;
   standalone = !authenticated;
   niriCommand = [
@@ -245,10 +246,6 @@ in
           message = "wayland-session-supervisor requires user to be set when multiple normal users exist";
         }
         {
-          assertion = config.users.users.${user}.uid != null;
-          message = "wayland-session-supervisor.user must have an explicit numeric uid";
-        }
-        {
           assertion = config.services.greetd.enable;
           message = "authenticated wayland-session-supervisor mode requires services.greetd.enable";
         }
@@ -295,10 +292,7 @@ in
           wayland-session-supervisor-capture = {
             description = "Capture the authenticated Wayland session before shutdown";
             wantedBy = [ "multi-user.target" ];
-            after = [
-              "greetd.service"
-              "user@${toString config.users.users.${user}.uid}.service"
-            ];
+            after = [ "greetd.service" ] ++ lib.optional (userUid != null) "user@${toString userUid}.service";
             before = [ "shutdown.target" ];
             conflicts = [ "shutdown.target" ];
             serviceConfig = {
