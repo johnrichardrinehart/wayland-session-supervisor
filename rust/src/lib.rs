@@ -202,6 +202,7 @@ impl SessionDomain {
             });
         }
         let child = if kernel_cgroup {
+            enter_identity_user_namespace()?;
             let cgroup_fd = cgroup_fd.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "missing managed cgroup")
             })?;
@@ -302,6 +303,25 @@ struct CloneArgs {
     set_tid: u64,
     set_tid_size: u64,
     cgroup: u64,
+}
+
+fn enter_identity_user_namespace() -> io::Result<()> {
+    let uid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getegid() };
+    if uid == 0 {
+        return Ok(());
+    }
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // Identity mappings preserve D-Bus SO_PEERCRED while the calling process
+    // retains capabilities in the new user namespace long enough to create
+    // the managed PID namespace. The compositor loses those capabilities at
+    // exec because its numeric UID remains nonzero.
+    fs::write("/proc/self/setgroups", "deny\n")?;
+    fs::write("/proc/self/uid_map", format!("{uid} {uid} 1\n"))?;
+    fs::write("/proc/self/gid_map", format!("{gid} {gid} 1\n"))?;
+    Ok(())
 }
 
 fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> {
