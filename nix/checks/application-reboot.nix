@@ -45,7 +45,11 @@ let
         ffmpeg -hide_banner -loglevel error -f lavfi \
           -i 'sine=frequency=997:sample_rate=48000:duration=1800' -c:a pcm_s16le $out/samples.wav
       '';
-  shellFixture = self + /tests/fixtures/application-shell.sh;
+  shellSources = pkgs.lib.fileset.toSource {
+    root = ../..;
+    fileset = ../../tests/fixtures/application-shell.sh;
+  };
+  shellFixture = shellSources + /tests/fixtures/application-shell.sh;
   session = pkgs.writeShellApplication {
     name = "application-session";
     runtimeInputs = with pkgs; [

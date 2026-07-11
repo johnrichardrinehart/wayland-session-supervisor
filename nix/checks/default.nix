@@ -65,5 +65,5 @@
         test "$(cat terminated)" = terminated
         touch $out
       '';
-  feasibility = import ./feasibility.nix { inherit pkgs self; };
+  feasibility = import ./feasibility.nix { inherit pkgs; };
 }

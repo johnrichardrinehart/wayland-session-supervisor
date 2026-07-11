@@ -1,12 +1,13 @@
-{
-  pkgs,
-  self,
-}:
+{ pkgs }:
 let
+  fixtureSources = pkgs.lib.fileset.toSource {
+    root = ../..;
+    fileset = ../../tests/fixtures/wayland-state-client.c;
+  };
   stateClient = pkgs.stdenv.mkDerivation {
     pname = "wayland-state-client";
     version = "0.1.0";
-    src = self + /tests/fixtures/wayland-state-client.c;
+    src = fixtureSources + /tests/fixtures/wayland-state-client.c;
     dontUnpack = true;
     strictDeps = true;
     nativeBuildInputs = [ pkgs.pkg-config ];

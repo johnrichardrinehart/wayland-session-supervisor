@@ -1,9 +1,18 @@
 { pkgs }:
 let
+  inherit (pkgs) lib;
+  source = lib.fileset.toSource {
+    root = ../..;
+    fileset = lib.fileset.unions [
+      ../../rust/Cargo.lock
+      ../../rust/Cargo.toml
+      (lib.fileset.fileFilter (file: file.hasExt "rs") ../../rust/src)
+    ];
+  };
   package = pkgs.rustPlatform.buildRustPackage {
     pname = "wayland-session-supervisor";
     version = "0.1.0";
-    src = ../../.;
+    src = source;
     cargoRoot = "rust";
     buildAndTestSubdir = "rust";
     cargoLock.lockFile = ../../rust/Cargo.lock;

@@ -4,10 +4,14 @@
   system,
 }:
 let
+  fixtureSources = pkgs.lib.fileset.toSource {
+    root = ../..;
+    fileset = ../../tests/fixtures/wayland-state-client.c;
+  };
   stateClient = pkgs.stdenv.mkDerivation {
     pname = "checkpoint-state-client";
     version = "0.1.0";
-    src = self + /tests/fixtures/wayland-state-client.c;
+    src = fixtureSources + /tests/fixtures/wayland-state-client.c;
     dontUnpack = true;
     strictDeps = true;
     nativeBuildInputs = [ pkgs.pkg-config ];
@@ -100,7 +104,7 @@ pkgs.testers.runNixOSTest {
       f"jq -e '.status == \"failed\"' "
       f"{state}/sessions/checkpoint/checkpoints/failed-*/checkpoint.json"
     )
-    machine.succeed(f"kill -0 $(cat {state}/sessions/checkpoint/client.pid)")
+    machine.succeed(f"nsenter -t $(cat {state}/sessions/checkpoint/session.pid) -p kill -0 $(cat {state}/sessions/checkpoint/client.pid)")
 
     machine.succeed(
       f"${supervisor}/bin/wayland-session-supervisor capture {common} {command}"
@@ -145,7 +149,7 @@ pkgs.testers.runNixOSTest {
     client_pid = machine.succeed(
       f"cat {state}/sessions/checkpoint/client.pid"
     ).strip()
-    machine.succeed(f"kill -USR1 {client_pid}")
+    machine.succeed(f"for p in /proc/[0-9]*; do n=$(awk '/^NSpid:/ {{print $NF}}' $p/status 2>/dev/null); if test \"$n\" = {client_pid}; then kill -USR1 ''${{p##*/}}; exit 0; fi; done; exit 1")
     machine.wait_until_succeeds(f"test $(jq -r .counter {client_json}) -eq 23064")
     after = json.loads(machine.succeed(f"cat {client_json}"))
     assert after["pid"] == before["pid"]
