@@ -117,12 +117,14 @@ let
               --new-window "file://${pages}/gamma.html" >/dev/null 2>&1 || true
 
             mkfifo "$runtime/shell-control"
+            mkdir -p /var/lib/wayland-session-supervisor/shell-cwd
             # Keep the tmux server as a real child of the managed domain;
             # normal auto-start daemonization reparents it outside --tree.
             tmux -D -S "$runtime/tmux.sock" >"$state/tmux.log" 2>&1 &
             for _ in $(seq 1 200); do test -S "$runtime/tmux.sock" && break; sleep .05; done
-            tmux -S "$runtime/tmux.sock" new-session -d \
+            tmux -S "$runtime/tmux.sock" new-session -d -c /var/lib/wayland-session-supervisor/shell-cwd \
               "exec ${pkgs.bash}/bin/bash -x ${shellFixture} $state/shell.json $runtime/shell-control 2>$state/shell-error.log"
+            tmux -S "$runtime/tmux.sock" set-environment -g WSS_TMUX_ENV preserved-across-reboot
             foot --log-level=error -- \
               tmux -S "$runtime/tmux.sock" attach-session \
               >"$state/terminal.log" 2>&1 &
@@ -250,7 +252,28 @@ let
             for child in node.get('nodes', []) + node.get('floating_nodes', []): visit(child, workspace)
         visit(tree)
         text = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'capture-pane', '-p', '-S', '-')
-        tmux = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'list-panes', '-a', '-F', '#{session_name}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_pid}')
+        tmux_socket = '/run/wayland-session-supervisor/apps/tmux.sock'
+        panes = []
+        for row in command('tmux', '-S', tmux_socket, 'list-panes', '-a', '-F', '#{session_name}|#{window_index}|#{pane_index}|#{pane_pid}').splitlines():
+            session_name, window_index, pane_index, namespace_pid = row.split('|')
+            actual_cwd = None
+            for proc in os.listdir('/proc'):
+                if not proc.isdigit(): continue
+                try:
+                    nspid = [line for line in open(f'/proc/{proc}/status') if line.startswith('NSpid:')][0].split()[-1]
+                    cgroup = open(f'/proc/{proc}/cgroup').read()
+                    if nspid == namespace_pid and '/wss-apps' in cgroup:
+                        actual_cwd = os.readlink(f'/proc/{proc}/cwd')
+                        break
+                except (FileNotFoundError, ProcessLookupError, PermissionError): pass
+            panes.append({'session': session_name, 'window_index': int(window_index), 'pane_index': int(pane_index), 'namespace_pid': int(namespace_pid), 'cwd': actual_cwd})
+        tmux_state = {
+          'sessions': command('tmux', '-S', tmux_socket, 'list-sessions', '-F', '#{session_name}|#{session_windows}|#{session_attached}').splitlines(),
+          'windows': command('tmux', '-S', tmux_socket, 'list-windows', '-a', '-F', '#{session_name}|#{window_index}|#{window_name}|#{window_panes}|#{window_layout}').splitlines(),
+          'panes': panes,
+          'environment': sorted(command('tmux', '-S', tmux_socket, 'show-environment', '-g').splitlines()),
+        }
+        tmux = json.dumps(tmux_state, sort_keys=True)
         terminal_lines = text.splitlines()
         while terminal_lines and not terminal_lines[-1]: terminal_lines.pop()
         terminal_text = chr(10).join(terminal_lines)
@@ -269,7 +292,7 @@ let
         audio['adapter_spool_valid'] = audio['adapter_spool_sha256'] == audio['waveform_sha256']
         input_state = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/input.json'))
         evidence = {'schema': 1, 'phase': phase, 'browser': {'tabs': tabs, 'windows': windows, 'placements': sorted(placements, key=lambda x:x['title']), 'processes': sorted(chromium, key=lambda x:x['namespace_pid'])},
-          'terminal': {'contents': terminal_lines, 'text_sha256': hashlib.sha256(terminal_text.encode()).hexdigest(), 'line_count': len(terminal_lines), 'scrollback_sha256': hashlib.sha256(chr(10).join(scrollback).encode()).hexdigest(), 'scrollback_line_count': len(scrollback), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text, 'tmux_sha256': hashlib.sha256(tmux.encode()).hexdigest(), 'tmux_state': tmux},
+          'terminal': {'contents': terminal_lines, 'text_sha256': hashlib.sha256(terminal_text.encode()).hexdigest(), 'line_count': len(terminal_lines), 'scrollback_sha256': hashlib.sha256(chr(10).join(scrollback).encode()).hexdigest(), 'scrollback_line_count': len(scrollback), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text, 'tmux_sha256': hashlib.sha256(tmux.encode()).hexdigest(), 'tmux_state': tmux_state},
           'shell': shell, 'mpv': {'time': mpv_time, 'frame': round(mpv_time * 30), 'media': '${media}/frames.mkv'},
           'aplay': audio, 'input': input_state}
         with open(destination + '.tmp', 'w') as output: json.dump(evidence, output, sort_keys=True, indent=2)
@@ -328,6 +351,8 @@ pkgs.testers.runNixOSTest {
     assert len(before['browser']['tabs']) == 3
     assert len(set(tab['window_id'] for tab in before['browser']['tabs'])) == 2
     assert before['terminal']['contains_first'] and before['terminal']['contains_last']
+    assert before['terminal']['tmux_state']['panes'][0]['cwd'] == '/var/lib/wayland-session-supervisor/shell-cwd'
+    assert 'WSS_TMUX_ENV=preserved-across-reboot' in before['terminal']['tmux_state']['environment']
     machine.succeed(f"${supervisor}/bin/wayland-session-supervisor capture {common} {command} || {{ tail -100 {state}/sessions/apps/checkpoints/failed-*/dump.log; exit 1; }}")
     machine.wait_until_succeeds("systemctl is-failed wss-apps.service")
     machine.shutdown()
@@ -352,8 +377,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("printf 'key:after-restore' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/control.sock")
     machine.wait_until_succeeds(f"jq -e '.counter == 2 and .last_event == \"key:after-restore\"' {state}/sessions/apps/input.json")
     machine.succeed(f"swaymsg -s {swaysock} '[app_id=\"restored-input-target\"] focus'")
-    machine.succeed("printf 'restored-through-sway' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/input.sock")
-    machine.wait_until_succeeds(f"grep -Fx 'restored-through-sway' {state}/sessions/apps/input-delivered")
+    machine.wait_until_succeeds(f"printf 'restored-through-sway' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/input.sock; grep -Fx 'restored-through-sway' {state}/sessions/apps/input-delivered")
     machine.wait_until_succeeds(f"test $(stat -c %s /run/wayland-session-supervisor/apps/adapter-egress.stream) -eq $(jq -r .adapter_spool_bytes {state}/sessions/apps/audio.json)")
     machine.succeed("XDG_RUNTIME_DIR=/run/wayland-session-supervisor/apps WAYLAND_DISPLAY=wayland-1 ${pkgs.foot}/bin/foot --title post-restore-client ${pkgs.coreutils}/bin/sleep 300 >/dev/null 2>&1 &")
     machine.wait_until_succeeds(f"swaymsg -s {swaysock} -r -t get_tree | jq -e '.. | objects | select(.name? == \"post-restore-client\")'")

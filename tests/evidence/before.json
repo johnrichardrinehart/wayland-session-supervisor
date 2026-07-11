@@ -6,7 +6,7 @@
     "chunk_samples": 4800,
     "consumed_samples": 2817600,
     "expected_waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
-    "pid": 122,
+    "pid": 124,
     "stream_id": "wss-aplay-stream",
     "waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
     "waveform_valid": true
@@ -37,9 +37,9 @@
     "processes": [
       {
         "cmdline_sha256": "7fda1167426529a953f93ab14c276e8068a66e6924f2cdee74c173d89c2b375e",
-        "host_pid": 899,
+        "host_pid": 886,
         "namespace_pid": 18,
-        "starttime": 1401
+        "starttime": 1293
       }
     ],
     "tabs": [
@@ -50,7 +50,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/alpha.html",
         "value": "memory-alpha",
         "visibility": "visible",
-        "window_id": 724432965
+        "window_id": 1216220892
       },
       {
         "memory": "memory-beta",
@@ -59,7 +59,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/beta.html",
         "value": "memory-beta",
         "visibility": "hidden",
-        "window_id": 724432965
+        "window_id": 1216220892
       },
       {
         "memory": "memory-gamma",
@@ -68,7 +68,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/gamma.html",
         "value": "memory-gamma",
         "visibility": "visible",
-        "window_id": 724432968
+        "window_id": 1216220895
       }
     ],
     "windows": [
@@ -80,7 +80,7 @@
           "wss-alpha",
           "wss-beta"
         ],
-        "window_id": 724432965
+        "window_id": 1216220892
       },
       {
         "selected_tabs": [
@@ -89,14 +89,14 @@
         "tabs": [
           "wss-gamma"
         ],
-        "window_id": 724432968
+        "window_id": 1216220895
       }
     ]
   },
   "input": {
     "counter": 1,
     "last_event": "key:before-capture",
-    "pid": 119
+    "pid": 120
   },
   "mpv": {
     "frame": 120,
@@ -112,7 +112,7 @@
     "function": "71b1bc8f56ad15d752780a52f13533af97333b0e5d64c9010ca6208569fa7c1b",
     "history": "34481cb0df4b979055e3d389b1e1fe87132e707e7d96e268793748b2957a71fb",
     "job_alive": true,
-    "job_pid": 126,
+    "job_pid": 127,
     "last_status": 1,
     "local": "local-across-reboot",
     "pid": 114
@@ -246,7 +246,54 @@
     "scrollback_line_count": 120,
     "scrollback_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
     "text_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
-    "tmux_sha256": "d97385b8098f44739e07350ea614ac952ef059f461b3116aac200ffbb838ee88",
-    "tmux_state": "0|0|0||114\n"
+    "tmux_sha256": "42805d1b37ca4871b04a58df27ecef60e55f218c28b2dc824d3039f1a22aa45e",
+    "tmux_state": {
+      "environment": [
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/apps/no-session-bus",
+        "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/apps/no-system-bus",
+        "INVOCATION_ID=df4f80a5691f4c4893a6ea7e879fde08",
+        "IO_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-apps.service/io.pressure",
+        "IO_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
+        "LANG=en_US.UTF-8",
+        "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-apps.service/memory.pressure",
+        "MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
+        "NO_AT_BRIDGE=1",
+        "PATH=/nix/store/jiwb9qf3bpwhs6a6802c13956nx295yl-alsa-utils-1.2.16/bin:/nix/store/dqy8cdnamaxdl6wb6izranil3zhbj93p-chromium-150.0.7871.100/bin:/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11/bin:/nix/store/p4j27d0562xma7y3hpls2lm6v20sbfcv-curl-8.21.0-bin/bin:/nix/store/2avx2c74smgw4ghki0qlnc0scgpfycbl-dbus-1.16.2/bin:/nix/store/f4bixss3h2i80asiz45aj4qmplvmam4k-findutils-4.10.0/bin:/nix/store/gs4c9h3l0kfmb3ssd10s93w4vnkwbmxj-foot-1.27.0/bin:/nix/store/1bp02949k0xdihbgphpwbzba1741pknk-jq-1.8.2-bin/bin:/nix/store/5103cj9fnxzcv1z58wjrpz9hfv275dd7-mpv-with-scripts-0.41.0/bin:/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin:/nix/store/pkjnn1vz1vl1pncp8p73khwy4jgjc8sg-socat-1.8.1.3/bin:/nix/store/29fkl1wy1jsmbvmybilsjc2vv8srbi7c-sway-unwrapped-1.12/bin:/nix/store/4wc8fmpdmmwwgd6sjzf43lisdy4yz8vc-swaybg-1.2.2/bin:/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin:/nix/store/hharigj3x5fda73lw1vbn7fnv568iixn-e2fsprogs-1.47.4-bin/bin:/nix/store/x3rr4i8i7bjj4mdpilvlh5vz5ja4914k-dosfstools-4.2/bin:/nix/store/gg03sn8qmgwckbms1xgg6krcq00v8wc2-util-linux-minimal-2.42.2-bin/bin:/nix/store/3v7kqg55hx4awhy5hdckniypbgqbqfmx-systemd-261/bin/",
+        "PWD=/",
+        "SHLVL=0",
+        "SWAYSOCK=/run/wayland-session-supervisor/apps/sway-ipc.0.4.sock",
+        "SYSTEMD_EXEC_PID=863",
+        "TMPDIR=/run/wayland-session-supervisor/apps/tmp",
+        "USER=root",
+        "WAYLAND_DISPLAY=wayland-1",
+        "WLR_BACKENDS=headless",
+        "WLR_LIBINPUT_NO_DEVICES=1",
+        "WLR_RENDERER=pixman",
+        "WSS_CONTROL_SOCKET=/run/wayland-session-supervisor/apps/control.sock",
+        "WSS_DISPLAY_BACKEND=headless",
+        "WSS_EGRESS_SPOOL=/run/wayland-session-supervisor/apps/adapter-egress.stream",
+        "WSS_SESSION_NAME=apps",
+        "WSS_SESSION_STATE_DIR=/var/lib/wayland-session-supervisor/sessions/apps",
+        "WSS_TMUX_ENV=preserved-across-reboot",
+        "XDG_CURRENT_DESKTOP=sway",
+        "XDG_RUNTIME_DIR=/run/wayland-session-supervisor/apps",
+        "_=/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin/tmux"
+      ],
+      "panes": [
+        {
+          "cwd": "/var/lib/wayland-session-supervisor/shell-cwd",
+          "namespace_pid": 114,
+          "pane_index": 0,
+          "session": "0",
+          "window_index": 0
+        }
+      ],
+      "sessions": [
+        "0|1|1"
+      ],
+      "windows": [
+        "0|0|bash|1|b01d,70x52,0,0,0"
+      ]
+    }
   }
 }
