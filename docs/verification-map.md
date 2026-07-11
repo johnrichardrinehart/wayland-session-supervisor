@@ -14,8 +14,8 @@
 | terminal/tmux and shell continuity | complete canonical terminal contents (only trailing empty cells removed), 120-line scrollback hash, tmux sessions/windows/panes, namespace PID-to-actual-CWD join, full global environment, and shell fixture state | retained before/after evidence contains identical 120-entry `terminal.contents`, line counts, and full-content hashes |
 | mpv tolerance | deterministic 30-fps FFV1 media and IPC frame probe | retained before/after evidence; VM assertion ±60 frames |
 | aplay tolerance and waveform | deterministic PCM, opaque supervisor-owned spool, independent WAV/hash validation | retained before/after evidence; VM assertion ±500,000 samples |
-| compositor IPC, restored clients, injected input, new client | Sway IPC/input path and Niri IPC with post-restore kitty creation | `application-reboot` and `niri-application-reboot` assertions and retained verdict/outer records |
-| Niri application domain | nested Niri+Weston, Firefox windows/tabs/memory, kitty contents, tmux, zsh, complete cgroup tree, real reboot | `tests/evidence/niri/`; `checks.x86_64-linux.niri-application-reboot` |
+| compositor IPC, restored clients, injected input, new client | Sway IPC/input path and Niri IPC with post-restore kitty creation | `manual-snapshot-and-reboot` and `niri-manual-snapshot-and-reboot` assertions and retained verdict/outer records |
+| Niri application domain | nested Niri+Weston, Firefox windows/tabs/memory, kitty contents, tmux, zsh, complete cgroup tree, real reboot | `tests/evidence/niri/`; `checks.x86_64-linux.niri-manual-snapshot-and-reboot` |
 | changed command refusal without corruption | intentionally requests `/run/current-system/sw/bin/false`, hashes manifest before/after | `tests/evidence/checkpoint/restore-failure.json`; checkpoint VM |
 | formatting, lint, static analysis, unit/integration and VM checks | flake checks plus Rust and Nix tooling | final verification commands recorded in commit trailers and CI |
 

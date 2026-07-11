@@ -6,13 +6,49 @@
 }:
 let
   cfg = config.services.wayland-session-supervisor;
+  packageDefault = (import ../packages { inherit pkgs; }).default;
+  cgroup = "/sys/fs/cgroup/system.slice/wayland-session-supervisor.service/domain";
+  common = [
+    "--session"
+    cfg.sessionName
+    "--state-dir"
+    (toString cfg.stateDirectory)
+    "--runtime-dir"
+    (toString cfg.runtimeDirectory)
+    "--criu"
+    (lib.getExe' cfg.criuPackage "criu")
+  ];
+  command = common ++ [ "--" ] ++ cfg.compositorCommand;
+  currentCheckpoint = "${toString cfg.stateDirectory}/sessions/${cfg.sessionName}/current-checkpoint";
+  start = pkgs.writeShellScript "wayland-session-supervisor-start" ''
+    set -eu
+    if test -s ${lib.escapeShellArg currentCheckpoint}; then
+      exec ${lib.getExe cfg.package} restore ${lib.escapeShellArgs command}
+    fi
+    install -d ${lib.escapeShellArg cgroup}
+    exec ${lib.getExe cfg.package} run \
+      --session ${lib.escapeShellArg cfg.sessionName} \
+      --state-dir ${lib.escapeShellArg (toString cfg.stateDirectory)} \
+      --runtime-dir ${lib.escapeShellArg (toString cfg.runtimeDirectory)} \
+      --cgroup-dir ${lib.escapeShellArg cgroup} \
+      -- ${lib.escapeShellArgs cfg.compositorCommand}
+  '';
+  capture =
+    leaveRunning:
+    pkgs.writeShellScript "wayland-session-supervisor-capture" ''
+      set -eu
+      session=${lib.escapeShellArg "${toString cfg.stateDirectory}/sessions/${cfg.sessionName}"}
+      test -s "$session/session.pid" || exit 0
+      kill -0 "$(cat "$session/session.pid")" 2>/dev/null || exit 0
+      exec ${lib.getExe cfg.package} capture ${lib.optionalString leaveRunning "--leave-running "}${lib.escapeShellArgs command}
+    '';
 in
 {
   options.services.wayland-session-supervisor = {
     enable = lib.mkEnableOption "supervised Wayland session restoration";
     package = lib.mkOption {
       type = lib.types.package;
-      inherit (import ../packages { inherit pkgs; }) default;
+      default = packageDefault;
       defaultText = lib.literalExpression "wayland-session-supervisor.packages.${pkgs.system}.default";
       description = "The wayland-session-supervisor package to run.";
     };
@@ -42,13 +78,22 @@ in
       default = [ "niri" ];
       description = "Compositor executable and arguments, represented without shell interpolation.";
     };
+    snapshotOnSuspend = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Capture a leave-running checkpoint before suspend. Hibernate remains excluded.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
     systemd.services.wayland-session-supervisor = {
-      description = "Wayland session supervisor";
-      wantedBy = [ "graphical.target" ];
+      description = "Wayland session supervisor with automatic reboot persistence";
+      wantedBy = [
+        "graphical.target"
+        "multi-user.target"
+      ];
+      after = [ "systemd-user-sessions.service" ];
       path = [
         pkgs.coreutils
         cfg.criuPackage
@@ -56,30 +101,26 @@ in
         pkgs.wtype
       ];
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs (
-          [
-            (lib.getExe cfg.package)
-            "run"
-            "--session"
-            cfg.sessionName
-            "--state-dir"
-            cfg.stateDirectory
-            "--runtime-dir"
-            cfg.runtimeDirectory
-            "--cgroup-dir"
-            "/sys/fs/cgroup/system.slice/wayland-session-supervisor.service/domain"
-            "--"
-          ]
-          ++ cfg.compositorCommand
-        );
+        ExecStart = start;
+        ExecStop = capture false;
         Delegate = true;
-        DelegateSubgroup = "supervisor";
         KillMode = "control-group";
-        Restart = "on-failure";
+        TimeoutStopSec = "infinity";
         StateDirectory = "wayland-session-supervisor";
         RuntimeDirectory = "wayland-session-supervisor";
         StateDirectoryMode = "0700";
         RuntimeDirectoryMode = "0700";
+      };
+    };
+
+    systemd.services.wayland-session-supervisor-suspend-snapshot = lib.mkIf cfg.snapshotOnSuspend {
+      description = "Checkpoint the Wayland session before suspend";
+      wantedBy = [ "suspend.target" ];
+      before = [ "suspend.target" ];
+      after = [ "wayland-session-supervisor.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = capture true;
       };
     };
   };

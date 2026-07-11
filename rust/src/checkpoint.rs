@@ -90,6 +90,7 @@ pub struct CheckpointOptions {
     pub runtime_dir: PathBuf,
     pub criu: OsString,
     pub compositor_argv: Vec<OsString>,
+    pub leave_running: bool,
 }
 
 impl CheckpointOptions {
@@ -99,12 +100,17 @@ impl CheckpointOptions {
         let mut state_dir = PathBuf::from("/var/lib/wayland-session-supervisor");
         let mut runtime_dir = PathBuf::from("/run/wayland-session-supervisor");
         let mut criu = OsString::from("criu");
+        let mut leave_running = false;
         loop {
             let argument = arguments
                 .next()
                 .ok_or_else(|| String::from("missing `--` before compositor command"))?;
             if argument == "--" {
                 break;
+            }
+            if argument == "--leave-running" {
+                leave_running = true;
+                continue;
             }
             let value = arguments
                 .next()
@@ -131,6 +137,7 @@ impl CheckpointOptions {
             runtime_dir,
             criu,
             compositor_argv,
+            leave_running,
         })
     }
 
@@ -243,32 +250,35 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         )));
     }
 
-    let status = Command::new(&options.criu)
-        .args([
-            OsStr::new("dump"),
-            OsStr::new("--tree"),
-            OsStr::new(&root_pid.to_string()),
-            OsStr::new("--images-dir"),
-            staging.as_os_str(),
-            OsStr::new("--shell-job"),
-            OsStr::new("--file-locks"),
-            // Both peers of managed loopback connections are in the domain.
-            OsStr::new("--tcp-established"),
-            // Managed applications can map deleted temporary files larger than CRIU's 1 MiB
-            // default. Preserve those mappings as checkpoint images rather than
-            // depending on volatile runtime-directory contents.
-            OsStr::new("--ghost-limit"),
-            OsStr::new("1073741824"),
-            // Managed applications watch immutable resources below /nix/store.
-            // Overlayfs file handles are not always openable directly, so use
-            // the stable store path as an inode-remap search root.
-            OsStr::new("--irmap-scan-path"),
-            OsStr::new("/nix/store"),
-            OsStr::new("--log-file"),
-            OsStr::new("dump.log"),
-            OsStr::new("-v2"),
-        ])
-        .status()?;
+    let mut criu = Command::new(&options.criu);
+    criu.args([
+        OsStr::new("dump"),
+        OsStr::new("--tree"),
+        OsStr::new(&root_pid.to_string()),
+        OsStr::new("--images-dir"),
+        staging.as_os_str(),
+        OsStr::new("--shell-job"),
+        OsStr::new("--file-locks"),
+        // Both peers of managed loopback connections are in the domain.
+        OsStr::new("--tcp-established"),
+        // Managed applications can map deleted temporary files larger than CRIU's 1 MiB
+        // default. Preserve those mappings as checkpoint images rather than
+        // depending on volatile runtime-directory contents.
+        OsStr::new("--ghost-limit"),
+        OsStr::new("1073741824"),
+        // Managed applications watch immutable resources below /nix/store.
+        // Overlayfs file handles are not always openable directly, so use
+        // the stable store path as an inode-remap search root.
+        OsStr::new("--irmap-scan-path"),
+        OsStr::new("/nix/store"),
+        OsStr::new("--log-file"),
+        OsStr::new("dump.log"),
+        OsStr::new("-v2"),
+    ]);
+    if options.leave_running {
+        criu.arg("--leave-running");
+    }
+    let status = criu.status()?;
     if !status.success() {
         let analysis = analyze_criu_failure(&staging.join("dump.log"), &status);
         write_json_atomic(&staging.join("failure-analysis.json"), &analysis)?;

@@ -284,7 +284,7 @@ let
   command = "${session}/bin/application-session";
 in
 pkgs.testers.runNixOSTest {
-  name = "wayland-session-supervisor-application-reboot";
+  name = "wayland-session-supervisor-manual-snapshot-and-reboot";
   nodes.machine = {
     virtualisation.memorySize = 6144;
     virtualisation.cores = 4;

@@ -99,12 +99,12 @@ The NixOS VM test:
    counter, and another successful round trip on the existing connection.
 
 This proves the central exact-restoration premise for an encapsulated headless
-Wayland domain across a cold guest reboot. `application-reboot` extends it to
+Wayland domain across a cold guest reboot. `manual-snapshot-and-reboot` extends it to
 Sway, Chromium, foot with an interactive shell, mpv, and aplay; it also proves
 restored compositor IPC, post-restore input control, and connection of a new
 Wayland client.
 
-`niri-application-reboot` independently runs Niri's nested winit backend over a
+`niri-manual-snapshot-and-reboot` independently runs Niri's nested winit backend over a
 supervised headless Weston software-rendering socket. It checkpoints Niri,
 Weston, Firefox/geckodriver, kitty, tmux, and zsh as one domain, crosses a real
 guest reboot, and proves exact Firefox window/tab/page-memory state, Niri window

@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -174,7 +174,15 @@ impl SessionDomain {
                 .args(&self.config.compositor_argv);
             command
         };
+        let session_log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(self.session_state_dir.join("session.log"))?;
         command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(session_log.try_clone()?))
+            .stderr(Stdio::from(session_log))
             .env("XDG_RUNTIME_DIR", &self.session_runtime_dir)
             .env("TMPDIR", self.session_runtime_dir.join("tmp"))
             .env("WSS_SESSION_NAME", &self.config.session_name)

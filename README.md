@@ -11,11 +11,12 @@ Enter the nix-direnv environment or run:
 ```console
 nix develop
 nix flake check
-nix build .#checks.x86_64-linux.application-reboot -L
-nix build .#checks.x86_64-linux.niri-application-reboot -L
+nix build .#checks.x86_64-linux.manual-snapshot-and-reboot -L
+nix build .#checks.x86_64-linux.auto-snapshot-and-reboot -L
+nix build .#checks.x86_64-linux.niri-manual-snapshot-and-reboot -L
 ```
 
-The flake exposes the package, NixOS module, formatter, development shell, and checks. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition. Entering the development shell installs a `pre-push` hook that runs the complete `nix flake check`; the existing formatting and Rust hooks remain `pre-commit` checks.
+The flake exposes the package, NixOS module, formatter, development shell, and checks. The NixOS module automatically captures during orderly reboot/shutdown and restores the complete checkpoint on the next boot. `services.wayland-session-supervisor.snapshotOnSuspend` optionally writes a leave-running safety checkpoint before suspend; hibernation is intentionally excluded because the kernel image preserves the live session. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition. Entering the development shell installs a `pre-push` hook that runs the complete `nix flake check`; the existing formatting and Rust hooks remain `pre-commit` checks.
 
 ## CLI
 

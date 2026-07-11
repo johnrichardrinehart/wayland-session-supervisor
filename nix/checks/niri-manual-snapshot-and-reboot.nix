@@ -199,7 +199,7 @@ let
   command = "${session}/bin/niri-application-session";
 in
 pkgs.testers.runNixOSTest {
-  name = "wayland-session-supervisor-niri-application-reboot";
+  name = "wayland-session-supervisor-niri-manual-snapshot-and-reboot";
   nodes.machine = {
     hardware.graphics.enable = true;
     virtualisation = {

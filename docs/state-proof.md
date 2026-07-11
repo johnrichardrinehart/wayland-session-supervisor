@@ -157,7 +157,7 @@ connect and create a surface without disturbing restored placement.
 
 ## Niri/Firefox/kitty/zsh proof
 
-`checks.x86_64-linux.niri-application-reboot` is a second, independent real
+`checks.x86_64-linux.niri-manual-snapshot-and-reboot` is a second, independent real
 reboot proof rather than an argv smoke test. Niri runs nested over a managed
 headless Weston socket. Firefox is controlled through an in-domain geckodriver;
 three deterministic local pages are split across a tab and a second browser

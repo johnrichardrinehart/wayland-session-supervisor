@@ -6,8 +6,11 @@
 {
   package = self.packages.${system}.default;
   cargo-test = self.packages.${system}.default;
-  application-reboot = import ./application-reboot.nix { inherit pkgs self system; };
-  niri-application-reboot = import ./niri-application-reboot.nix { inherit pkgs self system; };
+  manual-snapshot-and-reboot = import ./manual-snapshot-and-reboot.nix { inherit pkgs self system; };
+  auto-snapshot-and-reboot = import ./auto-snapshot-and-reboot.nix { inherit pkgs self system; };
+  niri-manual-snapshot-and-reboot = import ./niri-manual-snapshot-and-reboot.nix {
+    inherit pkgs self system;
+  };
   checkpoint = import ./checkpoint.nix { inherit pkgs self system; };
   unprivileged-session = import ./unprivileged-session.nix { inherit pkgs self system; };
   core-integration =
