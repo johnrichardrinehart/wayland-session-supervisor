@@ -14,6 +14,14 @@
         nativeBuildInputs = [
           pkgs.bash
           pkgs.python3
+          (pkgs.writeShellScriptBin "unshare" ''
+            while test "$1" != --; do shift; done
+            shift
+            test "$1" = setsid && shift
+            test "$1" = -- && shift
+            "$@" &
+            wait $!
+          '')
           self.packages.${system}.default
         ];
       }
