@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "criu_exit_status": "exit status: 42",
+  "errors": [],
+  "warnings": [],
+  "recommendations": []
+}

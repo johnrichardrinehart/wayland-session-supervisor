@@ -1,5 +1,5 @@
 use std::process::ExitCode;
-use wayland_session_supervisor::checkpoint::{CheckpointOptions, capture, restore};
+use wayland_session_supervisor::checkpoint::{CheckpointOptions, capture, diagnose, restore};
 use wayland_session_supervisor::{
     SessionConfig, SessionDomain, command_display, run_namespace_init,
 };
@@ -9,11 +9,12 @@ fn main() -> ExitCode {
     match arguments.next().as_deref() {
         Some(command) if command == "run" => run(arguments),
         Some(command) if command == "capture" => checkpoint(arguments, true),
+        Some(command) if command == "diagnose" => diagnostics(arguments),
         Some(command) if command == "restore" => checkpoint(arguments, false),
         Some(command) if command == "namespace-init" => namespace_init(arguments),
         _ => {
             eprintln!(
-                "usage: wayland-session-supervisor <run|capture|restore> [OPTIONS] -- COMPOSITOR [ARG ...]"
+                "usage: wayland-session-supervisor <run|diagnose|capture|restore> [OPTIONS] -- COMPOSITOR [ARG ...]"
             );
             ExitCode::from(2)
         }
@@ -59,6 +60,26 @@ fn run(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(error) => {
             eprintln!("session failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn diagnostics(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    let options = match CheckpointOptions::parse(arguments) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("invalid diagnostic configuration: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match diagnose(&options) {
+        Ok(path) => {
+            println!("diagnostic report written to {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("diagnostics failed: {error}");
             ExitCode::FAILURE
         }
     }

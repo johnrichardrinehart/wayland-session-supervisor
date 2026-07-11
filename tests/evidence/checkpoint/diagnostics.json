@@ -1,0 +1,314 @@
+{
+  "schema": 1,
+  "generated_unix_nanos": 1783784043640322302,
+  "boot_id": "735e0000-0640-4286-94fc-33a511177532",
+  "kernel_release": "6.18.38",
+  "criu_version": "Version: 4.2",
+  "session": "checkpoint",
+  "checkpoint_root_pid": 879,
+  "domain": {
+    "schema": 1,
+    "checkpoint_root_pid": 879,
+    "cgroup_path": "/sys/fs/cgroup/wss-checkpoint",
+    "cgroup_pids": [
+      879,
+      880,
+      884,
+      888,
+      889,
+      890,
+      893
+    ],
+    "tree_pids": [
+      879,
+      880,
+      884,
+      888,
+      889,
+      890,
+      893
+    ],
+    "equal": true,
+    "error": null
+  },
+  "processes": [
+    {
+      "pid": 879,
+      "parent_pid": 874,
+      "namespace_pids": [
+        879,
+        1
+      ],
+      "executable": "/nix/store/ydpjwxp7r5xdfai12gd0r8qx42mwfi1d-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
+      "command": [
+        "/nix/store/ydpjwxp7r5xdfai12gd0r8qx42mwfi1d-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
+        "namespace-init",
+        "--",
+        "/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "/dev/null",
+        "1": "/dev/null",
+        "2": "/dev/null"
+      },
+      "resource_flags": [],
+      "inspection_errors": []
+    },
+    {
+      "pid": 880,
+      "parent_pid": 879,
+      "namespace_pids": [
+        880,
+        2
+      ],
+      "executable": "/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash",
+      "command": [
+        "/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash",
+        "/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "/dev/null",
+        "1": "/dev/null",
+        "2": "/dev/null",
+        "255": "/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session"
+      },
+      "resource_flags": [],
+      "inspection_errors": []
+    },
+    {
+      "pid": 884,
+      "parent_pid": 880,
+      "namespace_pids": [
+        884,
+        4
+      ],
+      "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/bin/weston",
+      "command": [
+        "weston",
+        "--backend=headless-backend.so",
+        "--socket=wayland-checkpoint",
+        "--idle-time=0",
+        "--log=/var/lib/wayland-session-supervisor/sessions/checkpoint/weston.log"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "/dev/null",
+        "1": "/dev/null",
+        "2": "/dev/null",
+        "3": "/var/lib/wayland-session-supervisor/sessions/checkpoint/weston.log",
+        "4": "anon_inode:[eventpoll]",
+        "5": "anon_inode:[eventfd]",
+        "6": "anon_inode:[eventfd]",
+        "7": "anon_inode:[signalfd]",
+        "8": "anon_inode:[signalfd]",
+        "9": "anon_inode:[signalfd]",
+        "10": "anon_inode:[timerfd]",
+        "11": "anon_inode:[timerfd]",
+        "12": "anon_inode:[timerfd]",
+        "13": "/run/wayland-session-supervisor/checkpoint/wayland-checkpoint.lock",
+        "14": "socket:[8917]",
+        "15": "socket:[8917]",
+        "16": "socket:[8918]",
+        "17": "socket:[8920]",
+        "18": "socket:[8918]",
+        "19": "socket:[8924]",
+        "20": "socket:[8920]",
+        "21": "socket:[8924]"
+      },
+      "resource_flags": [
+        "anonymous-inode",
+        "socket"
+      ],
+      "inspection_errors": []
+    },
+    {
+      "pid": 888,
+      "parent_pid": 884,
+      "namespace_pids": [
+        888,
+        8
+      ],
+      "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-keyboard",
+      "command": [
+        "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-keyboard"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "anon_inode:[eventpoll]",
+        "1": "/dev/null",
+        "2": "/dev/null",
+        "3": "/memfd:wayland-cursor (deleted)",
+        "17": "socket:[8919]"
+      },
+      "resource_flags": [
+        "anonymous-inode",
+        "deleted-file",
+        "socket"
+      ],
+      "inspection_errors": []
+    },
+    {
+      "pid": 889,
+      "parent_pid": 884,
+      "namespace_pids": [
+        889,
+        9
+      ],
+      "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-desktop-shell",
+      "command": [
+        "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-desktop-shell"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "anon_inode:[eventpoll]",
+        "1": "/dev/null",
+        "2": "/dev/null",
+        "3": "/memfd:wayland-cursor (deleted)",
+        "5": "anon_inode:[timerfd]",
+        "19": "socket:[8921]"
+      },
+      "resource_flags": [
+        "anonymous-inode",
+        "deleted-file",
+        "socket"
+      ],
+      "inspection_errors": []
+    },
+    {
+      "pid": 890,
+      "parent_pid": 880,
+      "namespace_pids": [
+        890,
+        10
+      ],
+      "executable": "/nix/store/2f84m41jslmshncca5h36wgi40i363bp-checkpoint-state-client-0.1.0/bin/checkpoint-state-client",
+      "command": [
+        "checkpoint-state-client",
+        "/var/lib/wayland-session-supervisor/sessions/checkpoint/client.json",
+        "supervisor-checkpoint-token"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "/dev/null",
+        "1": "/dev/null",
+        "2": "/dev/null",
+        "3": "socket:[8923]"
+      },
+      "resource_flags": [
+        "socket"
+      ],
+      "inspection_errors": []
+    },
+    {
+      "pid": 893,
+      "parent_pid": 879,
+      "namespace_pids": [
+        893,
+        13
+      ],
+      "executable": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3.14",
+      "command": [
+        "python3",
+        "-",
+        "/var/lib/wayland-session-supervisor/sessions/checkpoint/orphan.pid"
+      ],
+      "thread_count": 1,
+      "namespaces": {
+        "cgroup": "cgroup:[4026531835]",
+        "ipc": "ipc:[4026531839]",
+        "mnt": "mnt:[4026531832]",
+        "net": "net:[4026531833]",
+        "pid": "pid:[4026532368]",
+        "pid_for_children": "pid:[4026532368]",
+        "time": "time:[4026531834]",
+        "time_for_children": "time:[4026531834]",
+        "user": "user:[4026531837]",
+        "uts": "uts:[4026531838]"
+      },
+      "descriptors": {
+        "0": "pipe:[8922]",
+        "1": "/dev/null",
+        "2": "/dev/null"
+      },
+      "resource_flags": [],
+      "inspection_errors": []
+    }
+  ],
+  "recommendations": [
+    "A managed process maps or opens deleted files; inspect CRIU ghost-file limits and retained runtime snapshots."
+  ]
+}

@@ -11,10 +11,12 @@ path, SHA-256 executable digest, and resource-manifest digest.
 
 1. validates the live session identity;
 2. creates a private `.staging-<id>` checkpoint directory;
-3. writes a `capturing` manifest;
+3. writes a `capturing` manifest, exact domain inventory, and complete
+   per-process `diagnostics.json`;
 4. verifies that every cgroup process descends from the PID-namespace init and
    invokes CRIU for that recorded checkpoint root;
-5. preserves a failed capture as `failed-<id>` with its log and failure status;
+5. preserves a failed capture as `failed-<id>` with its log, categorized
+   `failure-analysis.json`, diagnostics, and failure status;
 6. while processes remain stopped, recursively snapshots reproducible runtime
    files, directories, and FIFO metadata (`runtime-fifos.json`), then hashes
    every CRIU image and snapshot file;

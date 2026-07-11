@@ -33,6 +33,43 @@ pub struct DomainInventory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessDiagnostic {
+    pub pid: u32,
+    pub parent_pid: Option<u32>,
+    pub namespace_pids: Vec<u32>,
+    pub executable: Option<PathBuf>,
+    pub command: Vec<String>,
+    pub thread_count: usize,
+    pub namespaces: BTreeMap<String, String>,
+    pub descriptors: BTreeMap<u32, String>,
+    pub resource_flags: BTreeSet<String>,
+    pub inspection_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticReport {
+    pub schema: u32,
+    pub generated_unix_nanos: u128,
+    pub boot_id: String,
+    pub kernel_release: String,
+    pub criu_version: String,
+    pub session: String,
+    pub checkpoint_root_pid: u32,
+    pub domain: DomainInventory,
+    pub processes: Vec<ProcessDiagnostic>,
+    pub recommendations: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureAnalysis {
+    pub schema: u32,
+    pub criu_exit_status: String,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub recommendations: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointManifest {
     pub schema: u32,
     pub checkpoint_id: String,
@@ -111,6 +148,31 @@ pub fn write_session_manifest(config: &SessionConfig, session_state_dir: &Path) 
     write_json_atomic(&session_state_dir.join("session.json"), &manifest)
 }
 
+pub fn diagnose(options: &CheckpointOptions) -> io::Result<PathBuf> {
+    let session_dir = options.session_state_dir();
+    let expected: SessionManifest = read_json(&session_dir.join("session.json"))?;
+    validate_expected_session(&expected, options, &session_dir)?;
+    let root_pid = read_trimmed(session_dir.join("session.pid"))?
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let inventory = inventory_domain_stable(&session_dir, root_pid)?;
+    let report = collect_diagnostics(options, root_pid, inventory)?;
+    let reports = session_dir.join("diagnostics");
+    fs::create_dir_all(&reports)?;
+    let name = format!(
+        "{}-{}.json",
+        report.generated_unix_nanos,
+        std::process::id()
+    );
+    let path = reports.join(&name);
+    write_json_atomic(&path, &report)?;
+    write_json_atomic(
+        &session_dir.join("latest-diagnostics.json"),
+        &serde_json::json!({ "schema": 1, "report": format!("diagnostics/{name}") }),
+    )?;
+    Ok(path)
+}
+
 pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
     let session_dir = options.session_state_dir();
     let expected: SessionManifest = read_json(&session_dir.join("session.json"))?;
@@ -159,6 +221,8 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
             error: Some(error.to_string()),
         });
     write_json_atomic(&staging.join("domain-inventory.json"), &inventory)?;
+    let diagnostics = collect_diagnostics(options, root_pid, inventory.clone())?;
+    write_json_atomic(&staging.join("diagnostics.json"), &diagnostics)?;
     if !inventory.equal {
         manifest.status = String::from("failed");
         manifest.failure = Some(format!(
@@ -205,6 +269,8 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         ])
         .status()?;
     if !status.success() {
+        let analysis = analyze_criu_failure(&staging.join("dump.log"), &status);
+        write_json_atomic(&staging.join("failure-analysis.json"), &analysis)?;
         manifest.status = String::from("failed");
         manifest.failure = Some(format!("criu dump exited with {status}"));
         write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
@@ -348,6 +414,218 @@ fn inventory_domain(session_dir: &Path, root_pid: u32) -> io::Result<DomainInven
         tree_pids,
         error: None,
     })
+}
+
+fn collect_diagnostics(
+    options: &CheckpointOptions,
+    root_pid: u32,
+    domain: DomainInventory,
+) -> io::Result<DiagnosticReport> {
+    let root_namespaces = process_namespaces(root_pid).unwrap_or_default();
+    let mut recommendations = BTreeSet::new();
+    if !domain.equal {
+        recommendations.insert(String::from(
+            "Resolve managed cgroup/tree inequality before invoking CRIU.",
+        ));
+    }
+    let mut processes = Vec::new();
+    for pid in &domain.cgroup_pids {
+        let diagnostic = inspect_process(*pid, &root_namespaces);
+        if diagnostic.resource_flags.contains("character-device") {
+            recommendations.insert(String::from(
+                "A managed process has a character-device descriptor; verify that the device is checkpointable or provide a supervisor-owned adapter.",
+            ));
+        }
+        if diagnostic.resource_flags.contains("deleted-file") {
+            recommendations.insert(String::from(
+                "A managed process maps or opens deleted files; inspect CRIU ghost-file limits and retained runtime snapshots.",
+            ));
+        }
+        if diagnostic.resource_flags.contains("nested-namespace") {
+            recommendations.insert(String::from(
+                "A managed process uses nested namespaces; verify support in the pinned CRIU version or explicitly disable the application's incompatible sandbox for this backend.",
+            ));
+        }
+        processes.push(diagnostic);
+    }
+    Ok(DiagnosticReport {
+        schema: 1,
+        generated_unix_nanos: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos(),
+        boot_id: read_trimmed("/proc/sys/kernel/random/boot_id")?,
+        kernel_release: command_output("uname", ["-r"])?,
+        criu_version: command_output(&options.criu, ["--version"])?,
+        session: options.session_name.clone(),
+        checkpoint_root_pid: root_pid,
+        domain,
+        processes,
+        recommendations,
+    })
+}
+
+fn inspect_process(pid: u32, root_namespaces: &BTreeMap<String, String>) -> ProcessDiagnostic {
+    let mut errors = Vec::new();
+    let status = fs::read_to_string(format!("/proc/{pid}/status"));
+    let (parent_pid, namespace_pids, thread_count) = match status {
+        Ok(status) => {
+            let field = |name: &str| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix(name)
+                        .and_then(|value| value.split_whitespace().next())
+                })
+            };
+            let parent = field("PPid:").and_then(|value| value.parse().ok());
+            let namespace_pids = status
+                .lines()
+                .find_map(|line| line.strip_prefix("NSpid:"))
+                .map(|value| {
+                    value
+                        .split_whitespace()
+                        .filter_map(|pid| pid.parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let threads = field("Threads:")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default();
+            (parent, namespace_pids, threads)
+        }
+        Err(error) => {
+            errors.push(format!("status: {error}"));
+            (None, Vec::new(), 0)
+        }
+    };
+    let executable = fs::read_link(format!("/proc/{pid}/exe"))
+        .map_err(|error| errors.push(format!("exe: {error}")))
+        .ok();
+    let command = fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|bytes| {
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect()
+        })
+        .unwrap_or_else(|error| {
+            errors.push(format!("cmdline: {error}"));
+            Vec::new()
+        });
+    let namespaces = process_namespaces(pid).unwrap_or_else(|error| {
+        errors.push(format!("namespaces: {error}"));
+        BTreeMap::new()
+    });
+    let mut descriptors = BTreeMap::new();
+    let mut resource_flags = BTreeSet::new();
+    match fs::read_dir(format!("/proc/{pid}/fd")) {
+        Ok(entries) => {
+            for entry in entries.filter_map(Result::ok) {
+                let Some(fd) = entry.file_name().to_str().and_then(|fd| fd.parse().ok()) else {
+                    continue;
+                };
+                match fs::read_link(entry.path()) {
+                    Ok(target) => {
+                        let target = target.to_string_lossy().into_owned();
+                        if target.starts_with("/dev/")
+                            && !matches!(
+                                target.as_str(),
+                                "/dev/null" | "/dev/zero" | "/dev/random" | "/dev/urandom"
+                            )
+                        {
+                            resource_flags.insert(String::from("character-device"));
+                        }
+                        if target.contains(" (deleted)") {
+                            resource_flags.insert(String::from("deleted-file"));
+                        }
+                        if target.starts_with("socket:[") {
+                            resource_flags.insert(String::from("socket"));
+                        }
+                        if target.starts_with("anon_inode:") {
+                            resource_flags.insert(String::from("anonymous-inode"));
+                        }
+                        descriptors.insert(fd, target);
+                    }
+                    Err(error) => errors.push(format!("fd {fd}: {error}")),
+                }
+            }
+        }
+        Err(error) => errors.push(format!("fd directory: {error}")),
+    }
+    if namespaces
+        .iter()
+        .any(|(name, value)| root_namespaces.get(name).is_some_and(|root| root != value))
+    {
+        resource_flags.insert(String::from("nested-namespace"));
+    }
+    ProcessDiagnostic {
+        pid,
+        parent_pid,
+        namespace_pids,
+        executable,
+        command,
+        thread_count,
+        namespaces,
+        descriptors,
+        resource_flags,
+        inspection_errors: errors,
+    }
+}
+
+fn process_namespaces(pid: u32) -> io::Result<BTreeMap<String, String>> {
+    let mut result = BTreeMap::new();
+    for entry in fs::read_dir(format!("/proc/{pid}/ns"))? {
+        let entry = entry?;
+        result.insert(
+            entry.file_name().to_string_lossy().into_owned(),
+            fs::read_link(entry.path())?.to_string_lossy().into_owned(),
+        );
+    }
+    Ok(result)
+}
+
+fn analyze_criu_failure(log_path: &Path, status: &ExitStatus) -> FailureAnalysis {
+    let contents = fs::read_to_string(log_path).unwrap_or_default();
+    let errors = contents
+        .lines()
+        .filter(|line| line.contains("Error") || line.contains("ERROR"))
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let warnings = contents
+        .lines()
+        .filter(|line| line.contains("Warn") || line.contains("WARN"))
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let mut recommendations = BTreeSet::new();
+    for line in &errors {
+        if line.contains("nested") && line.contains("namespace") {
+            recommendations.insert(String::from(
+                "Nested namespace detected: identify the owning process in diagnostics.json and verify CRIU support or backend-specific sandbox compatibility.",
+            ));
+        }
+        if line.contains("External socket") || line.contains("external socket") {
+            recommendations.insert(String::from(
+                "External Unix socket detected: locate the descriptor owner in diagnostics.json; do not use --ext-unix-sk when the missing peer should be inside the exact-restoration domain.",
+            ));
+        }
+        if line.contains("Connected TCP socket") {
+            recommendations.insert(String::from(
+                "Connected TCP socket detected: ensure both peers belong to the managed domain before enabling established-TCP restoration.",
+            ));
+        }
+        if line.contains("Can't dump file") || line.contains("device") {
+            recommendations.insert(String::from(
+                "Unsupported file or device descriptor detected: inspect per-process descriptors and add an explicit adapter or refusal rule.",
+            ));
+        }
+    }
+    FailureAnalysis {
+        schema: 1,
+        criu_exit_status: status.to_string(),
+        errors,
+        warnings,
+        recommendations,
+    }
 }
 
 fn read_pid_set(path: &Path) -> io::Result<BTreeSet<u32>> {
