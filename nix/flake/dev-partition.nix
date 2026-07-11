@@ -14,6 +14,13 @@
     }:
     {
       treefmt = {
+        # `self` is string-like inside this partition, so use the equally
+        # explicit builtins.path filter rather than passing it to lib.fileset.
+        projectRoot = builtins.path {
+          path = self;
+          name = "wayland-session-supervisor-treefmt-source";
+          filter = path: type: type == "directory" || builtins.match ".*\\.(nix|rs|ya?ml)$" path != null;
+        };
         projectRootFile = "flake.nix";
         programs = {
           nixfmt.enable = true;
