@@ -7,8 +7,12 @@
 let
   cfg = config.services.wayland-session-supervisor;
   packageDefault = (import ../packages { inherit pkgs; }).default;
-  standalone = cfg.user == null;
-  authenticated = !standalone;
+  supportedAuthenticatedDesktop = config.services.greetd.enable && config.programs.niri.enable;
+  normalUsers = lib.attrNames (lib.filterAttrs (_: account: account.isNormalUser) config.users.users);
+  inferredUser = if builtins.length normalUsers == 1 then builtins.head normalUsers else null;
+  user = if cfg.user != null then cfg.user else inferredUser;
+  authenticated = supportedAuthenticatedDesktop;
+  standalone = !authenticated;
   niriCommand = [
     (lib.getExe config.programs.niri.package)
     "--config"
@@ -51,7 +55,7 @@ let
       test -s "$session/session.pid" || exit 0
       kill -0 "$(cat "$session/session.pid")" 2>/dev/null || exit 0
       ${lib.getExe cfg.package} capture ${lib.optionalString leaveRunning "--leave-running "}${lib.escapeShellArgs command}
-      ${lib.optionalString authenticated "${lib.getExe' pkgs.coreutils "chown"} -R ${lib.escapeShellArg cfg.user}:users ${lib.escapeShellArg (toString cfg.stateDirectory)}"}
+      ${lib.optionalString authenticated "${lib.getExe' pkgs.coreutils "chown"} -R ${lib.escapeShellArg user}:users ${lib.escapeShellArg (toString cfg.stateDirectory)}"}
     '';
   restoreBroker = pkgs.writeShellScript "wayland-session-supervisor-restore-broker" ''
     set -eu
@@ -159,7 +163,7 @@ in
     user = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Authenticated login user that owns the compositor, or null for standalone system-service mode.";
+      description = "Authenticated login user that owns the compositor; inferred when exactly one normal user exists.";
     };
     greeterPackage = lib.mkOption {
       type = lib.types.package;
@@ -237,11 +241,11 @@ in
     (lib.mkIf (cfg.enable && authenticated) {
       assertions = [
         {
-          assertion = builtins.hasAttr cfg.user config.users.users;
-          message = "wayland-session-supervisor.user must name a configured user";
+          assertion = user != null && builtins.hasAttr user config.users.users;
+          message = "wayland-session-supervisor requires user to be set when multiple normal users exist";
         }
         {
-          assertion = config.users.users.${cfg.user}.uid != null;
+          assertion = config.users.users.${user}.uid != null;
           message = "wayland-session-supervisor.user must have an explicit numeric uid";
         }
         {
@@ -293,7 +297,7 @@ in
             wantedBy = [ "multi-user.target" ];
             after = [
               "greetd.service"
-              "user@${toString config.users.users.${cfg.user}.uid}.service"
+              "user@${toString config.users.users.${user}.uid}.service"
             ];
             before = [ "shutdown.target" ];
             conflicts = [ "shutdown.target" ];
@@ -308,8 +312,8 @@ in
           };
         };
         tmpfiles.rules = [
-          "d ${toString cfg.stateDirectory} 0700 ${cfg.user} users -"
-          "d ${toString cfg.runtimeDirectory} 0700 ${cfg.user} users -"
+          "d ${toString cfg.stateDirectory} 0700 ${user} users -"
+          "d ${toString cfg.runtimeDirectory} 0700 ${user} users -"
         ];
         paths.wayland-session-supervisor-restore = {
           wantedBy = [ "multi-user.target" ];

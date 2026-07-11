@@ -31,7 +31,6 @@ pkgs.testers.runNixOSTest {
       enable = true;
       package = self.packages.${system}.default;
       criuPackage = self.packages.${system}.our-criu;
-      user = "test";
       sessionName = "authenticated";
       compositorCommand = [ "${fixture}" ];
     };
