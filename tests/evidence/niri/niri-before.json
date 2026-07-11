@@ -1,26 +1,26 @@
 {
   "firefox": {
     "handles": [
-      "6394da16-0e60-402d-a013-2fee40f8de25",
-      "b782ce97-0e91-4ebc-a6d5-cb51f5aa5b7c",
-      "89f4aac0-e316-4b94-b8f1-a24844f28c7c"
+      "ef63eda1-b258-44a8-9593-f756cc3c745d",
+      "c86a75de-6bb6-4ac7-99f2-a910d5ad033b",
+      "fab55c69-7b5b-4d9a-b8b0-7b3da06b385f"
     ],
-    "selected": "89f4aac0-e316-4b94-b8f1-a24844f28c7c",
+    "selected": "fab55c69-7b5b-4d9a-b8b0-7b3da06b385f",
     "tabs": [
       {
-        "handle": "6394da16-0e60-402d-a013-2fee40f8de25",
+        "handle": "ef63eda1-b258-44a8-9593-f756cc3c745d",
         "memory": "alpha-memory-token",
         "title": "niri-alpha",
         "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/alpha.html"
       },
       {
-        "handle": "b782ce97-0e91-4ebc-a6d5-cb51f5aa5b7c",
+        "handle": "c86a75de-6bb6-4ac7-99f2-a910d5ad033b",
         "memory": "beta-memory-token",
         "title": "niri-beta",
         "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/beta.html"
       },
       {
-        "handle": "89f4aac0-e316-4b94-b8f1-a24844f28c7c",
+        "handle": "fab55c69-7b5b-4d9a-b8b0-7b3da06b385f",
         "memory": "gamma-memory-token",
         "title": "niri-gamma",
         "url": "file:///nix/store/vbjwqf167a5i7f16iiapyi1vj72l1ysc-niri-firefox-pages/gamma.html"
@@ -141,18 +141,18 @@
     "environment": [
       "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/niri/no-session-bus",
       "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/niri/no-system-bus",
-      "INVOCATION_ID=50001cff7d6443d78b19bc8baf65ce42",
+      "INVOCATION_ID=816b52ced41b4585a6413a94c01e008f",
       "IO_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-niri.service/io.pressure",
       "IO_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
       "LANG=en_US.UTF-8",
       "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-niri.service/memory.pressure",
       "MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
-      "NIRI_SOCKET=/run/wayland-session-supervisor/niri/niri.wayland-1.25.sock",
+      "NIRI_SOCKET=/run/wayland-session-supervisor/niri/niri.wayland-1.32.sock",
       "NO_AT_BRIDGE=1",
       "PATH=/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11/bin:/nix/store/f4bixss3h2i80asiz45aj4qmplvmam4k-findutils-4.10.0/bin:/nix/store/qa8s38m1z9q8nf0kfn5nqjw81bq702n3-firefox-152.0.5/bin:/nix/store/fqxrk2j7a3pcqclkk269ggaq2di780i5-geckodriver-0.37.0/bin:/nix/store/1bp02949k0xdihbgphpwbzba1741pknk-jq-1.8.2-bin/bin:/nix/store/d5fbir5hiav2n6jg78c2jv0wimcx53h1-kitty-0.47.4/bin:/nix/store/xhrfr96c0avcivsr5dh9nyv23k1wyij7-niri-26.04/bin:/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin:/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin:/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/bin:/nix/store/gmsffw72sk5bv7fy9n4fiw9fsyfbwszm-zsh-5.9.1/bin:/nix/store/5m1wvvyzz84zaz4qq2k6ny9zbnnyiylw-niri-firefox-driver/bin:/nix/store/hharigj3x5fda73lw1vbn7fnv568iixn-e2fsprogs-1.47.4-bin/bin:/nix/store/x3rr4i8i7bjj4mdpilvlh5vz5ja4914k-dosfstools-4.2/bin:/nix/store/gg03sn8qmgwckbms1xgg6krcq00v8wc2-util-linux-minimal-2.42.2-bin/bin:/nix/store/3v7kqg55hx4awhy5hdckniypbgqbqfmx-systemd-261/bin/",
       "PWD=/",
       "SHLVL=0",
-      "SYSTEMD_EXEC_PID=852",
+      "SYSTEMD_EXEC_PID=885",
       "TMPDIR=/run/wayland-session-supervisor/niri/tmp",
       "USER=root",
       "WAYLAND_DISPLAY=wayland-1",
@@ -165,7 +165,7 @@
       "XDG_RUNTIME_DIR=/run/wayland-session-supervisor/niri",
       "_=/nix/store/ylyz1d8qn1379176302gqiczdnkqr6z0-tmux-3.7b/bin/tmux"
     ],
-    "pane_pid": 78,
+    "pane_pid": 80,
     "sessions": [
       "0|1"
     ],
@@ -178,9 +178,9 @@
     "exported": "preserved-zsh-environment",
     "history": "f2a126a3ddd42528c1ba93f8c9725f225eb8b96d102b22495ba2ce9d096fff67",
     "job_alive": true,
-    "job_pid": 89,
+    "job_pid": 91,
     "last_status": 1,
     "local": "preserved-zsh-local",
-    "pid": 78
+    "pid": 80
   }
 }

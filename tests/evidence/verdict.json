@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "boot_before": "46712540-4a19-42ee-aad6-11f165b8061a",
-  "boot_after": "36947b3e-3b13-4ada-8832-2e4fd08c5912",
+  "boot_before": "76734111-a6af-4198-83ec-df62bff426d3",
+  "boot_after": "68b26ce2-4f22-416c-b303-cbefa9aed547",
   "rebooted": true,
   "input_via_compositor": true,
   "input_payload": "restored-through-sway",

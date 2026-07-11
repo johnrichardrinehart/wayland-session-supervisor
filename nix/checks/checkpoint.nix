@@ -172,17 +172,21 @@ pkgs.testers.runNixOSTest {
     machine.fail(
       f"${supervisor}/bin/wayland-session-supervisor restore {common} /run/current-system/sw/bin/false"
     )
-    failure = json.loads(machine.succeed(f"cat {checkpoint_path}/restore-failure.json"))
-    assert failure["kind"] == "incompatible"
-    assert "compatibility mismatch" in failure["reason"]
     latest = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
     assert latest["report"].endswith("/diagnostics.json")
-    assert latest["failure_analysis"].endswith("/restore-failure.json")
+    first_failure = f"{state}/sessions/checkpoint/{latest['failure_analysis']}"
+    failure = json.loads(machine.succeed(f"cat {first_failure}"))
+    assert failure["kind"] == "incompatible"
+    assert "compatibility mismatch" in failure["reason"]
     machine.fail(f"${supervisor}/bin/wayland-session-supervisor restore --criu ${restoreFailingCriu} {common} {command}")
-    machine.succeed(f"jq -e '.kind == \"criu-restore\"' {checkpoint_path}/restore-failure.json")
-    machine.succeed(f"jq -e '.schema == 1 and .criu_exit_status != \"\"' {checkpoint_path}/restore-failure-analysis.json")
     latest = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
-    assert latest["failure_analysis"].endswith("/restore-failure-analysis.json")
+    second_analysis = f"{state}/sessions/checkpoint/{latest['failure_analysis']}"
+    assert second_analysis.endswith("/failure-analysis.json")
+    machine.succeed(f"jq -e '.schema == 1 and .criu_exit_status != \"\"' {second_analysis}")
+    second_failure = second_analysis.removesuffix("failure-analysis.json") + "failure.json"
+    machine.succeed(f"jq -e '.kind == \"criu-restore\"' {second_failure}")
+    assert first_failure != second_failure
+    machine.succeed(f"test -f {first_failure} && test -f {second_failure}")
     assert machine.succeed(
       f"sha256sum {checkpoint_path}/checkpoint.json | cut -d' ' -f1"
     ).strip() == checkpoint_hash
@@ -213,7 +217,10 @@ pkgs.testers.runNixOSTest {
     assert after["counter"] == before["counter"] + 1
     assert after["roundtrip_result"] >= 0
     machine.succeed("mkdir -p /tmp/checkpoint-evidence")
-    machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,diagnostics.json,domain-inventory.json,restore-failure.json,restore-failure-analysis.json}} /tmp/checkpoint-evidence/")
+    machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,diagnostics.json,domain-inventory.json}} /tmp/checkpoint-evidence/")
+    machine.succeed(f"cp {first_failure} /tmp/checkpoint-evidence/restore-compatibility-failure.json")
+    machine.succeed(f"cp {second_failure} /tmp/checkpoint-evidence/restore-failure.json")
+    machine.succeed(f"cp {second_analysis} /tmp/checkpoint-evidence/restore-failure-analysis.json")
     machine.succeed(f"find {state}/sessions/checkpoint/checkpoints/failed-* -name failure-analysis.json -exec cp {{}} /tmp/checkpoint-evidence/failure-analysis.json \\; -quit")
     machine.succeed(f"cp {state}/sessions/checkpoint/outer-supervisor.json /tmp/checkpoint-evidence/")
     machine.succeed(f"jq -n --argjson namespace_pid {orphan_namespace_pid} --argjson host_pid $(cat /tmp/orphan-host.pid) '{{schema:1,kind:\"double-forked-orphan\",namespace_pid:$namespace_pid,host_pid:$host_pid,present_in_equal_inventory:true}}' > /tmp/checkpoint-evidence/orphan.json")

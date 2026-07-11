@@ -1,14 +1,14 @@
 {
   "aplay": {
-    "adapter_spool_bytes": 5798400,
-    "adapter_spool_sha256": "07f2f7c66cf98b3ff76de2f47931a28040a9e75d86875676b0567e519f30f4ee",
+    "adapter_spool_bytes": 6105600,
+    "adapter_spool_sha256": "20c6dc65517a7745232a5faefd02e058ad44f654e6494c7dc67c7c02ac191bf3",
     "adapter_spool_valid": true,
     "chunk_samples": 4800,
-    "consumed_samples": 2899200,
-    "expected_waveform_sha256": "07f2f7c66cf98b3ff76de2f47931a28040a9e75d86875676b0567e519f30f4ee",
-    "pid": 160,
+    "consumed_samples": 3052800,
+    "expected_waveform_sha256": "20c6dc65517a7745232a5faefd02e058ad44f654e6494c7dc67c7c02ac191bf3",
+    "pid": 133,
     "stream_id": "wss-aplay-stream",
-    "waveform_sha256": "07f2f7c66cf98b3ff76de2f47931a28040a9e75d86875676b0567e519f30f4ee",
+    "waveform_sha256": "20c6dc65517a7745232a5faefd02e058ad44f654e6494c7dc67c7c02ac191bf3",
     "waveform_valid": true
   },
   "browser": {
@@ -37,9 +37,9 @@
     "processes": [
       {
         "cmdline_sha256": "7fda1167426529a953f93ab14c276e8068a66e6924f2cdee74c173d89c2b375e",
-        "host_pid": 901,
-        "namespace_pid": 26,
-        "starttime": 1417
+        "host_pid": 912,
+        "namespace_pid": 20,
+        "starttime": 1705
       }
     ],
     "tabs": [
@@ -50,7 +50,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/alpha.html",
         "value": "memory-alpha",
         "visibility": "visible",
-        "window_id": 2084475767
+        "window_id": 1304698373
       },
       {
         "memory": "memory-beta",
@@ -59,7 +59,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/beta.html",
         "value": "memory-beta",
         "visibility": "hidden",
-        "window_id": 2084475767
+        "window_id": 1304698373
       },
       {
         "memory": "memory-gamma",
@@ -68,7 +68,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/gamma.html",
         "value": "memory-gamma",
         "visibility": "visible",
-        "window_id": 2084475770
+        "window_id": 1304698376
       }
     ],
     "windows": [
@@ -80,7 +80,7 @@
           "wss-alpha",
           "wss-beta"
         ],
-        "window_id": 2084475767
+        "window_id": 1304698373
       },
       {
         "selected_tabs": [
@@ -89,14 +89,14 @@
         "tabs": [
           "wss-gamma"
         ],
-        "window_id": 2084475770
+        "window_id": 1304698376
       }
     ]
   },
   "input": {
     "counter": 2,
     "last_event": "key:after-restore",
-    "pid": 157
+    "pid": 129
   },
   "mpv": {
     "frame": 120,
@@ -112,10 +112,10 @@
     "function": "71b1bc8f56ad15d752780a52f13533af97333b0e5d64c9010ca6208569fa7c1b",
     "history": "34481cb0df4b979055e3d389b1e1fe87132e707e7d96e268793748b2957a71fb",
     "job_alive": true,
-    "job_pid": 164,
+    "job_pid": 136,
     "last_status": 1,
     "local": "local-across-reboot",
-    "pid": 151
+    "pid": 123
   },
   "terminal": {
     "contains_first": true,
@@ -246,12 +246,12 @@
     "scrollback_line_count": 120,
     "scrollback_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
     "text_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
-    "tmux_sha256": "e00b537ff5812de869b6c78f5f5af571193f6848a2b710e9a5c38f7b0339b13a",
+    "tmux_sha256": "f7eab4c080a76bb8a766a860a00b80588dc82e1e254394c3fbbea86106448bd5",
     "tmux_state": {
       "environment": [
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/apps/no-session-bus",
         "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/wayland-session-supervisor/apps/no-system-bus",
-        "INVOCATION_ID=1bde2c72351344f08fa2892c18636628",
+        "INVOCATION_ID=5d7a61f566a34ebc87e654789978b4e5",
         "IO_PRESSURE_WATCH=/sys/fs/cgroup/system.slice/wss-apps.service/io.pressure",
         "IO_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA=",
         "LANG=en_US.UTF-8",
@@ -262,7 +262,7 @@
         "PWD=/",
         "SHLVL=0",
         "SWAYSOCK=/run/wayland-session-supervisor/apps/sway-ipc.0.4.sock",
-        "SYSTEMD_EXEC_PID=875",
+        "SYSTEMD_EXEC_PID=872",
         "TMPDIR=/run/wayland-session-supervisor/apps/tmp",
         "USER=root",
         "WAYLAND_DISPLAY=wayland-1",
@@ -282,7 +282,7 @@
       "panes": [
         {
           "cwd": "/var/lib/wayland-session-supervisor/shell-cwd",
-          "namespace_pid": 151,
+          "namespace_pid": 123,
           "pane_index": 0,
           "session": "0",
           "window_index": 0

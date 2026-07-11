@@ -318,17 +318,30 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
         read_json(&checkpoint.join("checkpoint.json")).map_err(|error| {
             io::Error::new(error.kind(), format!("read checkpoint manifest: {error}"))
         })?;
+    let restore_attempt = create_restore_attempt(&checkpoint)?;
     if manifest.status != "complete" {
-        return compatibility_failure(&checkpoint, "checkpoint status is not complete");
+        return compatibility_failure(
+            &session_dir,
+            &checkpoint,
+            &restore_attempt,
+            "checkpoint status is not complete",
+        );
     }
     if let Err(error) = validate_expected_session(&manifest.session, options, &session_dir) {
-        return compatibility_failure(&checkpoint, &error.to_string());
+        return compatibility_failure(
+            &session_dir,
+            &checkpoint,
+            &restore_attempt,
+            &error.to_string(),
+        );
     }
     let current_kernel = command_output("uname", ["-r"])
         .map_err(|error| io::Error::new(error.kind(), format!("query kernel release: {error}")))?;
     if current_kernel != manifest.kernel_release {
         return compatibility_failure(
+            &session_dir,
             &checkpoint,
+            &restore_attempt,
             &format!(
                 "kernel mismatch: captured {:?}, current {:?}",
                 manifest.kernel_release, current_kernel
@@ -339,7 +352,9 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
         .map_err(|error| io::Error::new(error.kind(), format!("query CRIU version: {error}")))?;
     if current_criu != manifest.criu_version {
         return compatibility_failure(
+            &session_dir,
             &checkpoint,
+            &restore_attempt,
             &format!(
                 "CRIU mismatch: captured {:?}, current {:?}",
                 manifest.criu_version, current_criu
@@ -356,6 +371,7 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
     crate::start_restored_adapters(&session_runtime_dir, &session_dir)
         .map_err(|error| io::Error::new(error.kind(), format!("start outer adapters: {error}")))?;
     let restored_pid_file = checkpoint.join("restore.pid");
+    let restore_log = restore_attempt.join("restore.log");
     let status = Command::new(&options.criu)
         .args([
             OsStr::new("restore"),
@@ -368,16 +384,16 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             OsStr::new("--pidfile"),
             restored_pid_file.as_os_str(),
             OsStr::new("--log-file"),
-            OsStr::new("restore.log"),
+            restore_log.as_os_str(),
             OsStr::new("-v2"),
         ])
         .status()?;
     if !status.success() {
-        let analysis = analyze_criu_failure(&checkpoint.join("restore.log"), &status);
-        let analysis_path = checkpoint.join("restore-failure-analysis.json");
+        let analysis = analyze_criu_failure(&restore_attempt.join("restore.log"), &status);
+        let analysis_path = restore_attempt.join("failure-analysis.json");
         write_json_atomic(&analysis_path, &analysis)?;
         write_json_atomic(
-            &checkpoint.join("restore-failure.json"),
+            &restore_attempt.join("failure.json"),
             &serde_json::json!({
                 "schema": 1,
                 "kind": "criu-restore",
@@ -897,30 +913,45 @@ fn publish_latest_diagnostics(
     )
 }
 
-fn compatibility_failure<T>(checkpoint: &Path, reason: &str) -> io::Result<T> {
+fn create_restore_attempt(checkpoint: &Path) -> io::Result<PathBuf> {
+    let attempts = checkpoint.join("restore-attempts");
+    fs::create_dir_all(&attempts)?;
+    let id = format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos(),
+        std::process::id()
+    );
+    let attempt = attempts.join(id);
+    fs::create_dir(&attempt)?;
+    fs::set_permissions(&attempt, fs::Permissions::from_mode(0o700))?;
+    Ok(attempt)
+}
+
+fn compatibility_failure<T>(
+    session_dir: &Path,
+    checkpoint: &Path,
+    restore_attempt: &Path,
+    reason: &str,
+) -> io::Result<T> {
     #[derive(Serialize)]
     struct Failure<'a> {
         schema: u32,
         kind: &'a str,
         reason: &'a str,
     }
+    let failure = restore_attempt.join("failure.json");
     write_json_atomic(
-        &checkpoint.join("restore-failure.json"),
+        &failure,
         &Failure {
             schema: 1,
             kind: "incompatible",
             reason,
         },
     )?;
-    let session_dir = checkpoint
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| io::Error::other("checkpoint has no session directory"))?;
-    publish_latest_diagnostics(
-        session_dir,
-        checkpoint,
-        Some(&checkpoint.join("restore-failure.json")),
-    )?;
+    publish_latest_diagnostics(session_dir, checkpoint, Some(&failure))?;
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
         format!("restore refused before mutation: {reason}"),

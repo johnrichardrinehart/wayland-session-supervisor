@@ -43,10 +43,12 @@ descriptors. Recommendations remain conservative: for example, an external
 Unix socket should not be hidden with `--ext-unix-sk` when its peer was supposed
 to be part of the exact checkpoint domain.
 
-A CRIU restore failure similarly writes `restore-failure-analysis.json` beside
-the immutable checkpoint and records `kind: criu-restore` in
-`restore-failure.json`. Pre-restore compatibility refusals write the latter
-before any mutable restore action.
+Every restore invocation gets a unique private directory under
+`checkpoints/<id>/restore-attempts/<attempt-id>/`. Compatibility refusals retain
+`failure.json` there before any mutable restore action. CRIU restore failures
+retain `restore.log`, `failure.json` with `kind: criu-restore`, and
+`failure-analysis.json`. No prior restore attempt is overwritten; only the
+`latest-diagnostics.json` pointer is replaced.
 
 Failed captures never replace `current-checkpoint`, so reports can be retained
 for regression fixtures and compared as support improves. The standalone

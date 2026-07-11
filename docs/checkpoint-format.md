@@ -39,8 +39,9 @@ schemas are rejected. It compares:
 - CRIU version; and
 - every persisted checkpoint image digest.
 
-An incompatibility writes `restore-failure.json` inside the preserved
-checkpoint and exits without creating a process tree. There is no relaunch or
+An incompatibility writes a unique
+`restore-attempts/<attempt-id>/failure.json` inside the preserved checkpoint and
+exits without creating a process tree. Subsequent attempts never overwrite it. There is no relaunch or
 reconstruction fallback. Compatible restore recreates only the runtime files
 recorded as reproducible and then asks the shared `our-criu` 4.2 package to
 restore the exact process tree. File locks, large deleted mappings, immutable

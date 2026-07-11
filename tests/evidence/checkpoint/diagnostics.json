@@ -1,47 +1,47 @@
 {
   "schema": 1,
-  "generated_unix_nanos": 1783787881327062097,
-  "boot_id": "4c283188-3d75-44da-8862-cae309286932",
+  "generated_unix_nanos": 1783788372390696162,
+  "boot_id": "c314965b-736c-4acc-ae0f-64e8d05787d2",
   "kernel_release": "6.18.38",
   "criu_version": "Version: 4.2",
   "session": "checkpoint",
-  "checkpoint_root_pid": 819,
+  "checkpoint_root_pid": 809,
   "domain": {
     "schema": 1,
-    "checkpoint_root_pid": 819,
+    "checkpoint_root_pid": 809,
     "cgroup_path": "/sys/fs/cgroup/wss-checkpoint",
     "cgroup_pids": [
+      809,
+      810,
+      814,
+      818,
       819,
-      822,
-      824,
-      828,
-      829,
-      830,
-      833
+      820,
+      823
     ],
     "tree_pids": [
+      809,
+      810,
+      814,
+      818,
       819,
-      822,
-      824,
-      828,
-      829,
-      830,
-      833
+      820,
+      823
     ],
     "equal": true,
     "error": null
   },
   "processes": [
     {
-      "pid": 819,
-      "parent_pid": 814,
+      "pid": 809,
+      "parent_pid": 804,
       "namespace_pids": [
-        819,
+        809,
         1
       ],
-      "executable": "/nix/store/r1hzvz27kl6h8mv9ibsrkv9cgy3p6zjm-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
+      "executable": "/nix/store/divzzjbxm3ivx92xrxraazgzzw7q8wz9-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
       "command": [
-        "/nix/store/r1hzvz27kl6h8mv9ibsrkv9cgy3p6zjm-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
+        "/nix/store/divzzjbxm3ivx92xrxraazgzzw7q8wz9-wayland-session-supervisor-0.1.0/bin/wayland-session-supervisor",
         "namespace-init",
         "--",
         "/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session"
@@ -68,10 +68,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 822,
-      "parent_pid": 819,
+      "pid": 810,
+      "parent_pid": 809,
       "namespace_pids": [
-        822,
+        810,
         2
       ],
       "executable": "/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash",
@@ -102,10 +102,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 824,
-      "parent_pid": 822,
+      "pid": 814,
+      "parent_pid": 810,
       "namespace_pids": [
-        824,
+        814,
         4
       ],
       "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/bin/weston",
@@ -144,14 +144,14 @@
         "11": "anon_inode:[timerfd]",
         "12": "anon_inode:[timerfd]",
         "13": "/run/wayland-session-supervisor/checkpoint/wayland-checkpoint.lock",
-        "14": "socket:[8846]",
-        "15": "socket:[8846]",
-        "16": "socket:[8847]",
-        "17": "socket:[8849]",
-        "18": "socket:[8847]",
-        "19": "socket:[8853]",
-        "20": "socket:[8849]",
-        "21": "socket:[8853]"
+        "14": "socket:[8780]",
+        "15": "socket:[8780]",
+        "16": "socket:[8781]",
+        "17": "socket:[8783]",
+        "18": "socket:[8781]",
+        "19": "socket:[8787]",
+        "20": "socket:[8783]",
+        "21": "socket:[8787]"
       },
       "resource_flags": [
         "anonymous-inode",
@@ -160,10 +160,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 828,
-      "parent_pid": 824,
+      "pid": 818,
+      "parent_pid": 814,
       "namespace_pids": [
-        828,
+        818,
         8
       ],
       "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-keyboard",
@@ -188,7 +188,7 @@
         "1": "/dev/null",
         "2": "/dev/null",
         "3": "/memfd:wayland-cursor (deleted)",
-        "17": "socket:[8848]"
+        "17": "socket:[8782]"
       },
       "resource_flags": [
         "anonymous-inode",
@@ -198,10 +198,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 829,
-      "parent_pid": 824,
+      "pid": 819,
+      "parent_pid": 814,
       "namespace_pids": [
-        829,
+        819,
         9
       ],
       "executable": "/nix/store/cs518c0qn4z9mqhyx5pm23jbpvml6dha-weston-15.0.1/libexec/weston-desktop-shell",
@@ -227,7 +227,7 @@
         "2": "/dev/null",
         "3": "/memfd:wayland-cursor (deleted)",
         "5": "anon_inode:[timerfd]",
-        "19": "socket:[8850]"
+        "19": "socket:[8784]"
       },
       "resource_flags": [
         "anonymous-inode",
@@ -237,10 +237,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 830,
-      "parent_pid": 822,
+      "pid": 820,
+      "parent_pid": 810,
       "namespace_pids": [
-        830,
+        820,
         10
       ],
       "executable": "/nix/store/2f84m41jslmshncca5h36wgi40i363bp-checkpoint-state-client-0.1.0/bin/checkpoint-state-client",
@@ -266,7 +266,7 @@
         "0": "/dev/null",
         "1": "/dev/null",
         "2": "/dev/null",
-        "3": "socket:[8852]"
+        "3": "socket:[8786]"
       },
       "resource_flags": [
         "socket"
@@ -274,10 +274,10 @@
       "inspection_errors": []
     },
     {
-      "pid": 833,
-      "parent_pid": 819,
+      "pid": 823,
+      "parent_pid": 809,
       "namespace_pids": [
-        833,
+        823,
         13
       ],
       "executable": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3.14",
@@ -300,7 +300,7 @@
         "uts": "uts:[4026531838]"
       },
       "descriptors": {
-        "0": "pipe:[8851]",
+        "0": "pipe:[8785]",
         "1": "/dev/null",
         "2": "/dev/null"
       },
