@@ -16,6 +16,13 @@ let
     systemctl --user --machine=test@.host show-environment | grep -Fx "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
     test "$PULSE_SERVER" = unix:/run/user/1000/pulse/native
     test ! -L "$XDG_RUNTIME_DIR/pulse"
+    test "$(readlink /proc/$$/ns/pid)" = "$(readlink /proc/1/ns/pid)"
+    test "$(readlink /proc/$$/ns/mnt)" = "$(readlink /proc/1/ns/mnt)"
+    test "$(awk '/^NSpid:/ { print $NF }' /proc/$$/status)" = "$$"
+    ! grep -Eq ' /(nix/\.ro-store|nix/\.rw-store|tmp/xchg|tmp/shared) ' /proc/self/mountinfo
+    ! grep -Eq ' - (9p|bpf|configfs|debugfs|hugetlbfs|ramfs|tracefs) ' /proc/self/mountinfo
+    test -x ${supervisor}/bin/wayland-session-supervisor
+    cp /proc/self/mountinfo "$WSS_SESSION_STATE_DIR/mountinfo"
     printf '%s\n' "$$" > "$WSS_SESSION_STATE_DIR/fixture.pid"
     printf ready > "$WSS_SESSION_STATE_DIR/ready"
     trap 'exit 0' TERM INT
@@ -72,6 +79,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{root_pid}/status) -eq 1000")
     machine.succeed(f"grep -Eq '^ *0 +0 +4294967295 *$' /proc/{root_pid}/uid_map")
     machine.succeed(f"test $(awk '/^NSpid:/ {{print NF-1}}' /proc/{root_pid}/status) -ge 2")
+    machine.succeed(f"test $(stat -Lc %i /proc/{root_pid}/ns/mnt) != $(stat -Lc %i /proc/1/ns/mnt)")
+    machine.succeed("grep -Eq ' /nix/\\.ro-store ' /proc/1/mountinfo")
     cgroup = machine.succeed("cat /tmp/wss-state/sessions/unprivileged/cgroup.path").strip()
     machine.succeed(f"test -f {cgroup}/cgroup.procs")
     machine.succeed(f"{user_env} systemctl --user stop wss-unprivileged.service")

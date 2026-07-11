@@ -1,7 +1,7 @@
 pub mod checkpoint;
 
 use checkpoint::write_session_manifest;
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -174,19 +174,27 @@ impl SessionDomain {
                 .args(&self.config.compositor_argv);
             command
         };
-        let session_log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(self.session_state_dir.join("session.log"))?;
+        let session_log_path = CString::new(
+            self.session_state_dir
+                .join("session.log")
+                .as_os_str()
+                .as_encoded_bytes(),
+        )
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "session log path contains NUL")
+        })?;
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::from(session_log.try_clone()?))
-            .stderr(Stdio::from(session_log))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .env("XDG_RUNTIME_DIR", &self.session_runtime_dir)
             .env("TMPDIR", self.session_runtime_dir.join("tmp"))
             .env("WSS_SESSION_NAME", &self.config.session_name)
             .env("WSS_SESSION_STATE_DIR", &self.session_state_dir)
+            .env(
+                "WSS_SESSION_LOG_PATH",
+                self.session_state_dir.join("session.log"),
+            )
             .env("WSS_DISPLAY_BACKEND", "headless")
             .env(
                 "WSS_EGRESS_SPOOL",
@@ -201,12 +209,7 @@ impl SessionDomain {
         // process-group operations before exec.
         unsafe {
             command.pre_exec(move || {
-                let session_result = if kernel_cgroup {
-                    libc::setsid()
-                } else {
-                    libc::setpgid(0, 0)
-                };
-                if session_result == -1 {
+                if !kernel_cgroup && libc::setpgid(0, 0) == -1 {
                     return Err(io::Error::last_os_error());
                 }
                 if needs_privileged_launcher {
@@ -238,6 +241,24 @@ impl SessionDomain {
                     }
                     libc::close(cgroup_fd);
                 }
+                // Open output in the eventual command child rather than the
+                // outer supervisor so descriptors belong to its mount table.
+                let log_fd = libc::open(
+                    session_log_path.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC,
+                    0o600,
+                );
+                if log_fd == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                for target in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                    if libc::dup2(log_fd, target) == -1 {
+                        let error = io::Error::last_os_error();
+                        libc::close(log_fd);
+                        return Err(error);
+                    }
+                }
+                libc::close(log_fd);
                 Ok(())
             });
         }
@@ -409,7 +430,7 @@ pub fn run_privileged_namespace_launcher(
 fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> {
     let arguments = CloneArgs {
         // libc exposes CLONE_INTO_CGROUP as a truncated c_int on GNU Linux.
-        flags: libc::CLONE_NEWPID as u64 | 0x200000000_u64,
+        flags: (libc::CLONE_NEWPID | libc::CLONE_NEWNS) as u64 | 0x200000000_u64,
         exit_signal: libc::SIGCHLD as u64,
         cgroup: cgroup_fd as u64,
         ..CloneArgs::default()
@@ -427,12 +448,162 @@ fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> 
         return Err(io::Error::last_os_error());
     }
     if result == 0 {
+        // clone3 consumed the descriptor when placing this child. Do not leak
+        // a host-mount cgroup directory descriptor into the managed domain.
+        unsafe { libc::close(cgroup_fd) };
+        // The child is PID 1 in its new PID namespace and still has the
+        // launcher's effective root credentials. Give that namespace its own
+        // mount view and procfs before Command drops to the authenticated UID.
+        // CRIU's injected parasite requires /proc/self to resolve in the
+        // target PID namespace; otherwise unprivileged tasks cannot mount the
+        // matching procfs during capture.
+        let private_result = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        if private_result == -1 {
+            eprintln!(
+                "making the managed mount namespace private failed: {}",
+                io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(127) }
+        }
+        if let Err(error) = detach_unrestorable_inherited_mounts() {
+            eprintln!("sanitizing the managed mount namespace failed: {error}");
+            unsafe { libc::_exit(127) }
+        }
+        let proc_result = unsafe {
+            libc::mount(
+                c"proc".as_ptr(),
+                c"/proc".as_ptr(),
+                c"proc".as_ptr(),
+                (libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV) as libc::c_ulong,
+                std::ptr::null(),
+            )
+        };
+        if proc_result == -1 {
+            eprintln!(
+                "mounting managed procfs failed: {}",
+                io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(127) }
+        }
+        // Establish the process session only after entering the PID namespace;
+        // otherwise greetd remains an unreachable host-namespace session leader.
+        if unsafe { libc::setsid() } == -1 {
+            eprintln!(
+                "creating the managed process session failed: {}",
+                io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(127) }
+        }
+        let null_fd =
+            unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if null_fd == -1 || unsafe { libc::dup2(null_fd, libc::STDIN_FILENO) } == -1 {
+            eprintln!(
+                "opening managed stdin failed: {}",
+                io::Error::last_os_error()
+            );
+            unsafe { libc::_exit(127) }
+        }
+        unsafe { libc::close(null_fd) };
+        if let Some(path) = std::env::var_os("WSS_SESSION_LOG_PATH") {
+            let path = match CString::new(path.as_encoded_bytes()) {
+                Ok(path) => path,
+                Err(_) => {
+                    eprintln!("managed session log path contains NUL");
+                    unsafe { libc::_exit(127) }
+                }
+            };
+            let fd = unsafe {
+                libc::open(
+                    path.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            if fd == -1 {
+                eprintln!(
+                    "opening managed session log failed: {}",
+                    io::Error::last_os_error()
+                );
+                unsafe { libc::_exit(127) }
+            }
+            for target in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                if unsafe { libc::dup2(fd, target) } == -1 {
+                    unsafe { libc::_exit(127) }
+                }
+            }
+            unsafe { libc::close(fd) };
+        }
         let error = command.exec();
         eprintln!("namespace init exec failed: {error}");
         // SAFETY: terminate the failed clone child without running destructors.
         unsafe { libc::_exit(127) }
     }
     Ok(result as u32)
+}
+
+pub(crate) fn detach_unrestorable_inherited_mounts() -> io::Result<()> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    let mut targets = mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            let mountpoint = decode_mountinfo_path(mount.split_whitespace().nth(4)?)?;
+            let filesystem = filesystem.split_whitespace().next()?;
+            let path = PathBuf::from(mountpoint);
+            let inherited_transport = matches!(
+                filesystem,
+                "9p" | "bpf" | "configfs" | "debugfs" | "hugetlbfs" | "ramfs" | "tracefs"
+            );
+            let hidden_store_backing =
+                matches!(path.to_str(), Some("/nix/.ro-store" | "/nix/.rw-store"));
+            (inherited_transport || hidden_store_backing).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    targets.dedup();
+
+    for path in targets {
+        let path_c = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("mountpoint contains a NUL byte: {}", path.display()),
+            )
+        })?;
+        if unsafe { libc::umount2(path_c.as_ptr(), libc::MNT_DETACH) } == -1 {
+            return Err(io::Error::new(
+                io::Error::last_os_error().kind(),
+                format!("detach {}: {}", path.display(), io::Error::last_os_error()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn decode_mountinfo_path(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 3 < bytes.len() {
+            let digits = &bytes[index + 1..index + 4];
+            if digits.iter().all(|digit| matches!(digit, b'0'..=b'7')) {
+                decoded.push((digits[0] - b'0') * 64 + (digits[1] - b'0') * 8 + digits[2] - b'0');
+                index += 4;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(decoded).ok()
 }
 
 struct ResourceAdapters {

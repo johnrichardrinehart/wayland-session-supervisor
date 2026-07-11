@@ -49,7 +49,10 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("wayland-session-supervisor.service", timeout=60)
     machine.wait_until_succeeds(f"test -s {state}/auto-client.json")
     before = json.loads(machine.succeed(f"cat {state}/auto-client.json"))
-    machine.succeed("systemctl start wayland-session-supervisor-suspend-snapshot.service")
+    machine.succeed(
+      "systemctl start wayland-session-supervisor-suspend-snapshot.service || "
+      "{ cat /var/lib/wayland-session-supervisor/sessions/auto/checkpoints/failed-*/dump.log; exit 1; }"
+    )
     machine.succeed(f"test -s {state}/current-checkpoint && kill -0 $(cat {state}/session.pid)")
     machine.succeed("! systemctl show hibernate.target -p Wants --value | grep -q wayland-session-supervisor-suspend-snapshot")
     machine.succeed(f"for pid in $(cat /sys/fs/cgroup/system.slice/wayland-session-supervisor.service{{,/domain}}/cgroup.procs 2>/dev/null); do test \"$(awk '/^NSpid:/ {{print $NF}}' /proc/$pid/status 2>/dev/null)\" = {before['pid']} && kill -USR1 $pid && exit 0; done; exit 1")
@@ -58,11 +61,19 @@ pkgs.testers.runNixOSTest {
     boot_before = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
     machine.shutdown()
     machine.start()
-    machine.wait_for_unit("wayland-session-supervisor.service", timeout=60)
+    machine.wait_until_succeeds(
+      f"systemctl is-active wayland-session-supervisor.service || "
+      f"{{ cat {state}/checkpoints/*/restore-attempts/*/restore.log >&2 2>/dev/null; false; }}",
+      timeout=60,
+    )
     boot_after = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
     assert boot_before != boot_after
     machine.succeed(f"test -s {state}/current-checkpoint || {{ cat {state}/checkpoints/failed-*/dump.log; exit 1; }}")
-    machine.wait_until_succeeds(f"test -s {state}/outer-supervisor.json", timeout=30)
+    machine.wait_until_succeeds(
+      f"test -s {state}/outer-supervisor.json || "
+      f"{{ cat {state}/checkpoints/*/restore-attempts/*/restore.log >&2 2>/dev/null; false; }}",
+      timeout=30,
+    )
     machine.succeed(f"for pid in $(cat /sys/fs/cgroup/system.slice/wayland-session-supervisor.service{{,/domain}}/cgroup.procs 2>/dev/null); do test \"$(awk '/^NSpid:/ {{print $NF}}' /proc/$pid/status 2>/dev/null)\" = {before['pid']} && kill -USR1 $pid && exit 0; done; exit 1")
     machine.wait_until_succeeds(f"test $(jq -r .counter {state}/auto-client.json) -eq 3", timeout=30)
     after = json.loads(machine.succeed(f"cat {state}/auto-client.json"))

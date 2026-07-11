@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::thread;
@@ -250,6 +251,14 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         )));
     }
 
+    // CRIU's parasite executes with the target task's credentials. When a
+    // privileged broker owns the dump, let that target traverse and create
+    // transient files in the otherwise private staging directory.
+    if unsafe { libc::geteuid() } == 0 {
+        let target = fs::metadata(format!("/proc/{root_pid}"))?;
+        std::os::unix::fs::chown(&staging, Some(target.uid()), Some(target.gid()))?;
+    }
+
     let mut criu = Command::new(&options.criu);
     criu.args([
         OsStr::new("dump"),
@@ -259,6 +268,8 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         staging.as_os_str(),
         OsStr::new("--shell-job"),
         OsStr::new("--file-locks"),
+        OsStr::new("--external"),
+        OsStr::new("mnt[]"),
         // Both peers of managed loopback connections are in the domain.
         OsStr::new("--tcp-established"),
         // Managed applications can map deleted temporary files larger than CRIU's 1 MiB
@@ -275,6 +286,9 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         OsStr::new("dump.log"),
         OsStr::new("-v2"),
     ]);
+    if unsafe { libc::geteuid() } != 0 || std::env::var_os("WSS_CRIU_UNPRIVILEGED").is_some() {
+        criu.arg("--unprivileged");
+    }
     if options.leave_running {
         criu.arg("--leave-running");
     }
@@ -382,22 +396,48 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
         .map_err(|error| io::Error::new(error.kind(), format!("start outer adapters: {error}")))?;
     let restored_pid_file = checkpoint.join("restore.pid");
     let restore_log = restore_attempt.join("restore.log");
-    let status = Command::new(&options.criu)
-        .args([
-            OsStr::new("restore"),
-            OsStr::new("--images-dir"),
-            checkpoint.as_os_str(),
-            OsStr::new("--shell-job"),
-            OsStr::new("--file-locks"),
-            OsStr::new("--tcp-established"),
-            OsStr::new("--restore-detached"),
-            OsStr::new("--pidfile"),
-            restored_pid_file.as_os_str(),
-            OsStr::new("--log-file"),
-            restore_log.as_os_str(),
-            OsStr::new("-v2"),
-        ])
-        .status()?;
+    let mut criu = Command::new(&options.criu);
+    criu.args([
+        OsStr::new("restore"),
+        OsStr::new("--images-dir"),
+        checkpoint.as_os_str(),
+        OsStr::new("--shell-job"),
+        OsStr::new("--file-locks"),
+        OsStr::new("--external"),
+        OsStr::new("mnt[]"),
+        OsStr::new("--mntns-compat-mode"),
+        OsStr::new("--root"),
+        OsStr::new("/"),
+        OsStr::new("--tcp-established"),
+        OsStr::new("--restore-detached"),
+        OsStr::new("--pidfile"),
+        restored_pid_file.as_os_str(),
+        OsStr::new("--log-file"),
+        restore_log.as_os_str(),
+        OsStr::new("-v2"),
+    ]);
+    // Compatibility-mode mount restoration manipulates inherited mountpoints.
+    // Give CRIU a private, sanitized staging namespace so those operations
+    // cannot affect the host and do not encounter host-only transport mounts.
+    unsafe {
+        criu.pre_exec(|| {
+            if libc::unshare(libc::CLONE_NEWNS) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                (libc::MS_REC | libc::MS_PRIVATE) as libc::c_ulong,
+                std::ptr::null(),
+            ) == -1
+            {
+                return Err(io::Error::last_os_error());
+            }
+            crate::detach_unrestorable_inherited_mounts()
+        });
+    }
+    let status = criu.status()?;
     if !status.success() {
         let analysis = analyze_criu_failure(&restore_attempt.join("restore.log"), &status);
         let analysis_path = restore_attempt.join("failure-analysis.json");
