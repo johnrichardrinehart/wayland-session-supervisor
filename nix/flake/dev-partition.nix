@@ -59,6 +59,15 @@
           files = "\\.rs$";
           pass_filenames = false;
         };
+        flake-check-before-push = {
+          enable = true;
+          name = "nix flake check before push";
+          entry = "${pkgs.nix}/bin/nix flake check";
+          always_run = true;
+          pass_filenames = false;
+          require_serial = true;
+          stages = [ "pre-push" ];
+        };
       };
 
       checks = import ../checks {

@@ -15,7 +15,7 @@ nix build .#checks.x86_64-linux.application-reboot -L
 nix build .#checks.x86_64-linux.niri-application-reboot -L
 ```
 
-The flake exposes the package, NixOS module, formatter, development shell, and checks. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition.
+The flake exposes the package, NixOS module, formatter, development shell, and checks. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition. Entering the development shell installs a `pre-push` hook that runs the complete `nix flake check`; the existing formatting and Rust hooks remain `pre-commit` checks.
 
 ## CLI
 
