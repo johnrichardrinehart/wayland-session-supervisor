@@ -109,8 +109,21 @@ impl SessionDomain {
             ResourceAdapters::create(&self.session_runtime_dir, &self.session_state_dir)?;
         let input_fd = adapters.input_child.as_raw_fd();
         let audio_fd = adapters.audio_child.as_raw_fd();
-        let mut command = Command::new(&self.config.compositor_argv[0]);
-        command.args(&self.config.compositor_argv[1..]);
+        // util-linux keeps a namespace-init process as PID 1 while the
+        // configured command runs as its child. PID 1 reaps daemonized and
+        // double-forked descendants, keeping the complete domain below the
+        // single host-visible checkpoint root recorded in session.pid.
+        let mut command = Command::new("unshare");
+        command
+            .args([
+                OsStr::new("--pid"),
+                OsStr::new("--fork"),
+                OsStr::new("--kill-child=TERM"),
+                OsStr::new("--"),
+                OsStr::new("setsid"),
+                OsStr::new("--"),
+            ])
+            .args(&self.config.compositor_argv);
         command
             .env("XDG_RUNTIME_DIR", &self.session_runtime_dir)
             .env("TMPDIR", self.session_runtime_dir.join("tmp"))
@@ -147,11 +160,12 @@ impl SessionDomain {
             });
         }
         let child = command.spawn()?;
-        write_atomic_pid(&self.session_state_dir.join("session.pid"), child.id())?;
-        adapters.activate()?;
         if let Some(cgroup_dir) = &self.config.cgroup_dir {
             write_cgroup_pid(cgroup_dir, child.id())?;
         }
+        let checkpoint_root = wait_for_namespace_init(child.id())?;
+        write_atomic_pid(&self.session_state_dir.join("session.pid"), checkpoint_root)?;
+        adapters.activate()?;
         Ok(child)
     }
 
@@ -302,6 +316,26 @@ fn ensure_private_directory(path: &Path, mode: u32) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+fn wait_for_namespace_init(unshare_pid: u32) -> io::Result<u32> {
+    let children = PathBuf::from(format!("/proc/{unshare_pid}/task/{unshare_pid}/children"));
+    for _ in 0..500 {
+        let contents = fs::read_to_string(&children)?;
+        if let Some(pid) = contents.split_whitespace().next() {
+            return pid.parse().map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid namespace-init PID: {error}"),
+                )
+            });
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "unshare did not create the PID-namespace init process",
+    ))
 }
 
 fn write_atomic_pid(path: &Path, pid: u32) -> io::Result<()> {

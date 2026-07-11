@@ -43,6 +43,11 @@ in
     systemd.services.wayland-session-supervisor = {
       description = "Wayland session supervisor";
       wantedBy = [ "graphical.target" ];
+      path = [
+        pkgs.coreutils
+        pkgs.criu
+        pkgs.util-linux
+      ];
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [

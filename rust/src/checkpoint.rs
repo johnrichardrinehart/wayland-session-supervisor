@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -135,11 +135,6 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         failure: None,
     };
     write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
-    snapshot_runtime_files(
-        &options.runtime_dir.join(&options.session_name),
-        &staging.join("runtime-files"),
-    )?;
-
     let status = Command::new(&options.criu)
         .args([
             OsStr::new("dump"),
@@ -149,9 +144,19 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
             staging.as_os_str(),
             OsStr::new("--shell-job"),
             OsStr::new("--file-locks"),
+            // Chromium maps deleted temporary files larger than CRIU's 1 MiB
+            // default. Preserve those mappings as checkpoint images rather than
+            // depending on volatile runtime-directory contents.
+            OsStr::new("--ghost-limit"),
+            OsStr::new("1073741824"),
+            // Chromium watches immutable resources below /nix/store. Overlayfs
+            // file handles are not always openable directly, so provide the
+            // stable path as an inode-remap search root.
+            OsStr::new("--irmap-scan-path"),
+            OsStr::new("/nix/store"),
             OsStr::new("--log-file"),
             OsStr::new("dump.log"),
-            OsStr::new("-v4"),
+            OsStr::new("-v2"),
         ])
         .status()?;
     if !status.success() {
@@ -166,6 +171,13 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         )));
     }
 
+    // A successful dump has stopped the domain, so mutable browser databases
+    // and socket-parent directories can now be copied at the same state point
+    // represented by the process images.
+    snapshot_runtime_files(
+        &options.runtime_dir.join(&options.session_name),
+        &staging.join("runtime-files"),
+    )?;
     manifest.images = hash_checkpoint_images(&staging)?;
     manifest.status = String::from("complete");
     write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
@@ -227,7 +239,7 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             OsStr::new("--restore-detached"),
             OsStr::new("--log-file"),
             OsStr::new("restore.log"),
-            OsStr::new("-v4"),
+            OsStr::new("-v2"),
         ])
         .status()
 }
@@ -296,23 +308,72 @@ fn resolve_executable(command: &OsStr) -> io::Result<PathBuf> {
 }
 
 fn snapshot_runtime_files(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::create_dir(destination)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            fs::copy(entry.path(), destination.join(entry.file_name()))?;
+    fn copy_tree(
+        root: &Path,
+        source: &Path,
+        destination: &Path,
+        fifos: &mut Vec<String>,
+    ) -> io::Result<()> {
+        fs::create_dir(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let target = destination.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                copy_tree(root, &entry.path(), &target, fifos)?;
+            } else if file_type.is_file() {
+                fs::copy(entry.path(), target)?;
+            } else if file_type.is_fifo() {
+                fifos.push(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .map_err(io::Error::other)?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
         }
+        Ok(())
     }
+    let mut fifos = Vec::new();
+    copy_tree(source, source, destination, &mut fifos)?;
+    write_json_atomic(&destination.join("runtime-fifos.json"), &fifos)?;
     sync_directory(destination)
 }
 
 fn restore_runtime_files(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::create_dir_all(destination)?;
-    fs::set_permissions(destination, fs::Permissions::from_mode(0o700))?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            fs::copy(entry.path(), destination.join(entry.file_name()))?;
+    fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
+        fs::create_dir_all(destination)?;
+        fs::set_permissions(destination, fs::Permissions::from_mode(0o700))?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            if entry.file_name() == "runtime-fifos.json" {
+                continue;
+            }
+            let target = destination.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else if entry.file_type()?.is_file() {
+                fs::copy(entry.path(), target)?;
+            }
+        }
+        Ok(())
+    }
+    copy_tree(source, destination)?;
+    let fifo_manifest = source.join("runtime-fifos.json");
+    if fifo_manifest.exists() {
+        let fifos: Vec<String> = read_json(&fifo_manifest)?;
+        for fifo in fifos {
+            let path = destination.join(fifo);
+            let path =
+                std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "FIFO path contains NUL")
+                })?;
+            // SAFETY: path is a valid, NUL-terminated pathname.
+            if unsafe { libc::mkfifo(path.as_ptr(), 0o644) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     sync_directory(destination)
