@@ -11,6 +11,9 @@ let
     test "$(stat -c %u /run/wrappers/bin/sudo)" = 0
     sudo -n true
     busctl --user list >/dev/null
+    systemctl --user --machine=test@.host is-active wss-unprivileged.service >/dev/null
+    test "$PULSE_SERVER" = unix:/run/user/1000/pulse/native
+    test ! -L "$XDG_RUNTIME_DIR/pulse"
     printf '%s\n' "$$" > "$WSS_SESSION_STATE_DIR/fixture.pid"
     printf ready > "$WSS_SESSION_STATE_DIR/ready"
     trap 'exit 0' TERM INT
@@ -21,6 +24,7 @@ let
     cgroup_relative="$(${pkgs.gawk}/bin/awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)"
     cgroup="/sys/fs/cgroup$cgroup_relative/domain"
     ${pkgs.coreutils}/bin/install -d "$cgroup"
+    export PULSE_SERVER=unix:/run/user/1000/pulse/native
     exec ${supervisor}/bin/wayland-session-supervisor run \
       --session unprivileged \
       --state-dir /tmp/wss-state \
@@ -54,7 +58,7 @@ pkgs.testers.runNixOSTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("user@1000.service")
-    machine.succeed("install -d -o test -g users -m 0700 /tmp/wss-state /run/user/1000/wss-runtime")
+    machine.succeed("install -d -o test -g users -m 0700 /tmp/wss-state /run/user/1000/wss-runtime /run/user/1000/pulse")
     user_env = "runuser -u test -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
     machine.succeed(
       f"{user_env} systemd-run --user --unit=wss-unprivileged --service-type=exec "
