@@ -251,7 +251,10 @@ let
         visit(tree)
         text = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'capture-pane', '-p', '-S', '-')
         tmux = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'list-panes', '-a', '-F', '#{session_name}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_pid}')
-        scrollback = [line for line in text.splitlines() if line.startswith('terminal-scrollback-line-')]
+        terminal_lines = text.splitlines()
+        while terminal_lines and not terminal_lines[-1]: terminal_lines.pop()
+        terminal_text = chr(10).join(terminal_lines)
+        scrollback = [line for line in terminal_lines if line.startswith('terminal-scrollback-line-')]
         shell = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/shell.json'))
         query = json.dumps({'command': ['get_property', 'time-pos']}) + chr(10)
         mpv_time = float(json.loads(subprocess.check_output(['socat', '-', 'UNIX-CONNECT:/run/wayland-session-supervisor/apps/mpv.sock'], input=query, text=True))['data'])
@@ -266,7 +269,7 @@ let
         audio['adapter_spool_valid'] = audio['adapter_spool_sha256'] == audio['waveform_sha256']
         input_state = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/input.json'))
         evidence = {'schema': 1, 'phase': phase, 'browser': {'tabs': tabs, 'windows': windows, 'placements': sorted(placements, key=lambda x:x['title']), 'processes': sorted(chromium, key=lambda x:x['namespace_pid'])},
-          'terminal': {'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'line_count': len(text.splitlines()), 'scrollback_sha256': hashlib.sha256(chr(10).join(scrollback).encode()).hexdigest(), 'scrollback_line_count': len(scrollback), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text, 'tmux_sha256': hashlib.sha256(tmux.encode()).hexdigest(), 'tmux_state': tmux},
+          'terminal': {'contents': terminal_lines, 'text_sha256': hashlib.sha256(terminal_text.encode()).hexdigest(), 'line_count': len(terminal_lines), 'scrollback_sha256': hashlib.sha256(chr(10).join(scrollback).encode()).hexdigest(), 'scrollback_line_count': len(scrollback), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text, 'tmux_sha256': hashlib.sha256(tmux.encode()).hexdigest(), 'tmux_state': tmux},
           'shell': shell, 'mpv': {'time': mpv_time, 'frame': round(mpv_time * 30), 'media': '${media}/frames.mkv'},
           'aplay': audio, 'input': input_state}
         with open(destination + '.tmp', 'w') as output: json.dump(evidence, output, sort_keys=True, indent=2)
@@ -317,7 +320,6 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test -S /run/wayland-session-supervisor/apps/mpv.sock && test -s /var/lib/wayland-session-supervisor/sessions/apps/audio.json || { cat /var/lib/wayland-session-supervisor/sessions/apps/{application,chromium,sway}.log; exit 1; }")
     machine.wait_until_succeeds("test $(curl -s http://127.0.0.1:9222/json/list | jq '[.[]|select(.title|startswith(\"wss-\"))]|length') -eq 3")
     machine.succeed("test -s /var/lib/wayland-session-supervisor/sessions/apps/shell.json || { cat /var/lib/wayland-session-supervisor/sessions/apps/{terminal,shell-error}.log; ps auxww; ${pkgs.tmux}/bin/tmux -S /run/wayland-session-supervisor/apps/tmux.sock capture-pane -p -S - || true; exit 1; }")
-    machine.succeed("tmux -S /run/wayland-session-supervisor/apps/tmux.sock send-keys 'kill -USR1 $$' Enter; sleep 1")
     machine.succeed("printf 'key:before-capture' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/control.sock")
     machine.wait_until_succeeds(f"jq -e '.counter == 1 and .last_event == \"key:before-capture\"' {state}/sessions/apps/input.json")
     machine.wait_until_succeeds(f"test $(stat -c %s /run/wayland-session-supervisor/apps/adapter-egress.stream) -eq $(jq -r .adapter_spool_bytes {state}/sessions/apps/audio.json)")
@@ -363,6 +365,8 @@ pkgs.testers.runNixOSTest {
     before_processes = [(p['namespace_pid'], p['cmdline_sha256']) for p in before['browser']['processes']]
     after_processes = [(p['namespace_pid'], p['cmdline_sha256']) for p in after['browser']['processes']]
     assert before_processes == after_processes, (before_processes, after_processes)
+    assert before['terminal']['text_sha256'] == after['terminal']['text_sha256'], (before['terminal'], after['terminal'])
+    assert before['terminal']['line_count'] == after['terminal']['line_count'], (before['terminal'], after['terminal'])
     assert before['terminal']['scrollback_sha256'] == after['terminal']['scrollback_sha256'], (before['terminal'], after['terminal'])
     assert before['terminal']['scrollback_line_count'] == after['terminal']['scrollback_line_count'] == 120, (before['terminal'], after['terminal'])
     assert before['terminal']['tmux_state'] == after['terminal']['tmux_state']

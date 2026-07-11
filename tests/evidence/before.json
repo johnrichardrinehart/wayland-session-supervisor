@@ -1,12 +1,12 @@
 {
   "aplay": {
-    "adapter_spool_bytes": 5731200,
+    "adapter_spool_bytes": 5635200,
     "adapter_spool_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
     "adapter_spool_valid": true,
     "chunk_samples": 4800,
-    "consumed_samples": 2865600,
+    "consumed_samples": 2817600,
     "expected_waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
-    "pid": 124,
+    "pid": 122,
     "stream_id": "wss-aplay-stream",
     "waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
     "waveform_valid": true
@@ -37,9 +37,9 @@
     "processes": [
       {
         "cmdline_sha256": "7fda1167426529a953f93ab14c276e8068a66e6924f2cdee74c173d89c2b375e",
-        "host_pid": 877,
+        "host_pid": 899,
         "namespace_pid": 18,
-        "starttime": 1187
+        "starttime": 1401
       }
     ],
     "tabs": [
@@ -50,7 +50,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/alpha.html",
         "value": "memory-alpha",
         "visibility": "visible",
-        "window_id": 143262572
+        "window_id": 724432965
       },
       {
         "memory": "memory-beta",
@@ -59,7 +59,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/beta.html",
         "value": "memory-beta",
         "visibility": "hidden",
-        "window_id": 143262572
+        "window_id": 724432965
       },
       {
         "memory": "memory-gamma",
@@ -68,7 +68,7 @@
         "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/gamma.html",
         "value": "memory-gamma",
         "visibility": "visible",
-        "window_id": 143262575
+        "window_id": 724432968
       }
     ],
     "windows": [
@@ -80,7 +80,7 @@
           "wss-alpha",
           "wss-beta"
         ],
-        "window_id": 143262572
+        "window_id": 724432965
       },
       {
         "selected_tabs": [
@@ -89,14 +89,14 @@
         "tabs": [
           "wss-gamma"
         ],
-        "window_id": 143262575
+        "window_id": 724432968
       }
     ]
   },
   "input": {
     "counter": 1,
     "last_event": "key:before-capture",
-    "pid": 120
+    "pid": 119
   },
   "mpv": {
     "frame": 120,
@@ -112,19 +112,141 @@
     "function": "71b1bc8f56ad15d752780a52f13533af97333b0e5d64c9010ca6208569fa7c1b",
     "history": "34481cb0df4b979055e3d389b1e1fe87132e707e7d96e268793748b2957a71fb",
     "job_alive": true,
-    "job_pid": 127,
+    "job_pid": 126,
     "last_status": 1,
     "local": "local-across-reboot",
-    "pid": 115
+    "pid": 114
   },
   "terminal": {
     "contains_first": true,
     "contains_last": true,
-    "line_count": 122,
+    "contents": [
+      "terminal-scrollback-line-001",
+      "terminal-scrollback-line-002",
+      "terminal-scrollback-line-003",
+      "terminal-scrollback-line-004",
+      "terminal-scrollback-line-005",
+      "terminal-scrollback-line-006",
+      "terminal-scrollback-line-007",
+      "terminal-scrollback-line-008",
+      "terminal-scrollback-line-009",
+      "terminal-scrollback-line-010",
+      "terminal-scrollback-line-011",
+      "terminal-scrollback-line-012",
+      "terminal-scrollback-line-013",
+      "terminal-scrollback-line-014",
+      "terminal-scrollback-line-015",
+      "terminal-scrollback-line-016",
+      "terminal-scrollback-line-017",
+      "terminal-scrollback-line-018",
+      "terminal-scrollback-line-019",
+      "terminal-scrollback-line-020",
+      "terminal-scrollback-line-021",
+      "terminal-scrollback-line-022",
+      "terminal-scrollback-line-023",
+      "terminal-scrollback-line-024",
+      "terminal-scrollback-line-025",
+      "terminal-scrollback-line-026",
+      "terminal-scrollback-line-027",
+      "terminal-scrollback-line-028",
+      "terminal-scrollback-line-029",
+      "terminal-scrollback-line-030",
+      "terminal-scrollback-line-031",
+      "terminal-scrollback-line-032",
+      "terminal-scrollback-line-033",
+      "terminal-scrollback-line-034",
+      "terminal-scrollback-line-035",
+      "terminal-scrollback-line-036",
+      "terminal-scrollback-line-037",
+      "terminal-scrollback-line-038",
+      "terminal-scrollback-line-039",
+      "terminal-scrollback-line-040",
+      "terminal-scrollback-line-041",
+      "terminal-scrollback-line-042",
+      "terminal-scrollback-line-043",
+      "terminal-scrollback-line-044",
+      "terminal-scrollback-line-045",
+      "terminal-scrollback-line-046",
+      "terminal-scrollback-line-047",
+      "terminal-scrollback-line-048",
+      "terminal-scrollback-line-049",
+      "terminal-scrollback-line-050",
+      "terminal-scrollback-line-051",
+      "terminal-scrollback-line-052",
+      "terminal-scrollback-line-053",
+      "terminal-scrollback-line-054",
+      "terminal-scrollback-line-055",
+      "terminal-scrollback-line-056",
+      "terminal-scrollback-line-057",
+      "terminal-scrollback-line-058",
+      "terminal-scrollback-line-059",
+      "terminal-scrollback-line-060",
+      "terminal-scrollback-line-061",
+      "terminal-scrollback-line-062",
+      "terminal-scrollback-line-063",
+      "terminal-scrollback-line-064",
+      "terminal-scrollback-line-065",
+      "terminal-scrollback-line-066",
+      "terminal-scrollback-line-067",
+      "terminal-scrollback-line-068",
+      "terminal-scrollback-line-069",
+      "terminal-scrollback-line-070",
+      "terminal-scrollback-line-071",
+      "terminal-scrollback-line-072",
+      "terminal-scrollback-line-073",
+      "terminal-scrollback-line-074",
+      "terminal-scrollback-line-075",
+      "terminal-scrollback-line-076",
+      "terminal-scrollback-line-077",
+      "terminal-scrollback-line-078",
+      "terminal-scrollback-line-079",
+      "terminal-scrollback-line-080",
+      "terminal-scrollback-line-081",
+      "terminal-scrollback-line-082",
+      "terminal-scrollback-line-083",
+      "terminal-scrollback-line-084",
+      "terminal-scrollback-line-085",
+      "terminal-scrollback-line-086",
+      "terminal-scrollback-line-087",
+      "terminal-scrollback-line-088",
+      "terminal-scrollback-line-089",
+      "terminal-scrollback-line-090",
+      "terminal-scrollback-line-091",
+      "terminal-scrollback-line-092",
+      "terminal-scrollback-line-093",
+      "terminal-scrollback-line-094",
+      "terminal-scrollback-line-095",
+      "terminal-scrollback-line-096",
+      "terminal-scrollback-line-097",
+      "terminal-scrollback-line-098",
+      "terminal-scrollback-line-099",
+      "terminal-scrollback-line-100",
+      "terminal-scrollback-line-101",
+      "terminal-scrollback-line-102",
+      "terminal-scrollback-line-103",
+      "terminal-scrollback-line-104",
+      "terminal-scrollback-line-105",
+      "terminal-scrollback-line-106",
+      "terminal-scrollback-line-107",
+      "terminal-scrollback-line-108",
+      "terminal-scrollback-line-109",
+      "terminal-scrollback-line-110",
+      "terminal-scrollback-line-111",
+      "terminal-scrollback-line-112",
+      "terminal-scrollback-line-113",
+      "terminal-scrollback-line-114",
+      "terminal-scrollback-line-115",
+      "terminal-scrollback-line-116",
+      "terminal-scrollback-line-117",
+      "terminal-scrollback-line-118",
+      "terminal-scrollback-line-119",
+      "terminal-scrollback-line-120"
+    ],
+    "line_count": 120,
     "scrollback_line_count": 120,
     "scrollback_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
-    "text_sha256": "f49f00c3195b0cd518fd41dbbe31488d7b7c946756edf9d796aacde9e4243bc1",
-    "tmux_sha256": "c6f782a4fd753e9ea7dd2341887f78c60e924e26c560f06d91cef91f7dcbc8ad",
-    "tmux_state": "0|0|0||115\n"
+    "text_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
+    "tmux_sha256": "d97385b8098f44739e07350ea614ac952ef059f461b3116aac200ffbb838ee88",
+    "tmux_state": "0|0|0||114\n"
   }
 }
