@@ -59,11 +59,14 @@ in
             cfg.stateDirectory
             "--runtime-dir"
             cfg.runtimeDirectory
+            "--cgroup-dir"
+            "/sys/fs/cgroup/system.slice/wayland-session-supervisor.service/domain"
             "--"
           ]
           ++ cfg.compositorCommand
         );
         Delegate = true;
+        DelegateSubgroup = "supervisor";
         KillMode = "control-group";
         Restart = "on-failure";
         StateDirectory = "wayland-session-supervisor";

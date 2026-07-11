@@ -66,6 +66,7 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     virtualisation.memorySize = 2048;
     environment.systemPackages = [
+      pkgs.coreutils
       pkgs.criu
       pkgs.jq
       supervisor
@@ -83,18 +84,35 @@ pkgs.testers.runNixOSTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     boot_before = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+    machine.succeed("mkdir /sys/fs/cgroup/wss-checkpoint")
     machine.succeed(
       "systemd-run --unit=wss-checkpoint --service-type=exec "
       "--property=StandardOutput=null --property=StandardError=null "
       f"${supervisor}/bin/wayland-session-supervisor run "
-      f"--session checkpoint --state-dir {state} --runtime-dir {runtime} -- {command}"
+      f"--session checkpoint --state-dir {state} --runtime-dir {runtime} "
+      f"--cgroup-dir /sys/fs/cgroup/wss-checkpoint -- {command}"
     )
     client_json = f"{state}/sessions/checkpoint/client.json"
-    machine.wait_until_succeeds(f"test -s {client_json}")
+    machine.wait_until_succeeds(f"test -s {client_json} && test -s {state}/sessions/checkpoint/session.pid && test -s {state}/sessions/checkpoint/cgroup.path")
+    machine.succeed("systemctl is-active wss-checkpoint.service")
     before = json.loads(machine.succeed(f"cat {client_json}"))
     supervisor_pid = machine.succeed(
       "systemctl show wss-checkpoint.service -p MainPID --value"
     ).strip()
+
+    # An unrelated process placed in the managed cgroup is outside the
+    # namespace-init tree and must make capture fail before CRIU runs.
+    machine.succeed("systemd-run --unit=wss-outside sleep 300")
+    machine.succeed("systemctl show wss-outside.service -p MainPID --value > /tmp/outside.pid")
+    machine.succeed("cat /tmp/outside.pid > /sys/fs/cgroup/wss-checkpoint/cgroup.procs")
+    machine.fail(f"${supervisor}/bin/wayland-session-supervisor capture {common} {command}")
+    machine.succeed(
+      f"jq -e --argjson pid $(cat /tmp/outside.pid) '.equal == false and "
+      f"(.cgroup_pids | index($pid) != null) and (.tree_pids | index($pid) == null)' "
+      f"{state}/sessions/checkpoint/checkpoints/failed-*/domain-inventory.json"
+    )
+    machine.succeed("kill $(cat /tmp/outside.pid)")
+    machine.wait_until_succeeds("! grep -Fxq $(cat /tmp/outside.pid) /sys/fs/cgroup/wss-checkpoint/cgroup.procs")
 
     machine.fail(
       f"${supervisor}/bin/wayland-session-supervisor capture "
@@ -107,7 +125,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"nsenter -t $(cat {state}/sessions/checkpoint/session.pid) -p kill -0 $(cat {state}/sessions/checkpoint/client.pid)")
 
     machine.succeed(
-      f"${supervisor}/bin/wayland-session-supervisor capture {common} {command}"
+      f"${supervisor}/bin/wayland-session-supervisor capture {common} {command} || "
+      f"{{ tail -100 {state}/sessions/checkpoint/checkpoints/failed-*/dump.log; exit 1; }}"
     )
     machine.wait_until_succeeds("systemctl is-failed wss-checkpoint.service")
     checkpoint_path = machine.succeed(
@@ -140,21 +159,37 @@ pkgs.testers.runNixOSTest {
     ).strip() == checkpoint_hash
 
     machine.succeed(
-      f"${supervisor}/bin/wayland-session-supervisor restore {common} {command} || "
-      f"{{ cat {checkpoint_path}/restore.log; exit 1; }}"
+      "systemd-run --unit=wss-restored --service-type=exec "
+      "--setenv=PATH=${
+        pkgs.lib.makeBinPath [
+          pkgs.coreutils
+          pkgs.criu
+        ]
+      } "
+      f"${supervisor}/bin/wayland-session-supervisor restore {common} {command}"
     )
+    machine.wait_until_succeeds(f"jq -e '.role == \"restored-session-authority\" and .boot_id == \"{boot_after}\"' {state}/sessions/checkpoint/outer-supervisor.json")
+    machine.succeed("systemctl is-active wss-restored.service")
     assert machine.succeed(
       f"sha256sum {checkpoint_path}/checkpoint.json | cut -d' ' -f1"
     ).strip() == checkpoint_hash
     client_pid = machine.succeed(
       f"cat {state}/sessions/checkpoint/client.pid"
     ).strip()
-    machine.succeed(f"for p in /proc/[0-9]*; do n=$(awk '/^NSpid:/ {{print $NF}}' $p/status 2>/dev/null); if test \"$n\" = {client_pid}; then kill -USR1 ''${{p##*/}}; exit 0; fi; done; exit 1")
+    machine.wait_until_succeeds(f"for pid in $(cat /sys/fs/cgroup/wss-checkpoint/cgroup.procs); do n=$(awk '/^NSpid:/ {{print $NF}}' /proc/$pid/status 2>/dev/null); if test \"$n\" = {client_pid}; then kill -USR1 $pid && exit 0; fi; done; exit 1")
     machine.wait_until_succeeds(f"test $(jq -r .counter {client_json}) -eq 23064")
     after = json.loads(machine.succeed(f"cat {client_json}"))
     assert after["pid"] == before["pid"]
     assert after["token"] == before["token"]
     assert after["counter"] == before["counter"] + 1
     assert after["roundtrip_result"] >= 0
+    machine.succeed("mkdir -p /tmp/checkpoint-evidence")
+    machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,domain-inventory.json,restore-failure.json}} /tmp/checkpoint-evidence/")
+    machine.succeed(f"cp {state}/sessions/checkpoint/outer-supervisor.json /tmp/checkpoint-evidence/")
+    machine.succeed(f"find {state}/sessions/checkpoint/checkpoints/failed-* -name domain-inventory.json -exec jq -e '.equal == false' {{}} \\; -exec cp {{}} /tmp/checkpoint-evidence/refused-domain-inventory.json \\; -quit")
+    machine.succeed("cat > /tmp/checkpoint-evidence/continuity-before.json <<'EOF'\n" + json.dumps(before, sort_keys=True, indent=2) + "\nEOF")
+    machine.succeed("cat > /tmp/checkpoint-evidence/continuity-after.json <<'EOF'\n" + json.dumps(after, sort_keys=True, indent=2) + "\nEOF")
+    machine.succeed(f"jq -n --arg before '{boot_before}' --arg after '{boot_after}' '{{schema:1,boot_before:$before,boot_after:$after,rebooted:($before != $after),verdict:\"pass\"}}' > /tmp/checkpoint-evidence/verdict.json")
+    machine.copy_from_machine("/tmp/checkpoint-evidence", "")
   '';
 }

@@ -151,9 +151,9 @@ and every fixture surface relationship.
 
 After restore the existing compositor IPC endpoint must answer with the same
 instance identity and topology. The supervisor injects a uniquely coded input
-event through its input adapter; an existing Wayland test surface must observe
-it and update its in-memory counter. A new client must then connect and create a
-surface without disturbing restored placement.
+opaque event through its generic ingress adapter; an existing restored managed
+fixture must observe it and update its in-memory counter. A new client must then
+connect and create a surface without disturbing restored placement.
 
 ## Ordered VM test
 

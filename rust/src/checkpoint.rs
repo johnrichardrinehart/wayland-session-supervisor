@@ -1,14 +1,15 @@
 use crate::SessionConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SessionManifest {
@@ -18,6 +19,17 @@ pub struct SessionManifest {
     pub compositor_executable: PathBuf,
     pub compositor_sha256: String,
     pub resource_manifest_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainInventory {
+    pub schema: u32,
+    pub checkpoint_root_pid: u32,
+    pub cgroup_path: PathBuf,
+    pub cgroup_pids: BTreeSet<u32>,
+    pub tree_pids: BTreeSet<u32>,
+    pub equal: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +147,37 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         failure: None,
     };
     write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
+
+    let inventory =
+        inventory_domain_stable(&session_dir, root_pid).unwrap_or_else(|error| DomainInventory {
+            schema: 1,
+            checkpoint_root_pid: root_pid,
+            cgroup_path: PathBuf::new(),
+            cgroup_pids: BTreeSet::new(),
+            tree_pids: BTreeSet::new(),
+            equal: false,
+            error: Some(error.to_string()),
+        });
+    write_json_atomic(&staging.join("domain-inventory.json"), &inventory)?;
+    if !inventory.equal {
+        manifest.status = String::from("failed");
+        manifest.failure = Some(format!(
+            "managed cgroup/tree mismatch: cgroup={:?}, tree={:?}, error={:?}",
+            inventory.cgroup_pids, inventory.tree_pids, inventory.error
+        ));
+        write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
+        let failed = checkpoints.join(format!("failed-{checkpoint_id}"));
+        fs::rename(&staging, &failed)?;
+        return Err(io::Error::other(format!(
+            "{}; evidence preserved at {}",
+            manifest
+                .failure
+                .as_deref()
+                .unwrap_or("incomplete managed domain"),
+            failed.display()
+        )));
+    }
+
     let status = Command::new(&options.criu)
         .args([
             OsStr::new("dump"),
@@ -171,9 +214,8 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         )));
     }
 
-    // A successful dump has stopped the domain, so mutable browser databases
-    // and socket-parent directories can now be copied at the same state point
-    // represented by the process images.
+    // A successful dump has stopped the domain, so mutable runtime files can
+    // be copied at the same state point represented by the process images.
     snapshot_runtime_files(
         &options.runtime_dir.join(&options.session_name),
         &staging.join("runtime-files"),
@@ -194,16 +236,22 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
 
 pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
     let session_dir = options.session_state_dir();
-    let checkpoint_id = read_trimmed(session_dir.join("current-checkpoint"))?;
+    let checkpoint_id = read_trimmed(session_dir.join("current-checkpoint")).map_err(|error| {
+        io::Error::new(error.kind(), format!("read current checkpoint: {error}"))
+    })?;
     let checkpoint = session_dir.join("checkpoints").join(checkpoint_id);
-    let manifest: CheckpointManifest = read_json(&checkpoint.join("checkpoint.json"))?;
+    let manifest: CheckpointManifest =
+        read_json(&checkpoint.join("checkpoint.json")).map_err(|error| {
+            io::Error::new(error.kind(), format!("read checkpoint manifest: {error}"))
+        })?;
     if manifest.status != "complete" {
         return compatibility_failure(&checkpoint, "checkpoint status is not complete");
     }
     if let Err(error) = validate_expected_session(&manifest.session, options, &session_dir) {
         return compatibility_failure(&checkpoint, &error.to_string());
     }
-    let current_kernel = command_output("uname", ["-r"])?;
+    let current_kernel = command_output("uname", ["-r"])
+        .map_err(|error| io::Error::new(error.kind(), format!("query kernel release: {error}")))?;
     if current_kernel != manifest.kernel_release {
         return compatibility_failure(
             &checkpoint,
@@ -213,7 +261,8 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             ),
         );
     }
-    let current_criu = command_output(&options.criu, ["--version"])?;
+    let current_criu = command_output(&options.criu, ["--version"])
+        .map_err(|error| io::Error::new(error.kind(), format!("query CRIU version: {error}")))?;
     if current_criu != manifest.criu_version {
         return compatibility_failure(
             &checkpoint,
@@ -223,13 +272,17 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             ),
         );
     }
-    verify_checkpoint_images(&checkpoint, &manifest.images)?;
-    restore_runtime_files(
-        &checkpoint.join("runtime-files"),
-        &options.runtime_dir.join(&options.session_name),
+    verify_checkpoint_images(&checkpoint, &manifest.images).map_err(|error| {
+        io::Error::new(error.kind(), format!("verify checkpoint images: {error}"))
+    })?;
+    let session_runtime_dir = options.runtime_dir.join(&options.session_name);
+    restore_runtime_files(&checkpoint.join("runtime-files"), &session_runtime_dir).map_err(
+        |error| io::Error::new(error.kind(), format!("restore runtime snapshot: {error}")),
     )?;
-
-    Command::new(&options.criu)
+    crate::start_restored_adapters(&session_runtime_dir, &session_dir)
+        .map_err(|error| io::Error::new(error.kind(), format!("start outer adapters: {error}")))?;
+    let restored_pid_file = checkpoint.join("restore.pid");
+    let status = Command::new(&options.criu)
         .args([
             OsStr::new("restore"),
             OsStr::new("--images-dir"),
@@ -237,11 +290,88 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
             OsStr::new("--shell-job"),
             OsStr::new("--file-locks"),
             OsStr::new("--restore-detached"),
+            OsStr::new("--pidfile"),
+            restored_pid_file.as_os_str(),
             OsStr::new("--log-file"),
             OsStr::new("restore.log"),
             OsStr::new("-v2"),
         ])
-        .status()
+        .status()?;
+    if !status.success() {
+        return Ok(status);
+    }
+    let restored_root_pid = read_trimmed(&restored_pid_file)?
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    write_json_atomic(
+        &session_dir.join("outer-supervisor.json"),
+        &serde_json::json!({
+            "schema": 1,
+            "pid": std::process::id(),
+            "boot_id": read_trimmed("/proc/sys/kernel/random/boot_id")?,
+            "role": "restored-session-authority",
+            "restored_root_pid": restored_root_pid
+        }),
+    )?;
+    // Remain authoritative for adapters and lifecycle after detached restore.
+    while Path::new(&format!("/proc/{restored_root_pid}")).exists() {
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(status)
+}
+
+fn inventory_domain_stable(session_dir: &Path, root_pid: u32) -> io::Result<DomainInventory> {
+    let mut latest = inventory_domain(session_dir, root_pid)?;
+    for _ in 0..20 {
+        if latest.equal {
+            return Ok(latest);
+        }
+        thread::sleep(Duration::from_millis(25));
+        latest = inventory_domain(session_dir, root_pid)?;
+    }
+    Ok(latest)
+}
+
+fn inventory_domain(session_dir: &Path, root_pid: u32) -> io::Result<DomainInventory> {
+    let cgroup_path = PathBuf::from(read_trimmed(session_dir.join("cgroup.path"))?);
+    let cgroup_pids = read_pid_set(&cgroup_path.join("cgroup.procs"))?;
+    let tree_pids = process_tree_pids(root_pid)?;
+    Ok(DomainInventory {
+        schema: 1,
+        checkpoint_root_pid: root_pid,
+        cgroup_path,
+        equal: cgroup_pids == tree_pids,
+        cgroup_pids,
+        tree_pids,
+        error: None,
+    })
+}
+
+fn read_pid_set(path: &Path) -> io::Result<BTreeSet<u32>> {
+    fs::read_to_string(path)?
+        .split_whitespace()
+        .map(|pid| {
+            pid.parse::<u32>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        })
+        .collect()
+}
+
+fn process_tree_pids(root: u32) -> io::Result<BTreeSet<u32>> {
+    let mut result = BTreeSet::from([root]);
+    let mut pending = vec![root];
+    while let Some(pid) = pending.pop() {
+        let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?;
+        for child in children.split_whitespace() {
+            let child = child
+                .parse::<u32>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if result.insert(child) {
+                pending.push(child);
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn validate_expected_session(

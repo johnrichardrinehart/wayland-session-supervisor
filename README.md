@@ -2,7 +2,7 @@
 
 A supervisor for checkpointing and restoring a controlled Wayland session domain across reboot.
 
-The supervisor implements exact process-image restoration; relaunching applications is never represented as restoration. See [architecture](docs/architecture.md), [checkpoint format](docs/checkpoint-format.md), [state proof](docs/state-proof.md), [resource adapters](docs/resource-adapters.md), and [Nix source closures](docs/nix-source-closures.md).
+The supervisor implements exact process-image restoration; relaunching applications is never represented as restoration. See [architecture](docs/architecture.md), [checkpoint format](docs/checkpoint-format.md), [state proof](docs/state-proof.md), [resource adapters](docs/resource-adapters.md), and [Nix source closures](docs/nix-source-closures.md), and the [requirement-to-evidence map](docs/verification-map.md).
 
 ## Development
 
@@ -31,7 +31,7 @@ wayland-session-supervisor restore --session desktop -- /run/current-system/sw/b
 
 The executable intentionally resolves the following runtime tools through `PATH`:
 
-- `unshare` and `setsid` from `util-linux`: create the dedicated PID namespace and session while keeping a namespace-init process as the reaper and checkpoint root.
+- `unshare` and `setsid` from `util-linux`: support the non-kernel/synthetic-cgroup integration path. Production kernel-cgroup sessions use `clone3(CLONE_NEWPID | CLONE_INTO_CGROUP)` so PID 1 is born atomically in the managed cgroup; the dependency remains explicit for the supported fallback path.
 - `criu`: captures and restores the complete process tree. The application VM currently requires CRIU 4.2; Nixpkgs CRIU 4.1.1 fails its Sway workload during page transfer.
 - `uname` from `coreutils`: records and validates kernel compatibility.
 - The configured compositor executable when its first argv element is a name rather than an immutable path.

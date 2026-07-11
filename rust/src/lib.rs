@@ -2,12 +2,12 @@ pub mod checkpoint;
 
 use checkpoint::write_session_manifest;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixDatagram;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -103,35 +103,61 @@ impl SessionDomain {
         })
     }
 
-    pub fn spawn(&self) -> io::Result<Child> {
+    fn spawn(&self) -> io::Result<ManagedChild> {
         close_uncontrolled_descriptors()?;
         let adapters =
             ResourceAdapters::create(&self.session_runtime_dir, &self.session_state_dir)?;
-        let input_fd = adapters.input_child.as_raw_fd();
-        let audio_fd = adapters.audio_child.as_raw_fd();
-        // util-linux keeps a namespace-init process as PID 1 while the
-        // configured command runs as its child. PID 1 reaps daemonized and
-        // double-forked descendants, keeping the complete domain below the
-        // single host-visible checkpoint root recorded in session.pid.
-        let mut command = Command::new("unshare");
-        command
-            .args([
-                OsStr::new("--pid"),
-                OsStr::new("--fork"),
-                OsStr::new("--kill-child=TERM"),
-                OsStr::new("--"),
-                OsStr::new("setsid"),
-                OsStr::new("--"),
-            ])
-            .args(&self.config.compositor_argv);
+        let cgroup_processes = self
+            .config
+            .cgroup_dir
+            .as_ref()
+            .map(|path| {
+                if path.starts_with("/sys/fs/cgroup") {
+                    File::open(path)
+                } else {
+                    OpenOptions::new()
+                        .write(true)
+                        .open(path.join("cgroup.procs"))
+                }
+            })
+            .transpose()?;
+        let cgroup_fd = cgroup_processes.as_ref().map(AsRawFd::as_raw_fd);
+        let kernel_cgroup = self
+            .config
+            .cgroup_dir
+            .as_ref()
+            .is_some_and(|path| path.starts_with("/sys/fs/cgroup"));
+        let mut command = if kernel_cgroup {
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .arg("namespace-init")
+                .arg("--")
+                .args(&self.config.compositor_argv);
+            command
+        } else {
+            let mut command = Command::new("unshare");
+            command
+                .args([
+                    OsStr::new("--pid"),
+                    OsStr::new("--fork"),
+                    OsStr::new("--kill-child=TERM"),
+                    OsStr::new("--"),
+                    OsStr::new("setsid"),
+                    OsStr::new("--"),
+                ])
+                .args(&self.config.compositor_argv);
+            command
+        };
         command
             .env("XDG_RUNTIME_DIR", &self.session_runtime_dir)
             .env("TMPDIR", self.session_runtime_dir.join("tmp"))
             .env("WSS_SESSION_NAME", &self.config.session_name)
             .env("WSS_SESSION_STATE_DIR", &self.session_state_dir)
             .env("WSS_DISPLAY_BACKEND", "headless")
-            .env("WSS_INPUT_FD", "3")
-            .env("WSS_AUDIO_FD", "4")
+            .env(
+                "WSS_EGRESS_SPOOL",
+                self.session_runtime_dir.join("adapter-egress.stream"),
+            )
             .env(
                 "WSS_CONTROL_SOCKET",
                 self.session_runtime_dir.join("control.sock"),
@@ -141,29 +167,59 @@ impl SessionDomain {
         // process-group operations before exec.
         unsafe {
             command.pre_exec(move || {
-                if libc::setpgid(0, 0) == -1 || libc::dup2(input_fd, 3) == -1 {
+                let session_result = if kernel_cgroup {
+                    libc::setsid()
+                } else {
+                    libc::setpgid(0, 0)
+                };
+                if session_result == -1 {
                     return Err(io::Error::last_os_error());
                 }
-                if input_fd != 3 && input_fd != audio_fd {
-                    libc::close(input_fd);
-                }
-                if libc::dup2(audio_fd, 4) == -1
-                    || libc::fcntl(3, libc::F_SETFD, 0) == -1
-                    || libc::fcntl(4, libc::F_SETFD, 0) == -1
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                if audio_fd != 4 {
-                    libc::close(audio_fd);
+                if let Some(cgroup_fd) = cgroup_fd.filter(|_| !kernel_cgroup) {
+                    // Place this soon-to-exec unshare process in the managed
+                    // cgroup before it can fork the namespace init. Build the
+                    // decimal PID on the stack to remain async-signal-safe.
+                    let mut digits = [0_u8; 10];
+                    let mut pid = libc::getpid() as u32;
+                    let mut start = digits.len();
+                    loop {
+                        start -= 1;
+                        digits[start] = b'0' + (pid % 10) as u8;
+                        pid /= 10;
+                        if pid == 0 {
+                            break;
+                        }
+                    }
+                    let bytes = &digits[start..];
+                    if libc::write(cgroup_fd, bytes.as_ptr().cast(), bytes.len())
+                        != bytes.len() as isize
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    libc::close(cgroup_fd);
                 }
                 Ok(())
             });
         }
-        let child = command.spawn()?;
+        let child = if kernel_cgroup {
+            let cgroup_fd = cgroup_fd.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "missing managed cgroup")
+            })?;
+            ManagedChild::Direct(clone3_into_cgroup(&mut command, cgroup_fd)?)
+        } else {
+            ManagedChild::Unshare(command.spawn()?)
+        };
+        drop(cgroup_processes);
+        let checkpoint_root = match &child {
+            ManagedChild::Direct(pid) => *pid,
+            ManagedChild::Unshare(process) => wait_for_namespace_init(process.id())?,
+        };
         if let Some(cgroup_dir) = &self.config.cgroup_dir {
-            write_cgroup_pid(cgroup_dir, child.id())?;
+            fs::write(
+                self.session_state_dir.join("cgroup.path"),
+                cgroup_dir.as_os_str().as_encoded_bytes(),
+            )?;
         }
-        let checkpoint_root = wait_for_namespace_init(child.id())?;
         write_atomic_pid(&self.session_state_dir.join("session.pid"), checkpoint_root)?;
         adapters.activate()?;
         Ok(child)
@@ -178,9 +234,8 @@ impl SessionDomain {
             }
             let signal = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
             if signal != 0 {
-                // Negative PID addresses the compositor's process group.
                 // SAFETY: kill has no memory-safety preconditions.
-                let result = unsafe { libc::kill(-(child.id() as i32), signal) };
+                let result = unsafe { libc::kill(child.signal_target(), signal) };
                 if result == -1 {
                     let error = io::Error::last_os_error();
                     if error.raw_os_error() != Some(libc::ESRCH) {
@@ -201,74 +256,135 @@ impl SessionDomain {
     }
 }
 
+enum ManagedChild {
+    Direct(u32),
+    Unshare(Child),
+}
+
+impl ManagedChild {
+    fn signal_target(&self) -> i32 {
+        match self {
+            Self::Direct(pid) => *pid as i32,
+            Self::Unshare(child) => -(child.id() as i32),
+        }
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        match self {
+            Self::Unshare(child) => child.try_wait(),
+            Self::Direct(pid) => {
+                let mut status = 0;
+                // SAFETY: status points to writable storage and pid is our child.
+                let result = unsafe { libc::waitpid(*pid as i32, &mut status, libc::WNOHANG) };
+                if result == 0 {
+                    Ok(None)
+                } else if result == *pid as i32 {
+                    Ok(Some(ExitStatus::from_raw(status)))
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct CloneArgs {
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+    set_tid: u64,
+    set_tid_size: u64,
+    cgroup: u64,
+}
+
+fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> {
+    let arguments = CloneArgs {
+        // libc exposes CLONE_INTO_CGROUP as a truncated c_int on GNU Linux.
+        flags: libc::CLONE_NEWPID as u64 | 0x200000000_u64,
+        exit_signal: libc::SIGCHLD as u64,
+        cgroup: cgroup_fd as u64,
+        ..CloneArgs::default()
+    };
+    // SAFETY: clone3 receives a valid fixed-size argument block. Without
+    // CLONE_VM, the child has a private address space and immediately execs.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            &arguments as *const CloneArgs,
+            std::mem::size_of::<CloneArgs>(),
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if result == 0 {
+        let error = command.exec();
+        eprintln!("namespace init exec failed: {error}");
+        // SAFETY: terminate the failed clone child without running destructors.
+        unsafe { libc::_exit(127) }
+    }
+    Ok(result as u32)
+}
+
 struct ResourceAdapters {
-    input_parent: UnixDatagram,
-    input_child: UnixDatagram,
-    audio_parent: UnixDatagram,
-    audio_child: UnixDatagram,
     control_socket: UnixDatagram,
-    audio_log: PathBuf,
+    ingress_log: PathBuf,
+}
+
+pub(crate) fn start_restored_adapters(runtime_dir: &Path, state_dir: &Path) -> io::Result<()> {
+    ResourceAdapters::create(runtime_dir, state_dir)?.activate()
 }
 
 impl ResourceAdapters {
-    fn create(runtime_dir: &Path, state_dir: &Path) -> io::Result<Self> {
+    fn create(runtime_dir: &Path, _state_dir: &Path) -> io::Result<Self> {
         let control_path = runtime_dir.join("control.sock");
         match fs::remove_file(&control_path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let (input_parent, input_child) = UnixDatagram::pair()?;
-        let (audio_parent, audio_child) = UnixDatagram::pair()?;
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(runtime_dir.join("adapter-egress.stream"))?;
         let control_socket = UnixDatagram::bind(&control_path)?;
         fs::set_permissions(&control_path, fs::Permissions::from_mode(0o600))?;
         Ok(Self {
-            input_parent,
-            input_child,
-            audio_parent,
-            audio_child,
             control_socket,
-            audio_log: state_dir.join("audio-observations.log"),
+            ingress_log: runtime_dir.join("adapter-ingress.log"),
         })
     }
 
     fn activate(self) -> io::Result<()> {
         let Self {
-            input_parent,
-            input_child,
-            audio_parent,
-            audio_child,
             control_socket,
-            audio_log,
+            ingress_log,
         } = self;
-        drop(input_child);
-        drop(audio_child);
 
         thread::Builder::new()
-            .name(String::from("wss-input-adapter"))
+            .name(String::from("wss-ingress-adapter"))
             .spawn(move || {
                 let mut message = [0_u8; 4096];
                 while let Ok(size) = control_socket.recv(&mut message) {
-                    if input_parent.send(&message[..size]).is_err() {
-                        break;
-                    }
-                }
-            })?;
-        thread::Builder::new()
-            .name(String::from("wss-audio-adapter"))
-            .spawn(move || {
-                let mut message = [0_u8; 65536];
-                while let Ok(size) = audio_parent.recv(&mut message) {
-                    let write_result = OpenOptions::new()
+                    if OpenOptions::new()
                         .create(true)
                         .append(true)
                         .mode(0o600)
-                        .open(&audio_log)
+                        .open(&ingress_log)
                         .and_then(|mut output| {
                             output.write_all(&message[..size])?;
                             output.write_all(b"\n")
-                        });
-                    if write_result.is_err() {
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -361,7 +477,7 @@ fn write_resource_manifest(state_dir: &Path) -> io::Result<()> {
         .mode(0o600)
         .open(&temporary)?;
     output.write_all(
-        b"schema=1\ndisplay=headless\ngpu=encapsulated-none\ninput=supervisor-socketpair-fd3\naudio=supervisor-observer-fd4\nruntime=private-directory\nwayland-socket=session-internal\nnative-drm=unsupported\nnative-libinput=unsupported\nnative-audio=unsupported\n",
+        b"schema=1\ndisplay=headless\ngpu=encapsulated-none\nadapter-ingress=private-control-log\nadapter-egress=private-append-spool\nruntime=private-directory\nwayland-socket=session-internal\nnative-drm=unsupported\nnative-device-adapters=unsupported\n",
     )?;
     output.sync_all()?;
     fs::rename(temporary, final_path)
@@ -378,12 +494,54 @@ fn ensure_cgroup_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn write_cgroup_pid(path: &Path, pid: u32) -> io::Result<()> {
-    let mut processes = OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_CLOEXEC)
-        .open(path.join("cgroup.procs"))?;
-    writeln!(processes, "{pid}")
+pub fn run_namespace_init(compositor_argv: Vec<OsString>) -> io::Result<ExitStatus> {
+    if compositor_argv.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing compositor argv",
+        ));
+    }
+    install_signal_handlers()?;
+    let mut command = Command::new(&compositor_argv[0]);
+    command.args(&compositor_argv[1..]);
+    // SAFETY: setpgid is async-signal-safe before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    let primary = child.id() as i32;
+    std::mem::forget(child);
+    let mut primary_status = None;
+    loop {
+        let signal = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
+        if signal != 0 {
+            // SAFETY: negative PID targets the managed compositor group.
+            unsafe { libc::kill(-primary, signal) };
+        }
+        loop {
+            let mut status = 0;
+            // SAFETY: reap any namespace descendant into writable status.
+            let reaped = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if reaped > 0 {
+                if reaped == primary {
+                    primary_status = Some(status);
+                    // Stop remaining orphaned services after the compositor.
+                    unsafe { libc::kill(-1, libc::SIGTERM) };
+                }
+                continue;
+            }
+            if reaped == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                return Ok(ExitStatus::from_raw(primary_status.unwrap_or_default()));
+            }
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 pub fn close_uncontrolled_descriptors() -> io::Result<()> {
@@ -512,7 +670,7 @@ mod tests {
             0o700
         );
         let resources = fs::read_to_string(domain.state_dir().join("resources.manifest")).unwrap();
-        assert!(resources.contains("input=supervisor-socketpair-fd3"));
+        assert!(resources.contains("adapter-ingress=private-control-log"));
         assert!(resources.contains("native-drm=unsupported"));
         fs::remove_dir_all(root).unwrap();
     }

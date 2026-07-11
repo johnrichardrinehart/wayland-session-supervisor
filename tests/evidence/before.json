@@ -1,0 +1,130 @@
+{
+  "aplay": {
+    "adapter_spool_bytes": 5731200,
+    "adapter_spool_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
+    "adapter_spool_valid": true,
+    "chunk_samples": 4800,
+    "consumed_samples": 2865600,
+    "expected_waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
+    "pid": 122,
+    "stream_id": "wss-aplay-stream",
+    "waveform_sha256": "cd07f509ae3d0eea6b05a536155d5418ff492b38b2f09763287ce5438014f7a5",
+    "waveform_valid": true
+  },
+  "browser": {
+    "placements": [
+      {
+        "rect": {
+          "height": 500,
+          "width": 600,
+          "x": 219,
+          "y": 99
+        },
+        "title": "wss-alpha - Chromium",
+        "workspace": "browser-left"
+      },
+      {
+        "rect": {
+          "height": 658,
+          "width": 1018,
+          "x": 859,
+          "y": 109
+        },
+        "title": "wss-gamma - Chromium",
+        "workspace": "browser-right"
+      }
+    ],
+    "processes": [
+      {
+        "cmdline_sha256": "7fda1167426529a953f93ab14c276e8068a66e6924f2cdee74c173d89c2b375e",
+        "host_pid": 874,
+        "namespace_pid": 18,
+        "starttime": 1199
+      }
+    ],
+    "tabs": [
+      {
+        "memory": "memory-alpha",
+        "scrollY": 311,
+        "title": "wss-alpha",
+        "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/alpha.html",
+        "value": "memory-alpha",
+        "visibility": "visible",
+        "window_id": 1810731280
+      },
+      {
+        "memory": "memory-beta",
+        "scrollY": 622,
+        "title": "wss-beta",
+        "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/beta.html",
+        "value": "memory-beta",
+        "visibility": "hidden",
+        "window_id": 1810731280
+      },
+      {
+        "memory": "memory-gamma",
+        "scrollY": 933,
+        "title": "wss-gamma",
+        "url": "file:///nix/store/94cw9z5w265nrp36jj97niwqczbw71y4-wss-browser-pages/gamma.html",
+        "value": "memory-gamma",
+        "visibility": "visible",
+        "window_id": 1810731283
+      }
+    ],
+    "windows": [
+      {
+        "selected_tabs": [
+          "wss-alpha"
+        ],
+        "tabs": [
+          "wss-alpha",
+          "wss-beta"
+        ],
+        "window_id": 1810731280
+      },
+      {
+        "selected_tabs": [
+          "wss-gamma"
+        ],
+        "tabs": [
+          "wss-gamma"
+        ],
+        "window_id": 1810731283
+      }
+    ]
+  },
+  "input": {
+    "counter": 1,
+    "last_event": "key:before-capture",
+    "pid": 119
+  },
+  "mpv": {
+    "frame": 120,
+    "media": "/nix/store/zbhz6xp7skk4lbqbsfhzjii3s0ri6dbz-wss-deterministic-media/frames.mkv",
+    "time": 4.0
+  },
+  "phase": "before",
+  "schema": 1,
+  "shell": {
+    "alias": "cb6337486aaddba4dab71d4ae70ff034fd56fbb01bbbc5dfbc7a640f6b4cda00",
+    "cwd": "/var/lib/wayland-session-supervisor/shell-cwd",
+    "exported": "exported-across-reboot",
+    "function": "71b1bc8f56ad15d752780a52f13533af97333b0e5d64c9010ca6208569fa7c1b",
+    "history": "34481cb0df4b979055e3d389b1e1fe87132e707e7d96e268793748b2957a71fb",
+    "job_alive": true,
+    "job_pid": 126,
+    "last_status": 1,
+    "local": "local-across-reboot",
+    "pid": 115
+  },
+  "terminal": {
+    "contains_first": true,
+    "contains_last": true,
+    "line_count": 122,
+    "scrollback_line_count": 120,
+    "scrollback_sha256": "b202b8201d599ee360ae82fb19132dbf160999f1d7e9c3d552fc9494e5015844",
+    "text_sha256": "f49f00c3195b0cd518fd41dbbe31488d7b7c946756edf9d796aacde9e4243bc1",
+    "tmux_sha256": "c6f782a4fd753e9ea7dd2341887f78c60e924e26c560f06d91cef91f7dcbc8ad",
+    "tmux_state": "0|0|0||115\n"
+  }
+}

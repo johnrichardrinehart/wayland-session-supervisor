@@ -130,23 +130,47 @@ let
             mpv --no-config --vo=null --ao=null --pause --start=4 --input-ipc-server="$runtime/mpv.sock" \
               --no-resume-playback --loop-file=inf "${media}/frames.mkv" >/dev/null 2>&1 &
 
+            python3 - "$runtime/adapter-ingress.log" "$state/input.json" <<'PY' &
+      import json, os, sys, time
+      events, probe = sys.argv[1:]
+      offset = 0
+      counter = 0
+      while True:
+          try:
+              with open(events) as source:
+                  source.seek(offset)
+                  for line in source:
+                      counter += 1
+                      temporary = probe + '.tmp'
+                      with open(temporary, 'w') as output:
+                          json.dump({'pid': os.getpid(), 'counter': counter, 'last_event': line.strip()}, output)
+                      os.replace(temporary, probe)
+                  offset = source.tell()
+          except FileNotFoundError:
+              pass
+          time.sleep(.05)
+      PY
+
             mkfifo "$runtime/audio.pcm"
             cat > "$state/asound.conf" <<EOF
       pcm.null { type null; }
       pcm.!default { type file; slave.pcm "null"; file "$runtime/audio.pcm"; format "raw"; }
       EOF
-            python3 - "$runtime/audio.pcm" "$state/audio.json" <<'PY' &
-      import json, os, sys, time
-      fifo, probe = sys.argv[1:]
+            python3 - "$runtime/audio.pcm" "$WSS_EGRESS_SPOOL" "$state/audio.json" <<'PY' &
+      import hashlib, json, os, sys, time
+      fifo, spool_path, probe = sys.argv[1:]
       count = 0
-      with open(fifo, 'rb', buffering=0) as source:
+      with open(fifo, 'rb', buffering=0) as source, open(spool_path, 'ab', buffering=0) as spool:
           while True:
               chunk = source.read(9600)
               if not chunk: break
+              spool.write(chunk)
               count += len(chunk) // 2
               temporary = probe + '.tmp'
               with open(temporary, 'w') as output:
-                  json.dump({'pid': os.getpid(), 'stream_id': 'wss-aplay-stream', 'consumed_samples': count}, output)
+                  json.dump({'pid': os.getpid(), 'stream_id': 'wss-aplay-stream', 'consumed_samples': count,
+                    'chunk_samples': len(chunk) // 2, 'waveform_sha256': hashlib.sha256(chunk).hexdigest(),
+                    'adapter_spool_bytes': spool.tell()}, output)
               os.replace(temporary, probe)
               time.sleep(len(chunk) / 2 / 48000)
       PY
@@ -171,7 +195,7 @@ let
         ];
       }
       ''
-        import hashlib, json, os, subprocess, sys, urllib.request
+        import hashlib, json, os, subprocess, sys, urllib.request, wave
         from websocket import create_connection
 
         phase, destination = sys.argv[1:]
@@ -184,7 +208,7 @@ let
                 continue
             ws = create_connection(target['webSocketDebuggerUrl'])
             ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
-              'expression': 'JSON.stringify({memory:window.wssMemory,value:memory.value,scrollY:scrollY})',
+              'expression': 'JSON.stringify({memory:window.wssMemory,value:memory.value,scrollY:scrollY,visibility:document.visibilityState})',
               'returnByValue': True}}))
             while True:
                 reply = json.loads(ws.recv())
@@ -197,6 +221,21 @@ let
             ws.close()
             tabs.append({'title': target['title'], 'url': target['url'], 'window_id': window['result']['windowId'], **state})
         tabs.sort(key=lambda item: item['title'])
+        windows = []
+        for window_id in sorted(set(tab['window_id'] for tab in tabs)):
+            members = [tab['title'] for tab in tabs if tab['window_id'] == window_id]
+            selected = [tab['title'] for tab in tabs if tab['window_id'] == window_id and tab['visibility'] == 'visible']
+            windows.append({'window_id': window_id, 'tabs': members, 'selected_tabs': selected})
+        chromium = []
+        for proc in os.listdir('/proc'):
+            if not proc.isdigit(): continue
+            try:
+                cmdline = open(f'/proc/{proc}/cmdline', 'rb').read().decode(errors='replace')
+                if 'chromium' in cmdline and '--user-data-dir=' in cmdline:
+                    stat = open(f'/proc/{proc}/stat').read().split()
+                    nspid = [line for line in open(f'/proc/{proc}/status') if line.startswith('NSpid:')][0].split()[-1]
+                    chromium.append({'host_pid': int(proc), 'namespace_pid': int(nspid), 'starttime': int(stat[21]), 'cmdline_sha256': hashlib.sha256(cmdline.encode()).hexdigest()})
+            except (FileNotFoundError, ProcessLookupError, PermissionError): pass
         tree = json.loads(command('swaymsg', '-s', open('/var/lib/wayland-session-supervisor/sessions/apps/swaysock').read().strip(), '-r', '-t', 'get_tree'))
         placements = []
         def visit(node, workspace=None):
@@ -206,14 +245,25 @@ let
             for child in node.get('nodes', []) + node.get('floating_nodes', []): visit(child, workspace)
         visit(tree)
         text = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'capture-pane', '-p', '-S', '-')
+        tmux = command('tmux', '-S', '/run/wayland-session-supervisor/apps/tmux.sock', 'list-panes', '-a', '-F', '#{session_name}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_pid}')
+        scrollback = [line for line in text.splitlines() if line.startswith('terminal-scrollback-line-')]
         shell = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/shell.json'))
         query = json.dumps({'command': ['get_property', 'time-pos']}) + chr(10)
         mpv_time = float(json.loads(subprocess.check_output(['socat', '-', 'UNIX-CONNECT:/run/wayland-session-supervisor/apps/mpv.sock'], input=query, text=True))['data'])
         audio = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/audio.json'))
-        evidence = {'schema': 1, 'phase': phase, 'browser': {'tabs': tabs, 'placements': sorted(placements, key=lambda x:x['title'])},
-          'terminal': {'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text},
+        with wave.open('${media}/samples.wav', 'rb') as source:
+            expected = source.readframes(audio['consumed_samples'])[-audio['chunk_samples'] * 2:]
+        audio['expected_waveform_sha256'] = hashlib.sha256(expected).hexdigest()
+        audio['waveform_valid'] = audio['waveform_sha256'] == audio['expected_waveform_sha256']
+        with open('/run/wayland-session-supervisor/apps/adapter-egress.stream', 'rb') as spool:
+            spool.seek(audio['adapter_spool_bytes'] - audio['chunk_samples'] * 2)
+            audio['adapter_spool_sha256'] = hashlib.sha256(spool.read(audio['chunk_samples'] * 2)).hexdigest()
+        audio['adapter_spool_valid'] = audio['adapter_spool_sha256'] == audio['waveform_sha256']
+        input_state = json.load(open('/var/lib/wayland-session-supervisor/sessions/apps/input.json'))
+        evidence = {'schema': 1, 'phase': phase, 'browser': {'tabs': tabs, 'windows': windows, 'placements': sorted(placements, key=lambda x:x['title']), 'processes': sorted(chromium, key=lambda x:x['namespace_pid'])},
+          'terminal': {'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'line_count': len(text.splitlines()), 'scrollback_sha256': hashlib.sha256(chr(10).join(scrollback).encode()).hexdigest(), 'scrollback_line_count': len(scrollback), 'contains_first': 'terminal-scrollback-line-001' in text, 'contains_last': 'terminal-scrollback-line-120' in text, 'tmux_sha256': hashlib.sha256(tmux.encode()).hexdigest(), 'tmux_state': tmux},
           'shell': shell, 'mpv': {'time': mpv_time, 'frame': round(mpv_time * 30), 'media': '${media}/frames.mkv'},
-          'aplay': audio}
+          'aplay': audio, 'input': input_state}
         with open(destination + '.tmp', 'w') as output: json.dump(evidence, output, sort_keys=True, indent=2)
         os.replace(destination + '.tmp', destination)
       '';
@@ -233,6 +283,7 @@ pkgs.testers.runNixOSTest {
     };
     environment.systemPackages = [
       criu
+      pkgs.coreutils
       pkgs.jq
       pkgs.socat
       pkgs.sway
@@ -249,8 +300,10 @@ pkgs.testers.runNixOSTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     boot_before = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+    machine.succeed("mkdir /sys/fs/cgroup/wss-apps")
     machine.succeed("systemd-run --unit=wss-apps --service-type=exec --property=StandardOutput=null --property=StandardError=null "
-      f"${supervisor}/bin/wayland-session-supervisor run --session apps --state-dir {state} --runtime-dir /run/wayland-session-supervisor -- {command}")
+      f"${supervisor}/bin/wayland-session-supervisor run --session apps --state-dir {state} --runtime-dir /run/wayland-session-supervisor "
+      f"--cgroup-dir /sys/fs/cgroup/wss-apps -- {command}")
     machine.sleep(30)
     machine.succeed("systemctl is-active wss-apps.service || { cat /var/lib/wayland-session-supervisor/sessions/apps/sway.log; exit 1; }")
     machine.sleep(30)
@@ -258,6 +311,9 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test $(curl -s http://127.0.0.1:9222/json/list | jq '[.[]|select(.title|startswith(\"wss-\"))]|length') -eq 3")
     machine.succeed("test -s /var/lib/wayland-session-supervisor/sessions/apps/shell.json || { cat /var/lib/wayland-session-supervisor/sessions/apps/{terminal,shell-error}.log; ps auxww; ${pkgs.tmux}/bin/tmux -S /run/wayland-session-supervisor/apps/tmux.sock capture-pane -p -S - || true; exit 1; }")
     machine.succeed("tmux -S /run/wayland-session-supervisor/apps/tmux.sock send-keys 'kill -USR1 $$' Enter; sleep 1")
+    machine.succeed("printf 'key:before-capture' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/control.sock")
+    machine.wait_until_succeeds(f"jq -e '.counter == 1 and .last_event == \"key:before-capture\"' {state}/sessions/apps/input.json")
+    machine.wait_until_succeeds(f"test $(stat -c %s /run/wayland-session-supervisor/apps/adapter-egress.stream) -eq $(jq -r .adapter_spool_bytes {state}/sessions/apps/audio.json)")
     machine.succeed("application-probe before /var/lib/wayland-session-supervisor/before.json")
     before = json.loads(machine.succeed("cat /var/lib/wayland-session-supervisor/before.json"))
     assert len(before['browser']['tabs']) == 3
@@ -269,23 +325,49 @@ pkgs.testers.runNixOSTest {
     machine.start()
     machine.wait_for_unit("multi-user.target")
     assert boot_before != machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
-    machine.succeed(f"${supervisor}/bin/wayland-session-supervisor restore {common} {command} || (cat {state}/sessions/apps/checkpoints/$(cat {state}/sessions/apps/current-checkpoint)/restore.log; false)")
+    boot_after = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+    machine.succeed("systemd-run --unit=wss-apps-restored --service-type=exec "
+      "--setenv=PATH=${
+        pkgs.lib.makeBinPath [
+          pkgs.coreutils
+          criu
+        ]
+      } "
+      f"${supervisor}/bin/wayland-session-supervisor restore {common} {command}")
+    machine.wait_until_succeeds(f"jq -e '.role == \"restored-session-authority\" and .boot_id == \"{boot_after}\"' {state}/sessions/apps/outer-supervisor.json")
+    machine.succeed("systemctl is-active wss-apps-restored.service")
     machine.wait_until_succeeds("curl -fsS http://127.0.0.1:9222/json/list >/dev/null")
     swaysock = machine.succeed(f"cat {state}/sessions/apps/swaysock").strip()
-    machine.succeed(f"swaymsg -s {swaysock} seat seat0 cursor set 777 333 >/dev/null")
     machine.succeed(f"swaymsg -s {swaysock} -r -t get_seats | jq -e '.[0].devices != null'")
+    machine.succeed("printf 'key:after-restore' | socat - UNIX-SENDTO:/run/wayland-session-supervisor/apps/control.sock")
+    machine.wait_until_succeeds(f"jq -e '.counter == 2 and .last_event == \"key:after-restore\"' {state}/sessions/apps/input.json")
+    machine.wait_until_succeeds(f"test $(stat -c %s /run/wayland-session-supervisor/apps/adapter-egress.stream) -eq $(jq -r .adapter_spool_bytes {state}/sessions/apps/audio.json)")
     machine.succeed("XDG_RUNTIME_DIR=/run/wayland-session-supervisor/apps WAYLAND_DISPLAY=wayland-1 ${pkgs.foot}/bin/foot --title post-restore-client ${pkgs.coreutils}/bin/sleep 300 >/dev/null 2>&1 &")
     machine.wait_until_succeeds(f"swaymsg -s {swaysock} -r -t get_tree | jq -e '.. | objects | select(.name? == \"post-restore-client\")'")
     machine.succeed("application-probe after /var/lib/wayland-session-supervisor/after.json")
     after = json.loads(machine.succeed("cat /var/lib/wayland-session-supervisor/after.json"))
-    assert before['browser'] == after['browser'], (before['browser'], after['browser'])
-    assert after['terminal']['contains_first'] and after['terminal']['contains_last'], after['terminal']
+    before_browser = {key: value for key, value in before['browser'].items() if key != 'processes'}
+    after_browser = {key: value for key, value in after['browser'].items() if key != 'processes'}
+    assert before_browser == after_browser, (before_browser, after_browser)
+    before_processes = [(p['namespace_pid'], p['cmdline_sha256']) for p in before['browser']['processes']]
+    after_processes = [(p['namespace_pid'], p['cmdline_sha256']) for p in after['browser']['processes']]
+    assert before_processes == after_processes, (before_processes, after_processes)
+    assert before['terminal']['scrollback_sha256'] == after['terminal']['scrollback_sha256'], (before['terminal'], after['terminal'])
+    assert before['terminal']['scrollback_line_count'] == after['terminal']['scrollback_line_count'] == 120, (before['terminal'], after['terminal'])
+    assert before['terminal']['tmux_state'] == after['terminal']['tmux_state']
     assert before['shell'] == after['shell'], (before['shell'], after['shell'])
     assert abs(before['mpv']['frame'] - after['mpv']['frame']) <= 60
     assert before['mpv']['media'] == after['mpv']['media']
+    assert before['aplay']['waveform_valid'] and after['aplay']['waveform_valid']
+    assert before['aplay']['adapter_spool_valid'] and after['aplay']['adapter_spool_valid']
     assert before['aplay']['pid'] == after['aplay']['pid']
     assert before['aplay']['stream_id'] == after['aplay']['stream_id']
     assert abs(before['aplay']['consumed_samples'] - after['aplay']['consumed_samples']) <= 500000
-    machine.succeed("mkdir -p /tmp/evidence && cp /var/lib/wayland-session-supervisor/{before,after}.json /tmp/evidence/ && touch /tmp/evidence/verdict-pass")
+    assert before['input']['pid'] == after['input']['pid']
+    assert after['input']['counter'] == before['input']['counter'] + 1
+    machine.succeed(f"mkdir -p /tmp/evidence && cp {state}/{{before,after}}.json /tmp/evidence/ && cp {state}/sessions/apps/outer-supervisor.json /tmp/evidence/")
+    machine.succeed(f"cp {state}/sessions/apps/checkpoints/$(cat {state}/sessions/apps/current-checkpoint)/domain-inventory.json /tmp/evidence/")
+    machine.succeed(f"jq -n --arg before '{boot_before}' --arg after '{boot_after}' '{{schema:1,boot_before:$before,boot_after:$after,rebooted:($before != $after),verdict:\"pass\"}}' > /tmp/evidence/verdict.json")
+    machine.copy_from_machine("/tmp/evidence", "")
   '';
 }

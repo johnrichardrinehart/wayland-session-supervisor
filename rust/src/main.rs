@@ -1,6 +1,8 @@
 use std::process::ExitCode;
 use wayland_session_supervisor::checkpoint::{CheckpointOptions, capture, restore};
-use wayland_session_supervisor::{SessionConfig, SessionDomain, command_display};
+use wayland_session_supervisor::{
+    SessionConfig, SessionDomain, command_display, run_namespace_init,
+};
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
@@ -8,11 +10,26 @@ fn main() -> ExitCode {
         Some(command) if command == "run" => run(arguments),
         Some(command) if command == "capture" => checkpoint(arguments, true),
         Some(command) if command == "restore" => checkpoint(arguments, false),
+        Some(command) if command == "namespace-init" => namespace_init(arguments),
         _ => {
             eprintln!(
                 "usage: wayland-session-supervisor <run|capture|restore> [OPTIONS] -- COMPOSITOR [ARG ...]"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn namespace_init(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    let mut arguments = arguments.into_iter();
+    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
+        return ExitCode::from(2);
+    }
+    match run_namespace_init(arguments.collect()) {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(error) => {
+            eprintln!("namespace init failed: {error}");
+            ExitCode::FAILURE
         }
     }
 }

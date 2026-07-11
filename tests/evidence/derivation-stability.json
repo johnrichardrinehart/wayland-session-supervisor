@@ -1,0 +1,85 @@
+{
+  "baseline": {
+    "checks.x86_64-linux.application-reboot": "/nix/store/6rkvr7d38f9gcj9glm130gdcwhagngqy-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+    "checks.x86_64-linux.cargo-test": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+    "checks.x86_64-linux.checkpoint": "/nix/store/39msdigamr6jgv066s6wb5gdfp39pmv4-vm-test-run-wayland-session-supervisor-checkpoint.drv",
+    "checks.x86_64-linux.core-integration": "/nix/store/1yqvk9zsgx3ifb76978wbvmzhax1y20d-wayland-session-supervisor-core-integration.drv",
+    "checks.x86_64-linux.feasibility": "/nix/store/8qz943c6babsin7c28y3jzjp8rnfxdqx-vm-test-run-wayland-session-supervisor-feasibility.drv",
+    "checks.x86_64-linux.package": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+    "checks.x86_64-linux.treefmt": "/nix/store/72a1wz31nnfk77mb8gad0d0l3md28fi1-treefmt-check.drv",
+    "devShells.x86_64-linux.default": "/nix/store/5n6jx995wvw0l9y89flph3myj726sxig-nix-shell.drv",
+    "formatter.x86_64-linux": "/nix/store/nxvvfvdlwv5wsfab5dm32hg2wvdgmjqg-treefmt.drv",
+    "packages.x86_64-linux.default": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv"
+  },
+  "probes": {
+    "check-inputs": {
+      "application_fixture": {
+        "after": "/nix/store/j44369pjivn347735csd5c4bnllpajr8-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+        "before": "/nix/store/6rkvr7d38f9gcj9glm130gdcwhagngqy-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+        "changed": true
+      },
+      "core_expression": {
+        "after": "/nix/store/afvs2ykdpryzv7xs3f8bryhc3s7wvfsk-wayland-session-supervisor-core-integration-probe.drv",
+        "before": "/nix/store/1yqvk9zsgx3ifb76978wbvmzhax1y20d-wayland-session-supervisor-core-integration.drv",
+        "changed": true
+      },
+      "wayland_fixture": {
+        "after": "/nix/store/w16pfga4kx6m2wq9cqixdg6yjjsbmvg5-vm-test-run-wayland-session-supervisor-feasibility.drv",
+        "before": "/nix/store/8qz943c6babsin7c28y3jzjp8rnfxdqx-vm-test-run-wayland-session-supervisor-feasibility.drv",
+        "changed": true
+      }
+    },
+    "checkpoint-expression": {
+      "application_reboot_stable": true,
+      "checkpoint_changed": true,
+      "mutated": "nix/checks/checkpoint.nix test name",
+      "paths": {
+        "checks.x86_64-linux.application-reboot": "/nix/store/6rkvr7d38f9gcj9glm130gdcwhagngqy-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+        "checks.x86_64-linux.cargo-test": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.checkpoint": "/nix/store/mp5spqy0zkkaanzsvjj3ffkh8xy8512j-vm-test-run-wayland-session-supervisor-checkpoint-probe.drv",
+        "checks.x86_64-linux.core-integration": "/nix/store/1yqvk9zsgx3ifb76978wbvmzhax1y20d-wayland-session-supervisor-core-integration.drv",
+        "checks.x86_64-linux.feasibility": "/nix/store/8qz943c6babsin7c28y3jzjp8rnfxdqx-vm-test-run-wayland-session-supervisor-feasibility.drv",
+        "checks.x86_64-linux.package": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.treefmt": "/nix/store/y68am8a7mqcgwz2fl4wyhyvjjrk8v5rl-treefmt-check.drv",
+        "devShells.x86_64-linux.default": "/nix/store/5n6jx995wvw0l9y89flph3myj726sxig-nix-shell.drv",
+        "formatter.x86_64-linux": "/nix/store/nxvvfvdlwv5wsfab5dm32hg2wvdgmjqg-treefmt.drv",
+        "packages.x86_64-linux.default": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv"
+      }
+    },
+    "development-config": {
+      "dev_shell_changed": true,
+      "formatter_changed": true,
+      "mutated": "rustfmt.enable true to false",
+      "paths": {
+        "checks.x86_64-linux.application-reboot": "/nix/store/6rkvr7d38f9gcj9glm130gdcwhagngqy-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+        "checks.x86_64-linux.cargo-test": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.checkpoint": "/nix/store/39msdigamr6jgv066s6wb5gdfp39pmv4-vm-test-run-wayland-session-supervisor-checkpoint.drv",
+        "checks.x86_64-linux.core-integration": "/nix/store/1yqvk9zsgx3ifb76978wbvmzhax1y20d-wayland-session-supervisor-core-integration.drv",
+        "checks.x86_64-linux.feasibility": "/nix/store/8qz943c6babsin7c28y3jzjp8rnfxdqx-vm-test-run-wayland-session-supervisor-feasibility.drv",
+        "checks.x86_64-linux.package": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.treefmt": "/nix/store/ajajfhsir76l08729qzij4lzd8ix852f-treefmt-check.drv",
+        "devShells.x86_64-linux.default": "/nix/store/0a99xxj3vzg5hhzk397pzz8f1rk2bsw1-nix-shell.drv",
+        "formatter.x86_64-linux": "/nix/store/3vyhawxzydw160fxjnxwvliqs75gcs36-treefmt.drv",
+        "packages.x86_64-linux.default": "/nix/store/yh1a11pfsffcvd8mnwh864src8kgqjil-wayland-session-supervisor-0.1.0.drv"
+      },
+      "treefmt_check_changed": true
+    },
+    "rust-source": {
+      "mutated": "rust/src/main.rs comment",
+      "package_changed": true,
+      "paths": {
+        "checks.x86_64-linux.application-reboot": "/nix/store/14w3nalj394filhw6kj9iyl3wnwqsi1c-vm-test-run-wayland-session-supervisor-application-reboot.drv",
+        "checks.x86_64-linux.cargo-test": "/nix/store/rqzdphk36w7cmdj2gyqg248lhafc4wbw-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.checkpoint": "/nix/store/9l4m43j39c7apwldmxzj7a5965f0w4hg-vm-test-run-wayland-session-supervisor-checkpoint.drv",
+        "checks.x86_64-linux.core-integration": "/nix/store/4c7z3dns3xx8b28rclgg8qhjp0jpcpl9-wayland-session-supervisor-core-integration.drv",
+        "checks.x86_64-linux.feasibility": "/nix/store/8qz943c6babsin7c28y3jzjp8rnfxdqx-vm-test-run-wayland-session-supervisor-feasibility.drv",
+        "checks.x86_64-linux.package": "/nix/store/rqzdphk36w7cmdj2gyqg248lhafc4wbw-wayland-session-supervisor-0.1.0.drv",
+        "checks.x86_64-linux.treefmt": "/nix/store/jjbm3wxv1idsdcfyc6s4wcjc19v1qb41-treefmt-check.drv",
+        "devShells.x86_64-linux.default": "/nix/store/5n6jx995wvw0l9y89flph3myj726sxig-nix-shell.drv",
+        "formatter.x86_64-linux": "/nix/store/nxvvfvdlwv5wsfab5dm32hg2wvdgmjqg-treefmt.drv",
+        "packages.x86_64-linux.default": "/nix/store/rqzdphk36w7cmdj2gyqg248lhafc4wbw-wayland-session-supervisor-0.1.0.drv"
+      }
+    }
+  },
+  "schema": 1
+}

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "manager": "repo",
+  "commands": [
+    "repo create --public github.com/johnrichardrinehart/wayland-session-supervisor",
+    "repo worktree add github.com/johnrichardrinehart/wayland-session-supervisor main"
+  ],
+  "verified": {
+    "canonical_clone": "/home/john/code/clones/github.com/johnrichardrinehart/wayland-session-supervisor",
+    "main_worktree": "/home/john/code/dev-worktrees/github.com/johnrichardrinehart/wayland-session-supervisor/main",
+    "origin": "git@github.com:/johnrichardrinehart/wayland-session-supervisor.git",
+    "github_url": "https://github.com/johnrichardrinehart/wayland-session-supervisor",
+    "branch": "main"
+  }
+}

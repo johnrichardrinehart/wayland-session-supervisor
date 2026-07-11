@@ -16,8 +16,10 @@ must be explicitly listed in the manifest; accidental external descriptors are
 a capture error.
 
 The session receives private runtime and temporary directories and runs in a
-dedicated PID namespace. A stable namespace-init process is PID 1 inside that
-namespace, reaps orphans, and is the CRIU checkpoint root; daemonized and
+dedicated PID namespace. `clone3` creates a stable namespace-init directly in
+the managed cgroup (`CLONE_NEWPID | CLONE_INTO_CGROUP`), avoiding a monitor
+process outside the checkpoint tree. That process is PID 1 inside the namespace,
+reaps orphans, forwards signals, and is the CRIU checkpoint root; daemonized and
 double-forked clients therefore cannot escape the process tree. Before capture,
 the supervisor compares the cgroup inventory with descendants of that root and
 refuses an incomplete domain. The cgroup remains the freeze, inventory, and
