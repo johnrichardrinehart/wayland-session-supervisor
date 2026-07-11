@@ -1,7 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -84,6 +86,7 @@ impl SessionDomain {
         ensure_private_directory(&session_state_dir, 0o700)?;
         ensure_private_directory(&session_runtime_dir, 0o700)?;
         ensure_private_directory(&session_runtime_dir.join("tmp"), 0o700)?;
+        write_resource_manifest(&session_state_dir)?;
 
         if let Some(cgroup_dir) = &config.cgroup_dir {
             ensure_cgroup_directory(cgroup_dir)?;
@@ -98,24 +101,49 @@ impl SessionDomain {
 
     pub fn spawn(&self) -> io::Result<Child> {
         close_uncontrolled_descriptors()?;
+        let adapters =
+            ResourceAdapters::create(&self.session_runtime_dir, &self.session_state_dir)?;
+        let input_fd = adapters.input_child.as_raw_fd();
+        let audio_fd = adapters.audio_child.as_raw_fd();
         let mut command = Command::new(&self.config.compositor_argv[0]);
         command.args(&self.config.compositor_argv[1..]);
         command
             .env("XDG_RUNTIME_DIR", &self.session_runtime_dir)
             .env("TMPDIR", self.session_runtime_dir.join("tmp"))
             .env("WSS_SESSION_NAME", &self.config.session_name)
-            .env("WSS_SESSION_STATE_DIR", &self.session_state_dir);
+            .env("WSS_SESSION_STATE_DIR", &self.session_state_dir)
+            .env("WSS_DISPLAY_BACKEND", "headless")
+            .env("WSS_INPUT_FD", "3")
+            .env("WSS_AUDIO_FD", "4")
+            .env(
+                "WSS_CONTROL_SOCKET",
+                self.session_runtime_dir.join("control.sock"),
+            );
 
-        // SAFETY: this closure only calls async-signal-safe setpgid before exec.
+        // SAFETY: this closure calls only async-signal-safe descriptor and
+        // process-group operations before exec.
         unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) == -1 {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) == -1 || libc::dup2(input_fd, 3) == -1 {
                     return Err(io::Error::last_os_error());
+                }
+                if input_fd != 3 && input_fd != audio_fd {
+                    libc::close(input_fd);
+                }
+                if libc::dup2(audio_fd, 4) == -1
+                    || libc::fcntl(3, libc::F_SETFD, 0) == -1
+                    || libc::fcntl(4, libc::F_SETFD, 0) == -1
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if audio_fd != 4 {
+                    libc::close(audio_fd);
                 }
                 Ok(())
             });
         }
         let child = command.spawn()?;
+        adapters.activate()?;
         if let Some(cgroup_dir) = &self.config.cgroup_dir {
             write_cgroup_pid(cgroup_dir, child.id())?;
         }
@@ -151,6 +179,82 @@ impl SessionDomain {
 
     pub fn state_dir(&self) -> &Path {
         &self.session_state_dir
+    }
+}
+
+struct ResourceAdapters {
+    input_parent: UnixDatagram,
+    input_child: UnixDatagram,
+    audio_parent: UnixDatagram,
+    audio_child: UnixDatagram,
+    control_socket: UnixDatagram,
+    audio_log: PathBuf,
+}
+
+impl ResourceAdapters {
+    fn create(runtime_dir: &Path, state_dir: &Path) -> io::Result<Self> {
+        let control_path = runtime_dir.join("control.sock");
+        match fs::remove_file(&control_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let (input_parent, input_child) = UnixDatagram::pair()?;
+        let (audio_parent, audio_child) = UnixDatagram::pair()?;
+        let control_socket = UnixDatagram::bind(&control_path)?;
+        fs::set_permissions(&control_path, fs::Permissions::from_mode(0o600))?;
+        Ok(Self {
+            input_parent,
+            input_child,
+            audio_parent,
+            audio_child,
+            control_socket,
+            audio_log: state_dir.join("audio-observations.log"),
+        })
+    }
+
+    fn activate(self) -> io::Result<()> {
+        let Self {
+            input_parent,
+            input_child,
+            audio_parent,
+            audio_child,
+            control_socket,
+            audio_log,
+        } = self;
+        drop(input_child);
+        drop(audio_child);
+
+        thread::Builder::new()
+            .name(String::from("wss-input-adapter"))
+            .spawn(move || {
+                let mut message = [0_u8; 4096];
+                while let Ok(size) = control_socket.recv(&mut message) {
+                    if input_parent.send(&message[..size]).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        thread::Builder::new()
+            .name(String::from("wss-audio-adapter"))
+            .spawn(move || {
+                let mut message = [0_u8; 65536];
+                while let Ok(size) = audio_parent.recv(&mut message) {
+                    let write_result = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .mode(0o600)
+                        .open(&audio_log)
+                        .and_then(|mut output| {
+                            output.write_all(&message[..size])?;
+                            output.write_all(b"\n")
+                        });
+                    if write_result.is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(())
     }
 }
 
@@ -193,6 +297,22 @@ fn ensure_private_directory(path: &Path, mode: u32) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+fn write_resource_manifest(state_dir: &Path) -> io::Result<()> {
+    let temporary = state_dir.join("resources.manifest.tmp");
+    let final_path = state_dir.join("resources.manifest");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    output.write_all(
+        b"schema=1\ndisplay=headless\ngpu=encapsulated-none\ninput=supervisor-socketpair-fd3\naudio=supervisor-observer-fd4\nruntime=private-directory\nwayland-socket=session-internal\nnative-drm=unsupported\nnative-libinput=unsupported\nnative-audio=unsupported\n",
+    )?;
+    output.sync_all()?;
+    fs::rename(temporary, final_path)
 }
 
 fn ensure_cgroup_directory(path: &Path) -> io::Result<()> {
@@ -339,6 +459,9 @@ mod tests {
                 & 0o777,
             0o700
         );
+        let resources = fs::read_to_string(domain.state_dir().join("resources.manifest")).unwrap();
+        assert!(resources.contains("input=supervisor-socketpair-fd3"));
+        assert!(resources.contains("native-drm=unsupported"));
         fs::remove_dir_all(root).unwrap();
     }
 
