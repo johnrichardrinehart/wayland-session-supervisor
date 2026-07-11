@@ -12,6 +12,8 @@ let
     sudo -n true
     busctl --user list >/dev/null
     systemctl --user --machine=test@.host is-active wss-unprivileged.service >/dev/null
+    systemctl --user --machine=test@.host import-environment XDG_RUNTIME_DIR
+    systemctl --user --machine=test@.host show-environment | grep -Fx "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
     test "$PULSE_SERVER" = unix:/run/user/1000/pulse/native
     test ! -L "$XDG_RUNTIME_DIR/pulse"
     printf '%s\n' "$$" > "$WSS_SESSION_STATE_DIR/fixture.pid"
