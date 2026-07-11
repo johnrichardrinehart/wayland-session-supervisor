@@ -1,7 +1,7 @@
 {
-  "boot_id": "2fd0de10-726f-45a2-989f-1462e7a5fb72",
-  "pid": 866,
-  "restored_root_pid": 900,
+  "boot_id": "d629f84d-9f6b-47b8-a78a-2031bd46b6a6",
+  "pid": 831,
+  "restored_root_pid": 865,
   "role": "restored-session-authority",
   "schema": 1
 }

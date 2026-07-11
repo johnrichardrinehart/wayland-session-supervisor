@@ -232,6 +232,7 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
         let failed = checkpoints.join(format!("failed-{checkpoint_id}"));
         fs::rename(&staging, &failed)?;
+        publish_latest_diagnostics(&session_dir, &failed, None)?;
         return Err(io::Error::other(format!(
             "{}; evidence preserved at {}",
             manifest
@@ -276,6 +277,11 @@ pub fn capture(options: &CheckpointOptions) -> io::Result<PathBuf> {
         write_json_atomic(&staging.join("checkpoint.json"), &manifest)?;
         let failed = checkpoints.join(format!("failed-{checkpoint_id}"));
         fs::rename(&staging, &failed)?;
+        publish_latest_diagnostics(
+            &session_dir,
+            &failed,
+            Some(&failed.join("failure-analysis.json")),
+        )?;
         return Err(io::Error::other(format!(
             "checkpoint failed; evidence preserved at {}",
             failed.display()
@@ -367,6 +373,18 @@ pub fn restore(options: &CheckpointOptions) -> io::Result<ExitStatus> {
         ])
         .status()?;
     if !status.success() {
+        let analysis = analyze_criu_failure(&checkpoint.join("restore.log"), &status);
+        let analysis_path = checkpoint.join("restore-failure-analysis.json");
+        write_json_atomic(&analysis_path, &analysis)?;
+        write_json_atomic(
+            &checkpoint.join("restore-failure.json"),
+            &serde_json::json!({
+                "schema": 1,
+                "kind": "criu-restore",
+                "reason": format!("criu restore exited with {status}"),
+            }),
+        )?;
+        publish_latest_diagnostics(&session_dir, &checkpoint, Some(&analysis_path))?;
         return Ok(status);
     }
     let restored_root_pid = read_trimmed(&restored_pid_file)?
@@ -858,6 +876,27 @@ fn hash_file(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn publish_latest_diagnostics(
+    session_dir: &Path,
+    checkpoint: &Path,
+    analysis: Option<&Path>,
+) -> io::Result<()> {
+    let report = checkpoint.join("diagnostics.json");
+    let relative_report = report.strip_prefix(session_dir).map_err(io::Error::other)?;
+    let relative_analysis = analysis
+        .map(|path| path.strip_prefix(session_dir).map(Path::to_path_buf))
+        .transpose()
+        .map_err(io::Error::other)?;
+    write_json_atomic(
+        &session_dir.join("latest-diagnostics.json"),
+        &serde_json::json!({
+            "schema": 1,
+            "report": relative_report,
+            "failure_analysis": relative_analysis,
+        }),
+    )
+}
+
 fn compatibility_failure<T>(checkpoint: &Path, reason: &str) -> io::Result<T> {
     #[derive(Serialize)]
     struct Failure<'a> {
@@ -872,6 +911,15 @@ fn compatibility_failure<T>(checkpoint: &Path, reason: &str) -> io::Result<T> {
             kind: "incompatible",
             reason,
         },
+    )?;
+    let session_dir = checkpoint
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| io::Error::other("checkpoint has no session directory"))?;
+    publish_latest_diagnostics(
+        session_dir,
+        checkpoint,
+        Some(&checkpoint.join("restore-failure.json")),
     )?;
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,

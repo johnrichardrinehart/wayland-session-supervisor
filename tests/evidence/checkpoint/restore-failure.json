@@ -1,5 +1,5 @@
 {
-  "schema": 1,
-  "kind": "incompatible",
-  "reason": "session compatibility mismatch: captured={\"schema\":1,\"session_name\":\"checkpoint\",\"compositor_argv\":[\"/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session\"],\"compositor_executable\":\"/nix/store/qlk2gsyh93k9nwyp929ccvy46n2wrnhy-checkpoint-session/bin/checkpoint-session\",\"compositor_sha256\":\"b24c06f41fcbcfee01aba7d8b03ca7549163494ac9d1e1b27e9ffc5c4e2bb2cf\",\"resource_manifest_sha256\":\"f73a3094388540e46c7e6efe2e7feef72ee228e33fd1ff5b0b13295e5ac0851f\"}, requested={\"schema\":1,\"session_name\":\"checkpoint\",\"compositor_argv\":[\"/run/current-system/sw/bin/false\"],\"compositor_executable\":\"/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11/bin/coreutils\",\"compositor_sha256\":\"81fd10700f6b6b3fd2c7467d6968f96aec794f252fa12e948e5c5c9dd6d2a2ab\",\"resource_manifest_sha256\":\"f73a3094388540e46c7e6efe2e7feef72ee228e33fd1ff5b0b13295e5ac0851f\"}"
+  "kind": "criu-restore",
+  "reason": "criu restore exited with exit status: 43",
+  "schema": 1
 }

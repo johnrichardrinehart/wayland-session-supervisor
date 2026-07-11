@@ -72,6 +72,12 @@ let
     fi
     exit 42
   '';
+  restoreFailingCriu = pkgs.writeShellScript "restore-failing-criu" ''
+    if [ "''${1:-}" = --version ]; then
+      exec ${criu}/bin/criu --version
+    fi
+    exit 43
+  '';
   command = "${sessionLauncher}/bin/checkpoint-session";
 in
 pkgs.testers.runNixOSTest {
@@ -113,14 +119,6 @@ pkgs.testers.runNixOSTest {
     orphan_namespace_pid = machine.succeed(f"cat {state}/sessions/checkpoint/orphan.pid").strip()
     machine.succeed(f"for pid in $(cat /sys/fs/cgroup/wss-checkpoint/cgroup.procs); do test \"$(awk '/^NSpid:/ {{print $NF}}' /proc/$pid/status 2>/dev/null)\" = {orphan_namespace_pid} && echo $pid > /tmp/orphan-host.pid && exit 0; done; exit 1")
     before = json.loads(machine.succeed(f"cat {client_json}"))
-    diagnostic_path = machine.succeed(f"${supervisor}/bin/wayland-session-supervisor diagnose {common} {command}").strip().split()[-1]
-    diagnostic = json.loads(machine.succeed(f"cat {diagnostic_path}"))
-    assert diagnostic["schema"] == 1
-    assert diagnostic["domain"]["equal"]
-    assert diagnostic["checkpoint_root_pid"] == diagnostic["domain"]["checkpoint_root_pid"]
-    assert len(diagnostic["processes"]) >= 3
-    latest_diagnostics = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
-    assert diagnostic_path.endswith(latest_diagnostics["report"])
     # An unrelated process placed in the managed cgroup is outside the
     # namespace-init tree and must make capture fail before CRIU runs.
     machine.succeed("systemd-run --unit=wss-outside sleep 300")
@@ -144,6 +142,9 @@ pkgs.testers.runNixOSTest {
       f"{state}/sessions/checkpoint/checkpoints/failed-*/checkpoint.json"
     )
     machine.succeed(f"jq -e '.schema == 1 and .criu_exit_status != \"\"' {state}/sessions/checkpoint/checkpoints/failed-*/failure-analysis.json")
+    latest = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
+    assert latest["report"].endswith("/diagnostics.json")
+    assert latest["failure_analysis"].endswith("/failure-analysis.json")
     machine.succeed(f"nsenter -t $(cat {state}/sessions/checkpoint/session.pid) -p kill -0 $(cat {state}/sessions/checkpoint/client.pid)")
 
     machine.succeed(
@@ -174,6 +175,14 @@ pkgs.testers.runNixOSTest {
     failure = json.loads(machine.succeed(f"cat {checkpoint_path}/restore-failure.json"))
     assert failure["kind"] == "incompatible"
     assert "compatibility mismatch" in failure["reason"]
+    latest = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
+    assert latest["report"].endswith("/diagnostics.json")
+    assert latest["failure_analysis"].endswith("/restore-failure.json")
+    machine.fail(f"${supervisor}/bin/wayland-session-supervisor restore --criu ${restoreFailingCriu} {common} {command}")
+    machine.succeed(f"jq -e '.kind == \"criu-restore\"' {checkpoint_path}/restore-failure.json")
+    machine.succeed(f"jq -e '.schema == 1 and .criu_exit_status != \"\"' {checkpoint_path}/restore-failure-analysis.json")
+    latest = json.loads(machine.succeed(f"cat {state}/sessions/checkpoint/latest-diagnostics.json"))
+    assert latest["failure_analysis"].endswith("/restore-failure-analysis.json")
     assert machine.succeed(
       f"sha256sum {checkpoint_path}/checkpoint.json | cut -d' ' -f1"
     ).strip() == checkpoint_hash
@@ -204,7 +213,7 @@ pkgs.testers.runNixOSTest {
     assert after["counter"] == before["counter"] + 1
     assert after["roundtrip_result"] >= 0
     machine.succeed("mkdir -p /tmp/checkpoint-evidence")
-    machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,diagnostics.json,domain-inventory.json,restore-failure.json}} /tmp/checkpoint-evidence/")
+    machine.succeed(f"cp {checkpoint_path}/{{checkpoint.json,diagnostics.json,domain-inventory.json,restore-failure.json,restore-failure-analysis.json}} /tmp/checkpoint-evidence/")
     machine.succeed(f"find {state}/sessions/checkpoint/checkpoints/failed-* -name failure-analysis.json -exec cp {{}} /tmp/checkpoint-evidence/failure-analysis.json \\; -quit")
     machine.succeed(f"cp {state}/sessions/checkpoint/outer-supervisor.json /tmp/checkpoint-evidence/")
     machine.succeed(f"jq -n --argjson namespace_pid {orphan_namespace_pid} --argjson host_pid $(cat /tmp/orphan-host.pid) '{{schema:1,kind:\"double-forked-orphan\",namespace_pid:$namespace_pid,host_pid:$host_pid,present_in_equal_inventory:true}}' > /tmp/checkpoint-evidence/orphan.json")

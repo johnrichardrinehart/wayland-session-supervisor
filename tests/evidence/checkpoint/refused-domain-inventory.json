@@ -1,25 +1,25 @@
 {
   "schema": 1,
-  "checkpoint_root_pid": 879,
+  "checkpoint_root_pid": 819,
   "cgroup_path": "/sys/fs/cgroup/wss-checkpoint",
   "cgroup_pids": [
-    879,
-    880,
-    884,
-    888,
-    889,
-    890,
-    893,
-    944
+    819,
+    822,
+    824,
+    828,
+    829,
+    830,
+    833,
+    873
   ],
   "tree_pids": [
-    879,
-    880,
-    884,
-    888,
-    889,
-    890,
-    893
+    819,
+    822,
+    824,
+    828,
+    829,
+    830,
+    833
   ],
   "equal": false,
   "error": null

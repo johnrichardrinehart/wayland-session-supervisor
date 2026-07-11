@@ -23,7 +23,6 @@ Commands take a structured compositor argv after `--`; no shell evaluates it:
 
 ```console
 wayland-session-supervisor run --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
-wayland-session-supervisor diagnose --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
 wayland-session-supervisor capture --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
 wayland-session-supervisor restore --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
 ```
