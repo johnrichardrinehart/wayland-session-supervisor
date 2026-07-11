@@ -6,6 +6,7 @@
 {
   package = self.packages.${system}.default;
   cargo-test = self.packages.${system}.default;
+  checkpoint = import ./checkpoint.nix { inherit pkgs self system; };
   core-integration =
     pkgs.runCommand "wayland-session-supervisor-core-integration"
       {

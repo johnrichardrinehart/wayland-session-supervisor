@@ -1,3 +1,6 @@
+pub mod checkpoint;
+
+use checkpoint::write_session_manifest;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -87,6 +90,7 @@ impl SessionDomain {
         ensure_private_directory(&session_runtime_dir, 0o700)?;
         ensure_private_directory(&session_runtime_dir.join("tmp"), 0o700)?;
         write_resource_manifest(&session_state_dir)?;
+        write_session_manifest(&config, &session_state_dir)?;
 
         if let Some(cgroup_dir) = &config.cgroup_dir {
             ensure_cgroup_directory(cgroup_dir)?;
@@ -143,6 +147,7 @@ impl SessionDomain {
             });
         }
         let child = command.spawn()?;
+        write_atomic_pid(&self.session_state_dir.join("session.pid"), child.id())?;
         adapters.activate()?;
         if let Some(cgroup_dir) = &self.config.cgroup_dir {
             write_cgroup_pid(cgroup_dir, child.id())?;
@@ -297,6 +302,19 @@ fn ensure_private_directory(path: &Path, mode: u32) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+fn write_atomic_pid(path: &Path, pid: u32) -> io::Result<()> {
+    let temporary = path.with_extension("tmp");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    writeln!(output, "{pid}")?;
+    output.sync_all()?;
+    fs::rename(temporary, path)
 }
 
 fn write_resource_manifest(state_dir: &Path) -> io::Result<()> {
