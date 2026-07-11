@@ -2,7 +2,7 @@
 
 A supervisor for checkpointing and restoring a controlled Wayland session domain across reboot.
 
-The project is under active development. Exact restoration, resource adapters, compatibility policy, and the deterministic NixOS VM evidence suite are tracked in `docs/` and `nix/checks/` as they are implemented. Relaunching applications is not considered exact restoration.
+The supervisor implements exact process-image restoration; relaunching applications is never represented as restoration. See [architecture](docs/architecture.md), [checkpoint format](docs/checkpoint-format.md), [state proof](docs/state-proof.md), [resource adapters](docs/resource-adapters.md), and [Nix source closures](docs/nix-source-closures.md).
 
 ## Development
 
@@ -15,11 +15,23 @@ nix flake check
 
 The flake exposes the package, NixOS module, formatter, development shell, and checks. Development-only `git-hooks.nix` and `treefmt-nix` inputs are isolated in a flake-parts partition.
 
+## CLI
+
+Commands take a structured compositor argv after `--`; no shell evaluates it:
+
+```console
+wayland-session-supervisor run --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
+wayland-session-supervisor capture --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
+wayland-session-supervisor restore --session desktop -- /run/current-system/sw/bin/sway --unsupported-gpu
+```
+
+`--state-dir`, `--runtime-dir`, and `--cgroup-dir` select explicit ownership boundaries. Restore requires the same argv and executable identity and rejects incompatibility before mutating runtime or process state.
+
 ## Runtime requirements
 
 The executable intentionally resolves the following runtime tools through `PATH`:
 
-- `unshare` from `util-linux`: creates the dedicated PID namespace and keeps a namespace-init process as the reaper and checkpoint root.
+- `unshare` and `setsid` from `util-linux`: create the dedicated PID namespace and session while keeping a namespace-init process as the reaper and checkpoint root.
 - `criu`: captures and restores the complete process tree. The application VM currently requires CRIU 4.2; Nixpkgs CRIU 4.1.1 fails its Sway workload during page transfer.
 - `uname` from `coreutils`: records and validates kernel compatibility.
 - The configured compositor executable when its first argv element is a name rather than an immutable path.

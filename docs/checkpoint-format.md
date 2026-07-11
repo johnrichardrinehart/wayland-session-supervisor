@@ -11,10 +11,13 @@ path, SHA-256 executable digest, and resource-manifest digest.
 
 1. validates the live session identity;
 2. creates a private `.staging-<id>` checkpoint directory;
-3. writes a `capturing` manifest and snapshots reproducible runtime files;
-4. invokes CRIU for the recorded session root PID;
+3. writes a `capturing` manifest;
+4. verifies that every cgroup process descends from the PID-namespace init and
+   invokes CRIU for that recorded checkpoint root;
 5. preserves a failed capture as `failed-<id>` with its log and failure status;
-6. hashes every CRIU image and reproducible runtime file;
+6. while processes remain stopped, recursively snapshots reproducible runtime
+   files, directories, and FIFO metadata (`runtime-fifos.json`), then hashes
+   every CRIU image and snapshot file;
 7. writes and fsyncs a `complete` manifest; and
 8. atomically renames the staging directory and updates `current-checkpoint`.
 
@@ -23,8 +26,9 @@ session intact when CRIU itself did not dump it.
 
 ## Restore
 
-`restore` performs all compatibility checks before recreating runtime files or
-invoking CRIU. It compares:
+`restore` parses a known manifest schema and performs all compatibility and
+integrity checks before recreating runtime files or invoking CRIU. Unknown
+schemas are rejected. It compares:
 
 - structured compositor argv;
 - canonical compositor executable and SHA-256 digest;

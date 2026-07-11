@@ -15,10 +15,13 @@ socket and correctly prevents an unannotated CRIU dump. Production adapters
 must be explicitly listed in the manifest; accidental external descriptors are
 a capture error.
 
-The session receives private runtime and temporary directories. Future PID,
-mount, IPC, and user namespaces may strengthen isolation, but a namespace is
-not treated as a substitute for resource ownership. The cgroup is the freeze,
-inventory, and kill boundary.
+The session receives private runtime and temporary directories and runs in a
+dedicated PID namespace. A stable namespace-init process is PID 1 inside that
+namespace, reaps orphans, and is the CRIU checkpoint root; daemonized and
+double-forked clients therefore cannot escape the process tree. Before capture,
+the supervisor compares the cgroup inventory with descendants of that root and
+refuses an incomplete domain. The cgroup remains the freeze, inventory, and
+kill boundary.
 
 ## Resource ownership
 
@@ -94,6 +97,8 @@ The NixOS VM test:
    counter, and another successful round trip on the existing connection.
 
 This proves the central exact-restoration premise for an encapsulated headless
-Wayland domain across a cold guest reboot. It does not yet prove niri, native
-DRM/GPU/input/audio, or the full application suite. Those remain gated by their
-own adapters and VM evidence.
+Wayland domain across a cold guest reboot. `application-reboot` extends it to
+Sway, Chromium, foot with an interactive shell, mpv, and aplay; it also proves
+restored compositor IPC, post-restore input control, and connection of a new
+Wayland client. Native DRM/GPU/input/audio hardware remains outside the proven
+headless adapter boundary.
