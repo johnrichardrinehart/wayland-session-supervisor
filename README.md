@@ -41,7 +41,7 @@ The executable intentionally resolves the following runtime tools through `PATH`
 
 The NixOS module defaults `criuPackage` to the shared CRIU 4.2 derivation and puts it with `util-linux`, `coreutils`, and `wtype` on the service `PATH`. Direct CLI users must provide them explicitly; no ambient fallback or shell interpolation is used.
 
-Creating PID namespaces and checkpointing processes require the corresponding Linux capabilities. The provided NixOS service runs with the required authority and delegates its cgroup.
+Creating PID namespaces and checkpointing processes require the corresponding Linux capabilities. The provided root NixOS service has that authority directly. An unprivileged delegated-cgroup session must pass `--namespace-launcher /run/wrappers/bin/<name>` naming a setuid-root wrapper whose source is the supervisor binary. The wrapper performs only `clone3(CLONE_NEWPID | CLONE_INTO_CGROUP)`, then drops to the real UID/GID before executing namespace PID 1; the compositor remains in the initial user namespace, preserving root-owned files and setuid programs.
 
 ## License
 

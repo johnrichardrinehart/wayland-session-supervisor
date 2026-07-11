@@ -22,6 +22,7 @@ pub struct SessionConfig {
     pub state_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub cgroup_dir: Option<PathBuf>,
+    pub namespace_launcher: Option<PathBuf>,
     pub compositor_argv: Vec<OsString>,
 }
 
@@ -32,6 +33,7 @@ impl SessionConfig {
         let mut state_dir = PathBuf::from("/var/lib/wayland-session-supervisor");
         let mut runtime_dir = PathBuf::from("/run/wayland-session-supervisor");
         let mut cgroup_dir = None;
+        let mut namespace_launcher = None;
 
         loop {
             let argument = arguments
@@ -52,6 +54,7 @@ impl SessionConfig {
                 Some("--state-dir") => state_dir = value.into(),
                 Some("--runtime-dir") => runtime_dir = value.into(),
                 Some("--cgroup-dir") => cgroup_dir = Some(value.into()),
+                Some("--namespace-launcher") => namespace_launcher = Some(value.into()),
                 _ => return Err(format!("unknown option: {}", argument.to_string_lossy())),
             }
         }
@@ -67,6 +70,7 @@ impl SessionConfig {
             state_dir,
             runtime_dir,
             cgroup_dir,
+            namespace_launcher,
             compositor_argv,
         })
     }
@@ -127,7 +131,29 @@ impl SessionDomain {
             .cgroup_dir
             .as_ref()
             .is_some_and(|path| path.starts_with("/sys/fs/cgroup"));
-        let mut command = if kernel_cgroup {
+        let needs_privileged_launcher = kernel_cgroup && unsafe { libc::geteuid() } != 0;
+        let mut command = if needs_privileged_launcher {
+            let launcher = self.config.namespace_launcher.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "unprivileged kernel-cgroup sessions require --namespace-launcher",
+                )
+            })?;
+            let cgroup_fd = cgroup_fd.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "missing managed cgroup")
+            })?;
+            let mut command = Command::new(launcher);
+            command
+                .arg("namespace-launch")
+                .arg("--cgroup-fd")
+                .arg(cgroup_fd.to_string())
+                .arg("--")
+                .arg(std::env::current_exe()?)
+                .arg("namespace-init")
+                .arg("--")
+                .args(&self.config.compositor_argv);
+            command
+        } else if kernel_cgroup {
             let mut command = Command::new(std::env::current_exe()?);
             command
                 .arg("namespace-init")
@@ -175,6 +201,12 @@ impl SessionDomain {
                 if session_result == -1 {
                     return Err(io::Error::last_os_error());
                 }
+                if needs_privileged_launcher {
+                    let cgroup_fd = cgroup_fd.expect("launcher requires a cgroup descriptor");
+                    if libc::fcntl(cgroup_fd, libc::F_SETFD, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
                 if let Some(cgroup_fd) = cgroup_fd.filter(|_| !kernel_cgroup) {
                     // Place this soon-to-exec unshare process in the managed
                     // cgroup before it can fork the namespace init. Build the
@@ -201,8 +233,9 @@ impl SessionDomain {
                 Ok(())
             });
         }
-        let child = if kernel_cgroup {
-            enter_identity_user_namespace()?;
+        let child = if needs_privileged_launcher {
+            ManagedChild::Unshare(command.spawn()?)
+        } else if kernel_cgroup {
             let cgroup_fd = cgroup_fd.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "missing managed cgroup")
             })?;
@@ -305,23 +338,64 @@ struct CloneArgs {
     cgroup: u64,
 }
 
-fn enter_identity_user_namespace() -> io::Result<()> {
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    if uid == 0 {
-        return Ok(());
+pub fn run_privileged_namespace_launcher(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> io::Result<ExitStatus> {
+    let real_uid = unsafe { libc::getuid() };
+    let real_gid = unsafe { libc::getgid() };
+    if unsafe { libc::geteuid() } != 0 || real_uid == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "namespace launcher must be invoked through its setuid-root wrapper by a non-root user",
+        ));
     }
-    if unsafe { libc::unshare(libc::CLONE_NEWUSER) } == -1 {
+
+    let mut arguments = arguments.into_iter();
+    if arguments.next().as_deref() != Some(OsStr::new("--cgroup-fd")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing --cgroup-fd",
+        ));
+    }
+    let cgroup_fd: i32 = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid cgroup descriptor"))?;
+    if unsafe { libc::fcntl(cgroup_fd, libc::F_GETFD) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    // Identity mappings preserve D-Bus SO_PEERCRED while the calling process
-    // retains capabilities in the new user namespace long enough to create
-    // the managed PID namespace. The compositor loses those capabilities at
-    // exec because its numeric UID remains nonzero.
-    fs::write("/proc/self/setgroups", "deny\n")?;
-    fs::write("/proc/self/uid_map", format!("{uid} {uid} 1\n"))?;
-    fs::write("/proc/self/gid_map", format!("{gid} {gid} 1\n"))?;
-    Ok(())
+    if arguments.next().as_deref() != Some(OsStr::new("--")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing -- before namespace command",
+        ));
+    }
+    let argv: Vec<_> = arguments.collect();
+    let executable = argv
+        .first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing namespace command"))?;
+    // The helper is a dedicated short-lived process. Remove supplementary
+    // groups before cloning so the child cannot retain groups from the
+    // setuid-root transition after Command drops its UID and primary GID.
+    if unsafe { libc::setgroups(0, std::ptr::null()) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut command = Command::new(executable);
+    command.args(&argv[1..]).uid(real_uid).gid(real_gid);
+
+    let child = clone3_into_cgroup(&mut command, cgroup_fd)?;
+    let mut status = 0;
+    loop {
+        let result = unsafe { libc::waitpid(child as i32, &mut status, 0) };
+        if result == child as i32 {
+            return Ok(ExitStatus::from_raw(status));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
 }
 
 fn clone3_into_cgroup(command: &mut Command, cgroup_fd: i32) -> io::Result<u32> {
@@ -711,6 +785,7 @@ mod tests {
             state_dir: root.join("state"),
             runtime_dir: root.join("runtime"),
             cgroup_dir: None,
+            namespace_launcher: None,
             compositor_argv: vec![OsString::from("true")],
         };
         let domain = SessionDomain::prepare(config).unwrap();

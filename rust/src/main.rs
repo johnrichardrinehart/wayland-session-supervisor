@@ -2,6 +2,7 @@ use std::process::ExitCode;
 use wayland_session_supervisor::checkpoint::{CheckpointOptions, capture, diagnose, restore};
 use wayland_session_supervisor::{
     SessionConfig, SessionDomain, command_display, run_namespace_init,
+    run_privileged_namespace_launcher,
 };
 
 fn main() -> ExitCode {
@@ -12,11 +13,22 @@ fn main() -> ExitCode {
         Some(command) if command == "diagnose" => diagnostics(arguments),
         Some(command) if command == "restore" => checkpoint(arguments, false),
         Some(command) if command == "namespace-init" => namespace_init(arguments),
+        Some(command) if command == "namespace-launch" => namespace_launch(arguments),
         _ => {
             eprintln!(
                 "usage: wayland-session-supervisor <run|diagnose|capture|restore> [OPTIONS] -- COMPOSITOR [ARG ...]"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn namespace_launch(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    match run_privileged_namespace_launcher(arguments) {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(error) => {
+            eprintln!("namespace launch failed: {error}");
+            ExitCode::FAILURE
         }
     }
 }
