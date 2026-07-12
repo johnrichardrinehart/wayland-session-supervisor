@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..4d8836db3
+index 000000000..e501f6648
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,361 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -321,6 +321,41 @@ index 000000000..4d8836db3
 +minimal boundary above, not for sharing, mutable contexts, synchronization,
 +KMS, Niri, reboot, or production safety.
 +
++### Sharing expansion baseline
++
++`test/others/i915-criu/i915-gem-sharing.c` creates one object, exports it as a
++dma-buf, imports it into a separately opened i915 file in a child process, and
++maps it in both processes. Its uncheckpointed control run proves bidirectional
++CPU visibility and a subsequent parent `EXECBUFFER2`/`GEM_WAIT`. The matching
++`run-sharing-criu.sh` currently expects exact restoration once sharing support
++is implemented.
++
++On the minimal v1 ABI, `I915_CRIU_EXPECT_UNSUPPORTED=1` instead verifies that
++the shared-object query causes an ordinary CRIU dump refusal. This regression
++also covers an earlier plugin cleanup bug where refusal before the first object
++allocation dereferenced a nonexistent dump object and terminated CRIU with
++`SIGSEGV`. The unsupported baseline must remain fail-closed while the sharing
++transaction is developed.
++
++The current sharing transaction keeps one opaque kernel-assigned object ID on
++each i915 GEM object, so every handle in independently opened i915 files emits
++the same image identity without exposing a kernel pointer. CRIU's
++`FINALIZE_DEVICES` hook runs only after every task's file table is dumped and
++refuses the checkpoint unless the number of captured handles for each object
++exactly matches the driver's handle count. Restore creates the object once,
++uses PRIME import to recreate subsequent private handles, compares duplicate
++payloads, and delays every per-file transaction commit until all required
++handles and mappings exist.
++
++`I915_CRIU_EXTERNAL_PEER=1 run-sharing-criu.sh` reparents the importing peer
++outside the captured tree and requires the finalize hook to refuse the missing
++handle before dump completion.
++
++This stage does not yet admit an independently held dma-buf fd, an external
++attachment, or an imported non-i915 object. Those states remain unsupported
++until fd/attachment membership can be proven against the complete captured
++domain; handle equality alone is not sufficient evidence.
++
 +## Privileged evidence policy
 +
 +The initial root inventory now records module policy values, effective GuC
@@ -397,10 +432,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..02cc43a68
+index 000000000..3c3db7bca
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,66 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -409,14 +444,16 @@ index 000000000..02cc43a68
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 1
++#define I915_CRIU_ABI_VERSION 2
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
 +#define I915_CRIU_SESSION_ABORT 4
 +#define I915_CRIU_OBJECT_QUERY 1
 +#define I915_CRIU_OBJECT_CREATE 2
++#define I915_CRIU_OBJECT_IMPORT 3
 +#define I915_CRIU_OBJECT_SHMEM (1u << 0)
++#define I915_CRIU_OBJECT_SHARED (1u << 0)
 +#define I915_CRIU_DATA_READ 1
 +#define I915_CRIU_DATA_WRITE 2
 +
@@ -440,7 +477,9 @@ index 000000000..02cc43a68
 +	uint64_t mmap_offset;
 +	uint32_t mmap_type;
 +	uint32_t pad;
-+	uint64_t reserved[4];
++	uint32_t handle_count;
++	uint32_t sharing_flags;
++	uint64_t reserved[3];
 +};
 +
 +struct drm_i915_criu_data {
@@ -463,38 +502,79 @@ index 000000000..02cc43a68
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3f, struct drm_i915_criu_data)
 +
 +#endif
-diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu-v1.patch b/contrib/i915-criu/linux-7.1.3-i915-criu-v1.patch
+diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..1bd6fcb1d
+index 000000000..b5f5117ce
 --- /dev/null
-+++ b/contrib/i915-criu/linux-7.1.3-i915-criu-v1.patch
-@@ -0,0 +1,486 @@
++++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
+@@ -0,0 +1,659 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
 ++++ b/drivers/gpu/drm/i915/Makefile
-+@@ -27,0 +28 @@ i915-y += \
++@@ -25,6 +25,7 @@ subdir-ccflags-y += -I$(src)
++ # core driver code
++ i915-y += \
++ 	i915_config.o \
 ++	i915_criu.o \
++ 	i915_driver.o \
++ 	i915_drm_client.o \
++ 	i915_edram.o \
 +diff --git a/drivers/gpu/drm/i915/gem/i915_gem_context.c b/drivers/gpu/drm/i915/gem/i915_gem_context.c
 +index 6ac0f23..11f4c46 100644
 +--- a/drivers/gpu/drm/i915/gem/i915_gem_context.c
 ++++ b/drivers/gpu/drm/i915/gem/i915_gem_context.c
-+@@ -2368,0 +2369 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
++@@ -2366,10 +2366,12 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
++ {
++ 	struct drm_i915_private *i915 = to_i915(dev);
++ 	struct drm_i915_gem_context_create_ext *args = data;
 ++	struct drm_i915_file_private *file_priv = file->driver_priv;
-+@@ -2372,0 +2374 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
++ 	struct create_ext ext_data;
++ 	int ret;
++ 	u32 id;
++ 
 ++	file_priv->criu_context_touched = true;
-+@@ -2444,0 +2447 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
++ 	if (!DRIVER_CAPS(i915)->has_logical_contexts)
++ 		return -ENODEV;
++ 
++@@ -2442,6 +2444,7 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
++ 	struct i915_gem_proto_context *pc;
++ 	struct i915_gem_context *ctx;
++ 
 ++	file_priv->criu_context_touched = true;
-+@@ -2608,0 +2612 @@ int i915_gem_context_setparam_ioctl(struct drm_device *dev, void *data,
++ 	if (args->pad != 0)
++ 		return -EINVAL;
++ 
++@@ -2606,6 +2609,7 @@ int i915_gem_context_setparam_ioctl(struct drm_device *dev, void *data,
++ 	struct i915_gem_context *ctx;
++ 	int ret = 0;
++ 
 ++	file_priv->criu_context_touched = true;
++ 	mutex_lock(&file_priv->proto_context_lock);
++ 	ctx = __context_lookup(file_priv, args->ctx_id);
++ 	if (!ctx) {
++diff --git a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
++index 969f6ea..2071840 100644
++--- a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
+++++ b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
++@@ -250,6 +250,9 @@ struct drm_i915_gem_object {
++ 
++ 	const struct drm_i915_gem_object_ops *ops;
++ 
+++	/* Stable opaque identity for versioned CRIU object-graph images. */
+++	u64 criu_id;
+++
++ 	struct {
++ 		/**
++ 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..2594477
++index 0000000..9dac217
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,323 @@
++@@ -0,0 +1,384 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 1. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 2. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/pid.h>
@@ -514,6 +594,25 @@ index 000000000..1bd6fcb1d
 ++#define I915_CRIU_MODE_NONE    0
 ++#define I915_CRIU_MODE_DUMP    1
 ++#define I915_CRIU_MODE_RESTORE 2
+++
+++static DEFINE_MUTEX(i915_criu_object_id_lock);
+++static atomic64_t i915_criu_next_object_id = ATOMIC64_INIT(0);
+++
+++static u64 checkpoint_object_id(struct drm_i915_gem_object *obj)
+++{
+++	u64 id;
+++
+++	mutex_lock(&i915_criu_object_id_lock);
+++	id = obj->criu_id;
+++	if (!id) {
+++		id = atomic64_inc_return(&i915_criu_next_object_id);
+++		if (!id)
+++			id = atomic64_inc_return(&i915_criu_next_object_id);
+++		obj->criu_id = id;
+++	}
+++	mutex_unlock(&i915_criu_object_id_lock);
+++	return id;
+++}
 ++
 ++static int authorize_dump_target(pid_t pid)
 ++{
@@ -713,7 +812,7 @@ index 000000000..1bd6fcb1d
 ++		}
 ++
 ++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
-++		    obj->base.dma_buf || obj->base.handle_count != 1 ||
+++		    !obj->base.handle_count || obj->base.handle_count > U32_MAX ||
 ++		    i915_gem_object_is_userptr(obj)) {
 ++			ret = -EOPNOTSUPP;
 ++			goto put_obj;
@@ -730,15 +829,20 @@ index 000000000..1bd6fcb1d
 ++			goto put_obj;
 ++
 ++		args->handle = handle;
-++		args->object_id = handle;
+++		args->object_id = checkpoint_object_id(obj);
 ++		args->size = obj->base.size;
 ++		args->flags = I915_CRIU_OBJECT_SHMEM;
 ++		args->mmap_offset = mmap.offset;
 ++		args->mmap_type = I915_MMAP_OFFSET_WB;
+++		args->handle_count = obj->base.handle_count;
+++		args->sharing_flags = obj->base.dma_buf ||
+++			obj->base.handle_count > 1 ? I915_CRIU_OBJECT_SHARED : 0;
 ++put_obj:
 ++		i915_gem_object_put(obj);
-++	} else if (args->op == I915_CRIU_OBJECT_CREATE) {
+++	} else if (args->op == I915_CRIU_OBJECT_CREATE ||
+++		   args->op == I915_CRIU_OBJECT_IMPORT) {
 ++		struct drm_i915_gem_create create = { .size = args->size };
+++		u32 handle = args->handle;
 ++		void *old;
 ++
 ++		ret = check_session(fpriv, args->cookie,
@@ -746,25 +850,62 @@ index 000000000..1bd6fcb1d
 ++		if (ret)
 ++			goto out;
 ++		if (args->flags != I915_CRIU_OBJECT_SHMEM || !args->object_id ||
-++		    !args->size) {
+++		    !args->size || !args->handle_count ||
+++		    args->sharing_flags & ~I915_CRIU_OBJECT_SHARED) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
 ++
-++		ret = i915_gem_create_ioctl(dev, &create, file);
-++		if (ret)
-++			goto out;
-++
-++		old = xa_store(&fpriv->criu_restore_handles, args->object_id,
-++			       xa_mk_value(create.handle), GFP_KERNEL);
-++		if (xa_is_err(old) || old) {
-++			drm_gem_handle_delete(file, create.handle);
-++			ret = old ? -EEXIST : xa_err(old);
+++		if (args->op == I915_CRIU_OBJECT_CREATE) {
+++			ret = i915_gem_create_ioctl(dev, &create, file);
+++			if (ret)
+++				goto out;
+++			handle = create.handle;
+++		} else if (!handle) {
+++			ret = -EINVAL;
 ++			goto out;
 ++		}
-++		args->handle = create.handle;
+++
+++		obj = i915_gem_object_lookup(file, handle);
+++		if (!obj) {
+++			ret = -ENOENT;
+++			goto delete_handle;
+++		}
+++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
+++		    i915_gem_object_is_userptr(obj) || obj->base.size != args->size) {
+++			ret = -EINVAL;
+++			goto put_restore_obj;
+++		}
+++
+++		mutex_lock(&i915_criu_object_id_lock);
+++		if (obj->criu_id && obj->criu_id != args->object_id)
+++			ret = -EEXIST;
+++		else {
+++			obj->criu_id = args->object_id;
+++			if (atomic64_read(&i915_criu_next_object_id) < args->object_id)
+++				atomic64_set(&i915_criu_next_object_id,
+++					     args->object_id);
+++		}
+++		mutex_unlock(&i915_criu_object_id_lock);
+++		if (ret)
+++			goto put_restore_obj;
+++
+++		old = xa_store(&fpriv->criu_restore_handles, args->object_id,
+++			       xa_mk_value(handle), GFP_KERNEL);
+++		if (xa_is_err(old) || old) {
+++			ret = old ? -EEXIST : xa_err(old);
+++			goto put_restore_obj;
+++		}
+++		i915_gem_object_put(obj);
+++		args->handle = handle;
 ++		args->mmap_type = I915_MMAP_OFFSET_WB;
 ++		args->mmap_offset = 0;
+++		goto out;
+++
+++put_restore_obj:
+++		i915_gem_object_put(obj);
+++delete_handle:
+++		drm_gem_handle_delete(file, handle);
 ++	} else {
 ++		ret = -EINVAL;
 ++	}
@@ -844,19 +985,40 @@ index 000000000..1bd6fcb1d
 +index d9be7a5..3ece166 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
-+@@ -102,0 +103 @@
++@@ -100,6 +100,7 @@
++ #include "i915_dsb_buffer.h"
++ #include "i915_edram.h"
++ #include "i915_file_private.h"
 ++#include "i915_criu.h"
-+@@ -1028,0 +1030 @@ static void i915_driver_postclose(struct drm_device *dev, struct drm_file *file)
++ #include "i915_getparam.h"
++ #include "i915_gmch.h"
++ #include "i915_hdcp_gsc.h"
++@@ -1026,6 +1027,7 @@ static void i915_driver_postclose(struct drm_device *dev, struct drm_file *file)
++ 	struct drm_i915_file_private *file_priv = file->driver_priv;
++ 
++ 	i915_gem_context_close(file);
 ++	i915_criu_file_fini(file);
-+@@ -1851,0 +1854,3 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++ 	i915_drm_client_put(file_priv->client);
++ 
++ 	kfree_rcu(file_priv, rcu);
++@@ -1849,6 +1851,9 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++ 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
++ 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
++ 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_SESSION, i915_criu_session_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_OBJECT, i915_criu_object_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_DATA, i915_criu_data_ioctl, DRM_RENDER_ALLOW),
++ };
++ 
++ /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
 +index c9cb8ee..164875c 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
-+@@ -108,0 +109,7 @@ struct drm_i915_file_private {
++@@ -106,6 +106,13 @@ struct drm_i915_file_private {
++ 	unsigned long hang_timestamp;
++ 
++ 	struct i915_drm_client *client;
 ++
 ++	/* Experimental transactional checkpoint/restore state. */
 ++	struct mutex criu_lock;
@@ -864,39 +1026,76 @@ index 000000000..1bd6fcb1d
 ++	u64 criu_cookie;
 ++	u32 criu_mode;
 ++	bool criu_context_touched;
++ };
++ 
++ #endif /* __I915_FILE_PRIVATE_H__ */
 +diff --git a/drivers/gpu/drm/i915/i915_gem.c b/drivers/gpu/drm/i915/i915_gem.c
 +index a432daf..5beb4ff 100644
 +--- a/drivers/gpu/drm/i915/i915_gem.c
 ++++ b/drivers/gpu/drm/i915/i915_gem.c
-+@@ -56,0 +57 @@
++@@ -54,6 +54,7 @@
++ 
++ #include "i915_drv.h"
++ #include "i915_file_private.h"
 ++#include "i915_criu.h"
-+@@ -1336,0 +1338 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
++ #include "i915_trace.h"
++ #include "i915_vgpu.h"
++ #include "intel_clock_gating.h"
++@@ -1334,6 +1335,7 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
++ 
++ 	file_priv->bsd_engine = -1;
++ 	file_priv->hang_timestamp = jiffies;
 ++	i915_criu_file_init(file);
-+@@ -1344,0 +1347 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
++ 
++ 	ret = i915_gem_context_open(i915, file);
++ 	if (ret)
++@@ -1342,6 +1344,7 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
++ 	return 0;
++ 
++ err_context:
 ++	i915_criu_file_fini(file);
++ 	i915_drm_client_put(client);
++ err_client:
++ 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..0d1c736 100644
++index 535cb68..c726392 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -487,0 +488,3 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,9 @@ typedef struct _drm_i915_sarea {
++ #define DRM_I915_GEM_VM_CREATE		0x3a
++ #define DRM_I915_GEM_VM_DESTROY		0x3b
++ #define DRM_I915_GEM_CREATE_EXT		0x3c
 ++#define DRM_I915_CRIU_SESSION		0x3d
 ++#define DRM_I915_CRIU_OBJECT		0x3e
 ++#define DRM_I915_CRIU_DATA		0x3f
-+@@ -520,0 +524,3 @@ typedef struct _drm_i915_sarea {
++ /* Must be kept compact -- no holes */
++ 
++ #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
++@@ -518,6 +521,9 @@ typedef struct _drm_i915_sarea {
++ #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
++ #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
++ #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
 ++#define DRM_IOCTL_I915_CRIU_SESSION	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SESSION, struct drm_i915_criu_session)
 ++#define DRM_IOCTL_I915_CRIU_OBJECT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_OBJECT, struct drm_i915_criu_object)
 ++#define DRM_IOCTL_I915_CRIU_DATA	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_DATA, struct drm_i915_criu_data)
-+@@ -3908,0 +3915,62 @@ struct drm_i915_gem_create_ext_set_pat {
++ #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
++ #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
++ #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
++@@ -3906,6 +3912,73 @@ struct drm_i915_gem_create_ext_set_pat {
++ 	__u32 rsvd;
++ };
++ 
 ++/*
 ++ * Experimental, versioned i915 checkpoint/restore interface.
 ++ *
 ++ * A session is transactional. Dump sessions freeze the drm_file state until
 ++ * COMMIT or ABORT. Restore sessions retain every newly created object until
-++ * COMMIT and destroy them on ABORT. Version 1 deliberately supports only idle
-++ * ordinary shmem GEM objects without contexts, dma-buf sharing, userptr,
-++ * protected content, GPU VM bindings, synchronization objects, or KMS state.
+++ * COMMIT and destroy them on ABORT. Version 2 supports idle ordinary shmem
+++ * GEM objects shared between i915 file descriptions. It still refuses userptr,
+++ * external imports, protected content, mutable contexts, GPU VM bindings,
+++ * synchronization objects, and KMS state.
 ++ */
-++#define I915_CRIU_ABI_VERSION 1
+++#define I915_CRIU_ABI_VERSION 2
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -914,8 +1113,10 @@ index 000000000..1bd6fcb1d
 ++
 ++#define I915_CRIU_OBJECT_QUERY  1
 ++#define I915_CRIU_OBJECT_CREATE 2
+++#define I915_CRIU_OBJECT_IMPORT 3
 ++
 ++#define I915_CRIU_OBJECT_SHMEM (1u << 0)
+++#define I915_CRIU_OBJECT_SHARED (1u << 0)
 ++
 ++struct drm_i915_criu_object {
 ++	__u32 version;
@@ -924,14 +1125,16 @@ index 000000000..1bd6fcb1d
 ++	/* QUERY: previous handle, zero starts enumeration. CREATE: output handle. */
 ++	__u32 handle;
 ++	__u32 flags;
-++	/* Stable within one checkpoint image; supplied by userspace on CREATE. */
+++	/* Opaque identity shared by every handle to one object in the image. */
 ++	__u64 object_id;
 ++	__u64 size;
 ++	/* One CPU mmap offset in bytes for the minimal version. */
 ++	__u64 mmap_offset;
 ++	__u32 mmap_type;
 ++	__u32 pad;
-++	__u64 reserved[4];
+++	__u32 handle_count;
+++	__u32 sharing_flags;
+++	__u64 reserved[3];
 ++};
 ++
 ++#define I915_CRIU_DATA_READ  1
@@ -949,36 +1152,62 @@ index 000000000..1bd6fcb1d
 ++	__u64 reserved[4];
 ++};
 ++
++ /* ID of the protected content session managed by i915 when PXP is active */
++ #define I915_PROTECTED_CONTENT_DEFAULT_SESSION 0xf
++ 
 +diff --git a/kernel/ptrace.c b/kernel/ptrace.c
 +index 130043b..0e0e1ff 100644
 +--- a/kernel/ptrace.c
 ++++ b/kernel/ptrace.c
-+@@ -366,0 +367 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
++@@ -364,6 +364,7 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
++ 	task_unlock(task);
++ 	return !err;
++ }
 ++EXPORT_SYMBOL_GPL(ptrace_may_access);
++ 
++ static int check_ptrace_options(unsigned long data)
++ {
+diff --git a/criu/cr-dump.c b/criu/cr-dump.c
+index 60b8e793c..6b77061c6 100644
+--- a/criu/cr-dump.c
++++ b/criu/cr-dump.c
+@@ -2247,6 +2247,9 @@ int cr_dump_tasks(pid_t pid)
+ 			goto err;
+ 	}
+ 
++	if (finalize_device_plugins())
++		goto err;
++
+ 	if (parent_ie) {
+ 		inventory_entry__free_unpacked(parent_ie, NULL);
+ 		parent_ie = NULL;
 diff --git a/criu/include/criu-plugin.h b/criu/include/criu-plugin.h
-index 9fb21a449..29b798a1e 100644
+index 9fb21a449..289d28ce1 100644
 --- a/criu/include/criu-plugin.h
 +++ b/criu/include/criu-plugin.h
-@@ -62,6 +62,8 @@ enum {
+@@ -62,6 +62,10 @@ enum {
  
  	CR_PLUGIN_HOOK__POST_FORKING = 12,
  
 +	CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA = 13,
 +
++	CR_PLUGIN_HOOK__FINALIZE_DEVICES = 14,
++
  	CR_PLUGIN_HOOK__MAX
  };
  
-@@ -81,6 +83,9 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
+@@ -81,6 +85,10 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PAUSE_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__CHECKPOINT_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__POST_FORKING, void);
 +DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA,
 +			 const char *name, int pid, uint64_t start,
 +			 uint64_t pgoff, int *surrogate_fd);
++DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__FINALIZE_DEVICES, void);
  
  enum {
  	CR_PLUGIN_STAGE__DUMP,
-@@ -115,10 +120,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
+@@ -115,10 +123,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
  
  static inline int cr_plugin_dummy_init(int stage)
  {
@@ -992,18 +1221,57 @@ index 9fb21a449..29b798a1e 100644
  }
  
  #define CR_PLUGIN_REGISTER_DUMMY(___name)         \
+diff --git a/criu/include/plugin.h b/criu/include/plugin.h
+index 0115e6ea0..e5165feb9 100644
+--- a/criu/include/plugin.h
++++ b/criu/include/plugin.h
+@@ -11,6 +11,7 @@
+ 
+ void cr_plugin_fini(int stage, int err);
+ int cr_plugin_init(int stage);
++int finalize_device_plugins(void);
+ 
+ typedef struct {
+ 	struct list_head head;
 diff --git a/criu/plugin.c b/criu/plugin.c
-index 18da0499d..db54ee28b 100644
+index 18da0499d..c16c20adc 100644
 --- a/criu/plugin.c
 +++ b/criu/plugin.c
-@@ -60,6 +60,7 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
+@@ -60,6 +60,8 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
  	__assign_hook(PAUSE_DEVICES, "cr_plugin_pause_devices");
  	__assign_hook(CHECKPOINT_DEVICES, "cr_plugin_checkpoint_devices");
  	__assign_hook(POST_FORKING, "cr_plugin_post_forking");
 +	__assign_hook(HANDLE_ANON_DEVICE_VMA, "cr_plugin_handle_anon_device_vma");
++	__assign_hook(FINALIZE_DEVICES, "cr_plugin_finalize_devices");
  
  #undef __assign_hook
  
+@@ -200,6 +202,25 @@ void cr_plugin_fini(int stage, int ret)
+ 	}
+ }
+ 
++int finalize_device_plugins(void)
++{
++	plugin_desc_t *this;
++
++	list_for_each_entry(this,
++			    &cr_plugin_ctl.hook_chain[CR_PLUGIN_HOOK__FINALIZE_DEVICES],
++			    link[CR_PLUGIN_HOOK__FINALIZE_DEVICES]) {
++		int ret;
++
++		pr_debug("plugin: `%s' finalize devices -> %p\n", this->d->name,
++			 this->d->hooks[CR_PLUGIN_HOOK__FINALIZE_DEVICES]);
++		ret = ((CR_PLUGIN_HOOK__FINALIZE_DEVICES_t *)
++			this->d->hooks[CR_PLUGIN_HOOK__FINALIZE_DEVICES])();
++		if (ret && ret != -ENOTSUP)
++			return ret;
++	}
++	return 0;
++}
++
+ int cr_plugin_init(int stage)
+ {
+ 	int exit_code = -1;
 diff --git a/criu/proc_parse.c b/criu/proc_parse.c
 index 0d3b5b23f..dfd222770 100644
 --- a/criu/proc_parse.c
@@ -1091,10 +1359,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..fd1dde3ae
+index 000000000..c2d8ffc36
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,703 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <errno.h>
 +#include <fcntl.h>
@@ -1119,7 +1387,7 @@ index 000000000..fd1dde3ae
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 1
++#define I915_IMAGE_VERSION 2
 +#define I915_MAX_RESTORE_OBJECTS 256
 +#define I915_MAX_RESTORE_FILES 32
 +#define I915_MAX_OBJECT_SIZE (UINT64_C(1) << 30)
@@ -1138,6 +1406,8 @@ index 000000000..fd1dde3ae
 +	uint64_t mmap_offset;
 +	uint32_t mmap_type;
 +	uint32_t flags;
++	uint32_t handle_count;
++	uint32_t sharing_flags;
 +};
 +
 +struct dump_object {
@@ -1145,12 +1415,23 @@ index 000000000..fd1dde3ae
 +	void *data;
 +};
 +
++struct object_relationship {
++	uint64_t object_id;
++	uint32_t expected_handles;
++	uint32_t seen_handles;
++};
++
 +struct restore_object {
 +	uint64_t object_id;
 +	uint64_t old_mmap_offset;
 +	uint64_t new_mmap_offset;
 +	uint64_t size;
++	uint32_t handle_count;
++	uint32_t sharing_flags;
++	uint32_t handle;
++	uint32_t restored_handles;
 +	int fd;
++	int prime_fd;
 +};
 +
 +struct restore_file {
@@ -1161,6 +1442,8 @@ index 000000000..fd1dde3ae
 +
 +static int checkpoint_pid = -1;
 +static bool inventory_added;
++static struct object_relationship dump_relationships[I915_MAX_RESTORE_OBJECTS];
++static size_t dump_relationship_count;
 +static struct restore_object restore_objects[I915_MAX_RESTORE_OBJECTS];
 +static size_t restore_object_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
@@ -1249,11 +1532,34 @@ index 000000000..fd1dde3ae
 +	xfree(objects);
 +}
 +
++static int record_dump_relationship(uint64_t object_id,
++				    uint32_t expected_handles)
++{
++	for (size_t i = 0; i < dump_relationship_count; i++) {
++		if (dump_relationships[i].object_id != object_id)
++			continue;
++		if (dump_relationships[i].expected_handles != expected_handles)
++			return -EINVAL;
++		dump_relationships[i].seen_handles++;
++		return 0;
++	}
++	if (dump_relationship_count == I915_MAX_RESTORE_OBJECTS)
++		return -E2BIG;
++	dump_relationships[dump_relationship_count++] =
++		(struct object_relationship) {
++			.object_id = object_id,
++			.expected_handles = expected_handles,
++			.seen_handles = 1,
++		};
++	return 0;
++}
++
 +static int collect_dump_objects(int fd, uint64_t cookie,
 +				struct dump_object **result, size_t *result_count)
 +{
 +	struct dump_object *objects = NULL;
 +	size_t count = 0;
++	size_t allocated_count = 0;
 +	uint32_t cursor = 0;
 +	int ret = 0;
 +
@@ -1285,11 +1591,17 @@ index 000000000..fd1dde3ae
 +		}
 +		objects = grown;
 +		memset(&objects[count], 0, sizeof(objects[count]));
++		allocated_count = count + 1;
 +		objects[count].image.object_id = query.object_id;
 +		objects[count].image.size = query.size;
 +		objects[count].image.mmap_offset = query.mmap_offset;
 +		objects[count].image.mmap_type = query.mmap_type;
 +		objects[count].image.flags = query.flags;
++		objects[count].image.handle_count = query.handle_count;
++		objects[count].image.sharing_flags = query.sharing_flags;
++		ret = record_dump_relationship(query.object_id, query.handle_count);
++		if (ret)
++			goto err;
 +		objects[count].data = xmalloc(query.size);
 +		if (!objects[count].data) {
 +			ret = -ENOMEM;
@@ -1316,7 +1628,7 @@ index 000000000..fd1dde3ae
 +	*result_count = count;
 +	return 0;
 +err:
-+	free_dump_objects(objects, count + 1);
++	free_dump_objects(objects, allocated_count);
 +	return ret;
 +}
 +
@@ -1353,6 +1665,7 @@ index 000000000..fd1dde3ae
 +
 +	checkpoint_pid = -1;
 +	inventory_added = false;
++	dump_relationship_count = 0;
 +	restore_object_count = 0;
 +	restore_file_count = 0;
 +	return 0;
@@ -1374,6 +1687,12 @@ index 000000000..fd1dde3ae
 +{
 +	if (stage == CR_PLUGIN_STAGE__RESTORE && ret)
 +		abort_restore_sessions();
++	if (stage == CR_PLUGIN_STAGE__RESTORE) {
++		for (size_t i = 0; i < restore_object_count; i++) {
++			if (restore_objects[i].prime_fd >= 0)
++				close(restore_objects[i].prime_fd);
++		}
++	}
 +}
 +
 +CR_PLUGIN_REGISTER("i915_plugin", i915_plugin_init, i915_plugin_fini)
@@ -1453,18 +1772,44 @@ index 000000000..fd1dde3ae
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
 +
++int i915_plugin_finalize_devices(void)
++{
++	for (size_t i = 0; i < dump_relationship_count; i++) {
++		if (dump_relationships[i].seen_handles !=
++		    dump_relationships[i].expected_handles) {
++			pr_err("i915 object %#" PRIx64
++			       " has %u captured handles but %u exist\n",
++			       dump_relationships[i].object_id,
++			       dump_relationships[i].seen_handles,
++			       dump_relationships[i].expected_handles);
++			return -EXDEV;
++		}
++	}
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__FINALIZE_DEVICES,
++			 i915_plugin_finalize_devices)
++
 +static int validate_image_object(const struct i915_image_object *image)
 +{
 +	if (!image->object_id || !image->size ||
 +	    image->size > I915_MAX_OBJECT_SIZE ||
 +	    image->flags != I915_CRIU_OBJECT_SHMEM ||
 +	    image->mmap_type != I915_MMAP_OFFSET_WB ||
-+	    !image->mmap_offset)
++	    !image->mmap_offset || !image->handle_count ||
++	    image->sharing_flags & ~I915_CRIU_OBJECT_SHARED)
 +		return -EINVAL;
 +
 +	for (size_t i = 0; i < restore_object_count; i++) {
-+		if (restore_objects[i].object_id == image->object_id ||
-+		    restore_objects[i].old_mmap_offset == image->mmap_offset)
++		if (restore_objects[i].object_id == image->object_id) {
++			if (restore_objects[i].old_mmap_offset != image->mmap_offset ||
++			    restore_objects[i].size != image->size ||
++			    restore_objects[i].handle_count != image->handle_count ||
++			    restore_objects[i].sharing_flags != image->sharing_flags)
++				return -EINVAL;
++			return 0;
++		}
++		if (restore_objects[i].old_mmap_offset == image->mmap_offset)
 +			return -EEXIST;
 +	}
 +	return 0;
@@ -1481,9 +1826,52 @@ index 000000000..fd1dde3ae
 +		.flags = image->flags,
 +		.object_id = image->object_id,
 +		.size = image->size,
++		.handle_count = image->handle_count,
++		.sharing_flags = image->sharing_flags,
 +	};
 +	struct drm_i915_criu_data write_data;
 +	struct drm_i915_gem_mmap_offset mmap_offset;
++
++	for (size_t i = 0; i < restore_object_count; i++) {
++		struct restore_object *existing = &restore_objects[i];
++		struct drm_i915_gem_pread pread;
++		void *verify;
++		uint32_t handle;
++		int ret;
++
++		if (existing->object_id != image->object_id)
++			continue;
++		if (existing->prime_fd < 0)
++			return -EINVAL;
++		verify = xmalloc(image->size);
++		if (!verify)
++			return -ENOMEM;
++		pread = (struct drm_i915_gem_pread) {
++			.handle = existing->handle,
++			.size = image->size,
++			.data_ptr = (uintptr_t)verify,
++		};
++		if (ioctl(existing->fd, DRM_IOCTL_I915_GEM_PREAD, &pread) < 0)
++			ret = -errno;
++		else
++			ret = memcmp(verify, contents, image->size) ? -EILSEQ : 0;
++		xfree(verify);
++		if (ret)
++			return ret;
++		ret = drmPrimeFDToHandle(fd, existing->prime_fd, &handle);
++		if (ret)
++			return ret;
++		create.op = I915_CRIU_OBJECT_IMPORT;
++		create.handle = handle;
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_OBJECT, &create) < 0) {
++			ret = -errno;
++			struct drm_gem_close close_handle = { .handle = handle };
++			ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
++			return ret;
++		}
++		existing->restored_handles++;
++		return 0;
++	}
 +
 +	if (restore_object_count == I915_MAX_RESTORE_OBJECTS)
 +		return -E2BIG;
@@ -1508,13 +1896,27 @@ index 000000000..fd1dde3ae
 +	if (ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mmap_offset) < 0)
 +		return -errno;
 +
-+	restore_objects[restore_object_count++] = (struct restore_object) {
++	restore_objects[restore_object_count] = (struct restore_object) {
 +		.object_id = image->object_id,
 +		.old_mmap_offset = image->mmap_offset,
 +		.new_mmap_offset = mmap_offset.offset,
 +		.size = image->size,
++		.handle_count = image->handle_count,
++		.sharing_flags = image->sharing_flags,
++		.handle = create.handle,
++		.restored_handles = 1,
 +		.fd = fd,
++		.prime_fd = -1,
 +	};
++	if (image->handle_count > 1 ||
++	    image->sharing_flags & I915_CRIU_OBJECT_SHARED) {
++		int ret = drmPrimeHandleToFD(fd, create.handle,
++					     DRM_CLOEXEC | DRM_RDWR,
++					     &restore_objects[restore_object_count].prime_fd);
++		if (ret)
++			return ret;
++	}
++	restore_object_count++;
 +	return 0;
 +}
 +
@@ -1638,6 +2040,17 @@ index 000000000..fd1dde3ae
 +int i915_plugin_resume_devices_late(int pid)
 +{
 +	(void)pid;
++	for (size_t i = 0; i < restore_object_count; i++) {
++		if (restore_objects[i].restored_handles !=
++		    restore_objects[i].handle_count) {
++			pr_err("i915 object %#" PRIx64
++			       " restored %u handles but image requires %u\n",
++			       restore_objects[i].object_id,
++			       restore_objects[i].restored_handles,
++			       restore_objects[i].handle_count);
++			return -EXDEV;
++		}
++	}
 +	for (size_t i = 0; i < restore_file_count; i++) {
 +		int ret;
 +
@@ -1906,9 +2319,282 @@ index 000000000..f770602df
 +	puts("PASS: mapping address, contents, CPU access, and GPU execution");
 +	return EXIT_SUCCESS;
 +}
+diff --git a/test/others/i915-criu/i915-gem-sharing.c b/test/others/i915-criu/i915-gem-sharing.c
+new file mode 100644
+index 000000000..37cc49b1f
+--- /dev/null
++++ b/test/others/i915-criu/i915-gem-sharing.c
+@@ -0,0 +1,267 @@
++// SPDX-License-Identifier: GPL-2.0
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <signal.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#include <drm/drm.h>
++#include <drm/i915_drm.h>
++
++#define OBJECT_SIZE (4 * 4096u)
++#define PATTERN_SEED UINT64_C(0x915c7100d15ea5e)
++#define CHILD_MUTATION UINT64_C(0xdab0f00d5a4ed001)
++
++static volatile sig_atomic_t resume_test;
++
++struct child_reply {
++	char state;
++	pid_t pid;
++};
++
++static void die(const char *what)
++{
++	perror(what);
++	exit(EXIT_FAILURE);
++}
++
++static void on_signal(int signo)
++{
++	(void)signo;
++	resume_test = 1;
++}
++
++static void xioctl(int fd, unsigned long request, void *arg, const char *what)
++{
++	if (ioctl(fd, request, arg) < 0)
++		die(what);
++}
++
++static void xread(int fd, void *data, size_t size, const char *what)
++{
++	char *cursor = data;
++
++	while (size) {
++		ssize_t got = read(fd, cursor, size);
++		if (got < 0 && errno == EINTR)
++			continue;
++		if (got <= 0)
++			die(what);
++		cursor += got;
++		size -= got;
++	}
++}
++
++static void xwrite(int fd, const void *data, size_t size, const char *what)
++{
++	const char *cursor = data;
++
++	while (size) {
++		ssize_t written = write(fd, cursor, size);
++		if (written < 0 && errno == EINTR)
++			continue;
++		if (written <= 0)
++			die(what);
++		cursor += written;
++		size -= written;
++	}
++}
++
++static uint64_t pattern_word(size_t index)
++{
++	uint64_t value = PATTERN_SEED ^ (uint64_t)index * UINT64_C(0x9e3779b97f4a7c15);
++	value ^= value >> 29;
++	value *= UINT64_C(0xbf58476d1ce4e5b9);
++	return value ^ (value >> 31);
++}
++
++static void fill_pattern(void *mapping)
++{
++	uint64_t *words = mapping;
++
++	for (size_t i = 0; i < OBJECT_SIZE / sizeof(*words); i++)
++		words[i] = pattern_word(i);
++}
++
++static void verify_pattern(const void *mapping)
++{
++	const uint64_t *words = mapping;
++
++	for (size_t i = 0; i < OBJECT_SIZE / sizeof(*words); i++) {
++		if (words[i] != pattern_word(i)) {
++			fprintf(stderr, "pattern mismatch at %zu\n", i);
++			exit(EXIT_FAILURE);
++		}
++	}
++}
++
++static void *map_object(int fd, uint32_t handle, uint64_t *offset_out)
++{
++	struct drm_i915_gem_mmap_offset request = {
++		.handle = handle,
++		.flags = I915_MMAP_OFFSET_WB,
++	};
++	void *mapping;
++
++	xioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &request, "GEM_MMAP_OFFSET");
++	mapping = mmap(NULL, OBJECT_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
++		       fd, request.offset);
++	if (mapping == MAP_FAILED)
++		die("mmap GEM object");
++	*offset_out = request.offset;
++	return mapping;
++}
++
++static void exercise_gpu(int fd, uint32_t handle, void *mapping)
++{
++	uint32_t *batch = (uint32_t *)((char *)mapping + OBJECT_SIZE - 8);
++	uint32_t saved[2] = { batch[0], batch[1] };
++	struct drm_i915_gem_exec_object2 object = { .handle = handle };
++	struct drm_i915_gem_execbuffer2 execbuf = {
++		.buffers_ptr = (uintptr_t)&object,
++		.buffer_count = 1,
++		.batch_start_offset = OBJECT_SIZE - 8,
++		.batch_len = 8,
++		.flags = I915_EXEC_RENDER,
++	};
++	struct drm_i915_gem_wait wait = { .bo_handle = handle, .timeout_ns = -1 };
++
++	batch[0] = 0x05000000;
++	batch[1] = 0;
++	xioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf, "post-restore EXECBUFFER2");
++	xioctl(fd, DRM_IOCTL_I915_GEM_WAIT, &wait, "post-restore GEM_WAIT");
++	batch[0] = saved[0];
++	batch[1] = saved[1];
++	verify_pattern(mapping);
++}
++
++static void child_process(int source_fd, int prime_fd, int command_fd, int reply_fd)
++{
++	struct drm_prime_handle import = { .fd = prime_fd };
++	uint64_t mmap_offset;
++	void *mapping;
++	char command;
++	struct child_reply reply;
++	int fd;
++
++	close(source_fd);
++	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++	if (fd < 0)
++		die("child open render node");
++	xioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import, "PRIME_FD_TO_HANDLE");
++	close(prime_fd);
++	mapping = map_object(fd, import.handle, &mmap_offset);
++	verify_pattern(mapping);
++	printf("CHILD pid=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
++	       getpid(), import.handle, mapping, mmap_offset);
++	fflush(stdout);
++	reply = (struct child_reply) { .state = 'R', .pid = getpid() };
++	xwrite(reply_fd, &reply, sizeof(reply), "child ready reply");
++
++	xread(command_fd, &command, 1, "child restore command");
++	if (command != 'G') {
++		fprintf(stderr, "unexpected child command\n");
++		exit(EXIT_FAILURE);
++	}
++	verify_pattern(mapping);
++	((uint64_t *)mapping)[0] = CHILD_MUTATION;
++	reply.state = 'P';
++	xwrite(reply_fd, &reply, sizeof(reply), "child pass reply");
++	_exit(EXIT_SUCCESS);
++}
++
++int main(int argc, char **argv)
++{
++	bool external_peer = argc == 2 && !strcmp(argv[1], "--external-peer");
++	struct sigaction action = { .sa_handler = on_signal };
++	struct drm_i915_gem_create create = { .size = OBJECT_SIZE };
++	struct drm_prime_handle export = { .flags = DRM_CLOEXEC | DRM_RDWR };
++	int command_pipe[2];
++	int reply_pipe[2];
++	uint64_t mmap_offset;
++	void *mapping;
++	struct child_reply reply;
++	pid_t child;
++	pid_t peer;
++	int fd;
++	int status;
++
++	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
++	if (fd < 0)
++		die("open render node");
++	xioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &create, "GEM_CREATE");
++	mapping = map_object(fd, create.handle, &mmap_offset);
++	fill_pattern(mapping);
++	export.handle = create.handle;
++	xioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &export, "PRIME_HANDLE_TO_FD");
++	if (pipe2(command_pipe, O_CLOEXEC) || pipe2(reply_pipe, O_CLOEXEC))
++		die("pipe2");
++
++	child = fork();
++	if (child < 0)
++		die("fork");
++	if (!child) {
++		close(command_pipe[1]);
++		close(reply_pipe[0]);
++		if (external_peer) {
++			pid_t grandchild = fork();
++
++			if (grandchild < 0)
++				die("external peer fork");
++			if (grandchild)
++				_exit(EXIT_SUCCESS);
++		}
++		child_process(fd, export.fd, command_pipe[0], reply_pipe[1]);
++	}
++	close(command_pipe[0]);
++	close(reply_pipe[1]);
++	close(export.fd);
++	xread(reply_pipe[0], &reply, sizeof(reply), "parent ready reply");
++	if (reply.state != 'R') {
++		fprintf(stderr, "child did not become ready\n");
++		return EXIT_FAILURE;
++	}
++	peer = reply.pid;
++	if (external_peer &&
++	    (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
++	     WEXITSTATUS(status))) {
++		fprintf(stderr, "external peer intermediary failed\n");
++		return EXIT_FAILURE;
++	}
++
++	if (sigaction(SIGUSR1, &action, NULL) < 0)
++		die("sigaction");
++	printf("READY parent=%d child=%d external=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
++	       getpid(), peer, external_peer, create.handle, mapping, mmap_offset);
++	fflush(stdout);
++	while (!resume_test)
++		pause();
++
++	verify_pattern(mapping);
++	reply.state = 'G';
++	xwrite(command_pipe[1], &reply.state, 1, "parent restore command");
++	xread(reply_pipe[0], &reply, sizeof(reply), "parent pass reply");
++	if (reply.state != 'P' || ((uint64_t *)mapping)[0] != CHILD_MUTATION) {
++		fprintf(stderr, "restored dma-buf identity was not shared\n");
++		return EXIT_FAILURE;
++	}
++	((uint64_t *)mapping)[0] = pattern_word(0);
++	exercise_gpu(fd, create.handle, mapping);
++	if (!external_peer &&
++	    (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
++	     WEXITSTATUS(status))) {
++		fprintf(stderr, "child failed after restore\n");
++		return EXIT_FAILURE;
++	}
++	puts("PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution");
++	return EXIT_SUCCESS;
++}
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..6b2acc579
+index 000000000..bf0a3899c
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
 @@ -0,0 +1,117 @@
@@ -1999,7 +2685,7 @@ index 000000000..6b2acc579
 +    image=$(printf '%s\n' "$negative"/i915-criu-*.img)
 +    case "$mode" in
 +        incompatible-version)
-+            printf '\002\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
++            printf '\003\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "$image"
@@ -2029,6 +2715,125 @@ index 000000000..6b2acc579
 +
 +printf 'PASS: CRIU restored pid=%s address=%s mmap_offset=%s\n' \
 +    "$original_pid" "$original_address" "$original_offset"
+diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
+new file mode 100755
+index 000000000..7475aa14b
+--- /dev/null
++++ b/test/others/i915-criu/run-sharing-criu.sh
+@@ -0,0 +1,113 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if (( EUID != 0 )); then
++    echo "run as root: sudo $0" >&2
++    exit 2
++fi
++
++repo=$(cd "$(dirname "$0")/../../.." && pwd)
++work=${I915_CRIU_TEST_DIR:-/tmp/i915-criu-sharing}
++criu=${CRIU:-/run/current-system/sw/bin/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
++expect_unsupported=${I915_CRIU_EXPECT_UNSUPPORTED:-0}
++external_peer=${I915_CRIU_EXTERNAL_PEER:-0}
++cc=${CC:-gcc}
++fixture="$work/i915-gem-sharing"
++fixture_source=${FIXTURE:-/tmp/i915-gem-sharing}
++images="$work/images"
++log="$work/fixture.log"
++
++cleanup() {
++    if [[ -n ${fixture_pid:-} ]]; then
++        kill -KILL "$fixture_pid" 2>/dev/null || true
++    fi
++    if [[ -n ${child_pid:-} ]]; then
++        kill -KILL "$child_pid" 2>/dev/null || true
++    fi
++}
++trap cleanup EXIT
++rm -rf "$work"
++mkdir -p "$images"
++
++if [[ -x $fixture_source ]]; then
++    cp "$fixture_source" "$fixture"
++elif command -v "$cc" >/dev/null; then
++    "$cc" -std=c11 -Wall -Wextra -Werror -I"$repo" \
++        "$repo/test/others/i915-criu/i915-gem-sharing.c" -o "$fixture"
++else
++    echo "no prebuilt fixture at $fixture_source and compiler $cc is unavailable" >&2
++    exit 2
++fi
++
++fixture_args=()
++if [[ $external_peer == 1 ]]; then
++    fixture_args+=(--external-peer)
++    expect_unsupported=1
++fi
++"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
++fixture_pid=$!
++for _ in $(seq 1 100); do
++    grep -q '^READY ' "$log" && break
++    kill -0 "$fixture_pid"
++    sleep 0.05
++done
++grep -q '^READY ' "$log"
++original_pid=$fixture_pid
++original_address=$(sed -n 's/^READY .* address=\([^ ]*\).*/\1/p' "$log")
++child_pid=$(sed -n 's/^READY .* child=\([0-9]*\).*/\1/p' "$log")
++child_address=$(sed -n 's/^CHILD .* address=\([^ ]*\).*/\1/p' "$log")
++
++if [[ $expect_unsupported == 1 ]]; then
++    set +e
++    "$criu" dump -t "$original_pid" -D "$images" --shell-job \
++        --libdir "$plugin_dir" --log-file dump.log -v4
++    dump_status=$?
++    set -e
++    if (( dump_status == 0 || dump_status >= 128 )); then
++        echo "sharing dump did not fail safely: status=$dump_status" >&2
++        exit 1
++    fi
++    grep -q 'Dumping FAILED' "$images/dump.log"
++    if [[ $external_peer == 1 ]]; then
++        grep -q 'captured handles but .* exist' "$images/dump.log"
++        printf 'PASS: external sharing peer refused before dump completion (status=%s)\n' \
++            "$dump_status"
++    else
++        printf 'PASS: unsupported sharing dump refused without a CRIU crash (status=%s)\n' \
++            "$dump_status"
++    fi
++    exit 0
++fi
++
++"$criu" dump -t "$original_pid" -D "$images" --shell-job \
++    --libdir "$plugin_dir" --log-file dump.log -v4
++wait "$fixture_pid" 2>/dev/null || true
++fixture_pid=
++
++test -s "$images"/i915-criu-*.img
++"$criu" restore -D "$images" --shell-job --restore-detached \
++    --libdir "$plugin_dir" --log-file restore.log -v4
++fixture_pid=$original_pid
++kill -USR1 "$fixture_pid"
++
++for _ in $(seq 1 100); do
++    grep -q '^PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution$' "$log" && break
++    kill -0 "$fixture_pid" 2>/dev/null || true
++    sleep 0.05
++done
++grep -q '^PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution$' "$log"
++for pid in "$original_pid" "$child_pid"; do
++    for _ in $(seq 1 100); do
++        [[ $(cat "/proc/$pid/comm" 2>/dev/null || true) != i915-gem-sharin ]] && break
++        sleep 0.05
++    done
++    if [[ $(cat "/proc/$pid/comm" 2>/dev/null || true) == i915-gem-sharin ]]; then
++        echo "restored sharing fixture pid $pid did not exit" >&2
++        exit 1
++    fi
++done
++fixture_pid=
++
++printf 'PASS: CRIU restored parent=%s child=%s parent_address=%s child_address=%s\n' \
++    "$original_pid" "$child_pid" "$original_address" "$child_address"
 diff --git a/test/others/i915-target-framework.json b/test/others/i915-target-framework.json
 new file mode 100644
 index 000000000..003da7b61
