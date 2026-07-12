@@ -1,0 +1,792 @@
+diff --git a/Makefile b/Makefile
+index e26807158..560e6a554 100644
+--- a/Makefile
++++ b/Makefile
+@@ -312,15 +312,19 @@ clean-cuda_plugin:
+ 	$(Q) $(MAKE) -C plugins/cuda clean
+ .PHONY: clean-cuda_plugin
+ 
++clean-i915_plugin:
++	$(Q) $(MAKE) -C plugins/i915 clean
++.PHONY: clean-i915_plugin
++
+ clean-top:
+ 	$(Q) $(MAKE) -C Documentation clean
+ 	$(Q) $(MAKE) $(build)=test/compel clean
+ 	$(Q) $(RM) .gitid
+ .PHONY: clean-top
+ 
+-clean: clean-top clean-amdgpu_plugin clean-cuda_plugin
++clean: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin
+ 
+-mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin
++mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin
+ 	$(Q) $(RM) $(CONFIG_HEADER)
+ 	$(Q) $(RM) $(VERSION_HEADER)
+ 	$(Q) $(RM) $(COMPEL_VERSION_HEADER)
+@@ -356,6 +360,10 @@ cuda_plugin: criu
+ 	$(Q) $(MAKE) -C plugins/cuda all
+ .PHONY: cuda_plugin
+ 
++i915_plugin: criu
++	$(Q) $(MAKE) -C plugins/i915 all
++.PHONY: i915_plugin
++
+ crit: lib
+ 	$(Q) $(MAKE) -C crit
+ .PHONY: crit
+diff --git a/Makefile.install b/Makefile.install
+index 70c607ec6..542fe575f 100644
+--- a/Makefile.install
++++ b/Makefile.install
+@@ -80,12 +80,16 @@ install-cuda_plugin: cuda_plugin
+ 	$(Q) $(MAKE) -C plugins/cuda install
+ .PHONY: install-cuda_plugin
+ 
++install-i915_plugin: i915_plugin
++	$(Q) $(MAKE) -C plugins/i915 install
++.PHONY: install-i915_plugin
++
+ install-compel: $(compel-install-targets)
+ 	$(Q) $(MAKE) $(build)=compel install
+ 	$(Q) $(MAKE) $(build)=compel/plugins install
+ .PHONY: install-compel
+ 
+-install: install-man install-lib install-crit install-criu install-compel install-amdgpu_plugin install-cuda_plugin ;
++install: install-man install-lib install-crit install-criu install-compel install-amdgpu_plugin install-cuda_plugin install-i915_plugin ;
+ .PHONY: install
+ 
+ uninstall:
+@@ -97,4 +101,5 @@ uninstall:
+ 	$(Q) $(MAKE) $(build)=compel/plugins $@
+ 	$(Q) $(MAKE) -C plugins/amdgpu $@
+ 	$(Q) $(MAKE) -C plugins/cuda $@
++	$(Q) $(MAKE) -C plugins/i915 $@
+ .PHONY: uninstall
+diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
+new file mode 100644
+index 000000000..02cc43a68
+--- /dev/null
++++ b/contrib/i915-criu/i915_criu_uapi.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef I915_CRIU_UAPI_H
++#define I915_CRIU_UAPI_H
++
++#include <stdint.h>
++#include <sys/ioctl.h>
++#include <drm/i915_drm.h>
++
++#define I915_CRIU_ABI_VERSION 1
++#define I915_CRIU_SESSION_DUMP_BEGIN 1
++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
++#define I915_CRIU_SESSION_COMMIT 3
++#define I915_CRIU_SESSION_ABORT 4
++#define I915_CRIU_OBJECT_QUERY 1
++#define I915_CRIU_OBJECT_CREATE 2
++#define I915_CRIU_OBJECT_SHMEM (1u << 0)
++#define I915_CRIU_DATA_READ 1
++#define I915_CRIU_DATA_WRITE 2
++
++struct drm_i915_criu_session {
++	uint32_t version;
++	uint32_t op;
++	int32_t target_pid;
++	uint32_t flags;
++	uint64_t cookie;
++	uint64_t reserved[4];
++};
++
++struct drm_i915_criu_object {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t handle;
++	uint32_t flags;
++	uint64_t object_id;
++	uint64_t size;
++	uint64_t mmap_offset;
++	uint32_t mmap_type;
++	uint32_t pad;
++	uint64_t reserved[4];
++};
++
++struct drm_i915_criu_data {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t handle;
++	uint32_t pad;
++	uint64_t offset;
++	uint64_t size;
++	uint64_t data_ptr;
++	uint64_t reserved[4];
++};
++
++#define DRM_IOCTL_I915_CRIU_SESSION \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3d, struct drm_i915_criu_session)
++#define DRM_IOCTL_I915_CRIU_OBJECT \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3e, struct drm_i915_criu_object)
++#define DRM_IOCTL_I915_CRIU_DATA \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3f, struct drm_i915_criu_data)
++
++#endif
+diff --git a/criu/include/criu-plugin.h b/criu/include/criu-plugin.h
+index 9fb21a449..29b798a1e 100644
+--- a/criu/include/criu-plugin.h
++++ b/criu/include/criu-plugin.h
+@@ -62,6 +62,8 @@ enum {
+ 
+ 	CR_PLUGIN_HOOK__POST_FORKING = 12,
+ 
++	CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA = 13,
++
+ 	CR_PLUGIN_HOOK__MAX
+ };
+ 
+@@ -81,6 +83,9 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
+ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PAUSE_DEVICES, int pid);
+ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__CHECKPOINT_DEVICES, int pid);
+ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__POST_FORKING, void);
++DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA,
++			 const char *name, int pid, uint64_t start,
++			 uint64_t pgoff, int *surrogate_fd);
+ 
+ enum {
+ 	CR_PLUGIN_STAGE__DUMP,
+@@ -115,10 +120,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
+ 
+ static inline int cr_plugin_dummy_init(int stage)
+ {
++	(void)stage;
+ 	return 0;
+ }
+ static inline void cr_plugin_dummy_exit(int stage, int ret)
+ {
++	(void)stage;
++	(void)ret;
+ }
+ 
+ #define CR_PLUGIN_REGISTER_DUMMY(___name)         \
+diff --git a/criu/plugin.c b/criu/plugin.c
+index 18da0499d..db54ee28b 100644
+--- a/criu/plugin.c
++++ b/criu/plugin.c
+@@ -60,6 +60,7 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
+ 	__assign_hook(PAUSE_DEVICES, "cr_plugin_pause_devices");
+ 	__assign_hook(CHECKPOINT_DEVICES, "cr_plugin_checkpoint_devices");
+ 	__assign_hook(POST_FORKING, "cr_plugin_post_forking");
++	__assign_hook(HANDLE_ANON_DEVICE_VMA, "cr_plugin_handle_anon_device_vma");
+ 
+ #undef __assign_hook
+ 
+diff --git a/criu/proc_parse.c b/criu/proc_parse.c
+index 0d3b5b23f..dfd222770 100644
+--- a/criu/proc_parse.c
++++ b/criu/proc_parse.c
+@@ -418,8 +418,9 @@ closefd:
+ 	return -1;
+ }
+ 
+-static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, struct vma_file_info *vfi,
+-			   struct vma_file_info *prev_vfi, int *vm_file_fd)
++static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, DIR *mfd,
++			   struct vma_file_info *vfi, struct vma_file_info *prev_vfi,
++			   int *vm_file_fd)
+ {
+ 	char path[32];
+ 	int flags;
+@@ -481,10 +482,22 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
+ 
+ 		if (errno == ENXIO) {
+ 			struct stat buf;
++			int surrogate_fd = -1;
++			int ret;
+ 
+ 			if (fstatat(dirfd(mfd), path, &buf, 0))
+ 				return -1;
+ 
++			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
++					  vma->e->start, vma->e->pgoff,
++					  &surrogate_fd);
++			if (ret == 1 && surrogate_fd >= 0) {
++				*vm_file_fd = surrogate_fd;
++				return vma_stat(vma, *vm_file_fd);
++			}
++			if (ret < 0)
++				return -1;
++
+ 			if (S_ISSOCK(buf.st_mode)) {
+ 				pr_info("Found socket mapping @%" PRIx64 "\n", vma->e->start);
+ 				vma->vm_socket_id = buf.st_ino;
+@@ -591,7 +604,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
+ static int handle_vma(pid_t pid, struct vma_area *vma_area, const char *file_path, DIR *map_files_dir,
+ 		      struct vma_file_info *vfi, struct vma_file_info *prev_vfi, int *vm_file_fd)
+ {
+-	if (vma_get_mapfile(file_path, vma_area, map_files_dir, vfi, prev_vfi, vm_file_fd))
++	if (vma_get_mapfile(pid, file_path, vma_area, map_files_dir, vfi, prev_vfi, vm_file_fd))
+ 		goto err_bogus_mapfile;
+ 
+ 	if (vma_area->e->status != 0)
+diff --git a/plugins/i915/Makefile b/plugins/i915/Makefile
+new file mode 100644
+index 000000000..92ad72dde
+--- /dev/null
++++ b/plugins/i915/Makefile
+@@ -0,0 +1,31 @@
++PLUGIN_NAME := i915_plugin
++PLUGIN_SOBJ := i915_plugin.so
++PLUGIN_INCLUDE := -iquote../../include
++PLUGIN_INCLUDE += -iquote../../criu/include
++PLUGIN_INCLUDE += -iquote../../criu/arch/$(ARCH)/include/
++PLUGIN_INCLUDE += -iquote../../
++PLUGIN_INCLUDE += -I../../contrib/i915-criu
++PLUGIN_INCLUDE += $(shell pkg-config --cflags libdrm)
++COMPEL := ../../compel/compel-host
++
++__nmk_dir ?= ../../scripts/nmk/scripts/
++include $(__nmk_dir)msg.mk
++
++PLUGIN_CFLAGS := -g -Wall -Wextra -Werror -D_GNU_SOURCE -shared -nostartfiles -fPIC
++PLUGIN_LDFLAGS := -ldrm
++
++all: $(PLUGIN_SOBJ)
++
++i915_plugin.so: i915_plugin.c
++	$(CC) $(PLUGIN_CFLAGS) $(shell $(COMPEL) includes) $^ -o $@ $(PLUGIN_INCLUDE) $(PLUGIN_LDFLAGS)
++
++clean:
++	$(call msg-clean, $@)
++	$(Q) $(RM) $(PLUGIN_SOBJ)
++
++install: $(PLUGIN_SOBJ)
++	$(Q) mkdir -p $(DESTDIR)$(PLUGINDIR)
++	$(E) "  INSTALL " $(PLUGIN_NAME)
++	$(Q) install -m 755 $(PLUGIN_SOBJ) $(DESTDIR)$(PLUGINDIR)
++
++.PHONY: all clean install
+diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
+new file mode 100644
+index 000000000..e8fd5224d
+--- /dev/null
++++ b/plugins/i915/i915_plugin.c
+@@ -0,0 +1,519 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <unistd.h>
++
++#include <xf86drm.h>
++
++#include "criu-plugin.h"
++#include "criu-log.h"
++#include "plugin.h"
++#include "image.h"
++#include "xmalloc.h"
++#include "../../contrib/i915-criu/i915_criu_uapi.h"
++
++#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
++#define I915_IMAGE_VERSION 1
++#define I915_MAX_RESTORE_OBJECTS 256
++#define I915_MAX_RESTORE_FILES 32
++#define I915_MAX_OBJECT_SIZE (UINT64_C(1) << 30)
++
++struct i915_image_header {
++	uint64_t magic;
++	uint32_t version;
++	uint32_t file_id;
++	uint32_t object_count;
++	uint32_t reserved;
++};
++
++struct i915_image_object {
++	uint64_t object_id;
++	uint64_t size;
++	uint64_t mmap_offset;
++	uint32_t mmap_type;
++	uint32_t flags;
++};
++
++struct dump_object {
++	struct i915_image_object image;
++	void *data;
++};
++
++struct restore_object {
++	uint64_t old_mmap_offset;
++	uint64_t new_mmap_offset;
++	uint64_t size;
++	int fd;
++};
++
++struct restore_file {
++	int fd;
++	uint64_t cookie;
++	bool active;
++};
++
++static int checkpoint_pid = -1;
++static bool inventory_added;
++static struct restore_object restore_objects[I915_MAX_RESTORE_OBJECTS];
++static size_t restore_object_count;
++static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
++static size_t restore_file_count;
++
++static const char *render_node(void)
++{
++	const char *configured = getenv("I915_CRIU_DRM_DEVICE");
++
++	return configured && configured[0] ? configured : "/dev/dri/renderD128";
++}
++
++static bool is_i915_fd(int fd)
++{
++	drmVersionPtr version = drmGetVersion(fd);
++	bool match = version && version->name && !strcmp(version->name, "i915");
++
++	if (version)
++		drmFreeVersion(version);
++	return match;
++}
++
++static int image_fd(int file_id, int flags)
++{
++	char name[64];
++
++	snprintf(name, sizeof(name), "i915-criu-%d.img", file_id);
++	return openat(criu_get_image_dir(), name, flags, 0600);
++}
++
++static int write_all(int fd, const void *data, size_t size)
++{
++	const char *cursor = data;
++
++	while (size) {
++		ssize_t written = write(fd, cursor, size);
++		if (written < 0) {
++			if (errno == EINTR)
++				continue;
++			return -errno;
++		}
++		cursor += written;
++		size -= written;
++	}
++	return 0;
++}
++
++static int read_all(int fd, void *data, size_t size)
++{
++	char *cursor = data;
++
++	while (size) {
++		ssize_t got = read(fd, cursor, size);
++		if (got == 0)
++			return -EIO;
++		if (got < 0) {
++			if (errno == EINTR)
++				continue;
++			return -errno;
++		}
++		cursor += got;
++		size -= got;
++	}
++	return 0;
++}
++
++static int session_ioctl(int fd, uint32_t op, int pid, uint64_t *cookie)
++{
++	struct drm_i915_criu_session session = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = op,
++		.target_pid = pid,
++		.cookie = *cookie,
++	};
++
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_SESSION, &session) < 0)
++		return -errno;
++	*cookie = session.cookie;
++	return 0;
++}
++
++static void free_dump_objects(struct dump_object *objects, size_t count)
++{
++	for (size_t i = 0; i < count; i++)
++		xfree(objects[i].data);
++	xfree(objects);
++}
++
++static int collect_dump_objects(int fd, uint64_t cookie,
++				struct dump_object **result, size_t *result_count)
++{
++	struct dump_object *objects = NULL;
++	size_t count = 0;
++	uint32_t cursor = 0;
++	int ret = 0;
++
++	for (;;) {
++		struct drm_i915_criu_object query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_OBJECT_QUERY,
++			.cookie = cookie,
++			.handle = cursor,
++		};
++		struct drm_i915_criu_data read_data;
++		struct dump_object *grown;
++
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_OBJECT, &query) < 0) {
++			if (errno == ENOENT)
++				break;
++			ret = -errno;
++			goto err;
++		}
++		if (count == I915_MAX_RESTORE_OBJECTS) {
++			ret = -E2BIG;
++			goto err;
++		}
++
++		grown = xrealloc(objects, (count + 1) * sizeof(*objects));
++		if (!grown) {
++			free_dump_objects(objects, count);
++			return -ENOMEM;
++		}
++		objects = grown;
++		memset(&objects[count], 0, sizeof(objects[count]));
++		objects[count].image.object_id = query.object_id;
++		objects[count].image.size = query.size;
++		objects[count].image.mmap_offset = query.mmap_offset;
++		objects[count].image.mmap_type = query.mmap_type;
++		objects[count].image.flags = query.flags;
++		objects[count].data = xmalloc(query.size);
++		if (!objects[count].data) {
++			ret = -ENOMEM;
++			goto err;
++		}
++
++		read_data = (struct drm_i915_criu_data) {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_DATA_READ,
++			.cookie = cookie,
++			.handle = query.handle,
++			.size = query.size,
++			.data_ptr = (uintptr_t)objects[count].data,
++		};
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_DATA, &read_data) < 0) {
++			ret = -errno;
++			goto err;
++		}
++		cursor = query.handle;
++		count++;
++	}
++
++	*result = objects;
++	*result_count = count;
++	return 0;
++err:
++	free_dump_objects(objects, count + 1);
++	return ret;
++}
++
++static int write_image(int file_id, struct dump_object *objects, size_t count)
++{
++	struct i915_image_header header = {
++		.magic = I915_IMAGE_MAGIC,
++		.version = I915_IMAGE_VERSION,
++		.file_id = file_id,
++		.object_count = count,
++	};
++	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
++	int ret;
++
++	if (fd < 0)
++		return -errno;
++	ret = write_all(fd, &header, sizeof(header));
++	for (size_t i = 0; !ret && i < count; i++) {
++		ret = write_all(fd, &objects[i].image, sizeof(objects[i].image));
++		if (!ret)
++			ret = write_all(fd, objects[i].data, objects[i].image.size);
++	}
++	if (close(fd) && !ret)
++		ret = -errno;
++	return ret;
++}
++
++static int i915_plugin_init(int stage)
++{
++	(void)stage;
++	checkpoint_pid = -1;
++	inventory_added = false;
++	restore_object_count = 0;
++	restore_file_count = 0;
++	return 0;
++}
++
++static void abort_restore_sessions(void)
++{
++	for (size_t i = 0; i < restore_file_count; i++) {
++		if (!restore_files[i].active)
++			continue;
++		if (session_ioctl(restore_files[i].fd, I915_CRIU_SESSION_ABORT, 0,
++				  &restore_files[i].cookie))
++			pr_err("failed to abort i915 restore transaction\n");
++		restore_files[i].active = false;
++	}
++}
++
++static void i915_plugin_fini(int stage, int ret)
++{
++	if (stage == CR_PLUGIN_STAGE__RESTORE && ret)
++		abort_restore_sessions();
++}
++
++CR_PLUGIN_REGISTER("i915_plugin", i915_plugin_init, i915_plugin_fini)
++
++int i915_plugin_pause_devices(int pid)
++{
++	checkpoint_pid = pid;
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__PAUSE_DEVICES, i915_plugin_pause_devices)
++
++int i915_plugin_handle_anon_device_vma(const char *name, int pid,
++				       uint64_t start, uint64_t pgoff,
++				       int *surrogate_fd)
++{
++	int fd;
++
++	(void)pid;
++	(void)start;
++	(void)pgoff;
++	if (strcmp(name, "anon_inode:i915.gem"))
++		return 0;
++	fd = open(render_node(), O_RDWR | O_CLOEXEC);
++	if (fd < 0)
++		return -errno;
++	if (!is_i915_fd(fd)) {
++		close(fd);
++		return -ENODEV;
++	}
++	*surrogate_fd = fd;
++	return 1;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA,
++			 i915_plugin_handle_anon_device_vma)
++
++int i915_plugin_handle_device_vma(int fd, const struct stat *st)
++{
++	(void)st;
++	if (!is_i915_fd(fd))
++		return -ENOTSUP;
++	if (!inventory_added) {
++		int ret = add_inventory_plugin(CR_PLUGIN_DESC.name);
++		if (ret)
++			return ret;
++		inventory_added = true;
++	}
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_DEVICE_VMA,
++			 i915_plugin_handle_device_vma)
++
++int i915_plugin_dump_file(int fd, int id)
++{
++	struct dump_object *objects = NULL;
++	size_t count = 0;
++	uint64_t cookie = 0;
++	int ret;
++
++	if (!is_i915_fd(fd))
++		return -ENOTSUP;
++	if (checkpoint_pid <= 0)
++		return -EINVAL;
++
++	ret = session_ioctl(fd, I915_CRIU_SESSION_DUMP_BEGIN,
++			    checkpoint_pid, &cookie);
++	if (ret)
++		return ret;
++	ret = collect_dump_objects(fd, cookie, &objects, &count);
++	if (!ret)
++		ret = write_image(id, objects, count);
++	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
++				       I915_CRIU_SESSION_COMMIT,
++			  0, &cookie) && !ret)
++		ret = -EIO;
++	free_dump_objects(objects, count);
++	return ret;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
++
++static int restore_object(int fd, uint64_t cookie,
++			  const struct i915_image_object *image,
++			  const void *contents)
++{
++	struct drm_i915_criu_object create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_OBJECT_CREATE,
++		.cookie = cookie,
++		.flags = image->flags,
++		.object_id = image->object_id,
++		.size = image->size,
++	};
++	struct drm_i915_criu_data write_data;
++	struct drm_i915_gem_mmap_offset mmap_offset;
++
++	if (restore_object_count == I915_MAX_RESTORE_OBJECTS)
++		return -E2BIG;
++	if (!image->object_id || !image->size ||
++	    image->size > I915_MAX_OBJECT_SIZE ||
++	    image->flags != I915_CRIU_OBJECT_SHMEM ||
++	    image->mmap_type != I915_MMAP_OFFSET_WB)
++		return -EINVAL;
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_OBJECT, &create) < 0)
++		return -errno;
++
++	write_data = (struct drm_i915_criu_data) {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_DATA_WRITE,
++		.cookie = cookie,
++		.handle = create.handle,
++		.size = image->size,
++		.data_ptr = (uintptr_t)contents,
++	};
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_DATA, &write_data) < 0)
++		return -errno;
++
++	mmap_offset = (struct drm_i915_gem_mmap_offset) {
++		.handle = create.handle,
++		.flags = image->mmap_type,
++	};
++	if (ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mmap_offset) < 0)
++		return -errno;
++
++	restore_objects[restore_object_count++] = (struct restore_object) {
++		.old_mmap_offset = image->mmap_offset,
++		.new_mmap_offset = mmap_offset.offset,
++		.size = image->size,
++		.fd = fd,
++	};
++	return 0;
++}
++
++int i915_plugin_restore_file(int id)
++{
++	struct i915_image_header header;
++	struct restore_file *restore_file;
++	uint64_t cookie = 0;
++	int image;
++	int fd;
++	int ret;
++
++	image = image_fd(id, O_RDONLY);
++	if (image < 0)
++		return -ENOTSUP;
++	ret = read_all(image, &header, sizeof(header));
++	if (ret || header.magic != I915_IMAGE_MAGIC ||
++	    header.version != I915_IMAGE_VERSION || header.file_id != (uint32_t)id ||
++	    header.reserved || header.object_count > I915_MAX_RESTORE_OBJECTS) {
++		close(image);
++		return ret ? ret : -EINVAL;
++	}
++
++	fd = open(render_node(), O_RDWR | O_CLOEXEC);
++	if (fd < 0) {
++		close(image);
++		return -errno;
++	}
++	if (!header.object_count) {
++		close(image);
++		return fd;
++	}
++	if (restore_file_count == I915_MAX_RESTORE_FILES) {
++		close(image);
++		close(fd);
++		return -E2BIG;
++	}
++
++	ret = session_ioctl(fd, I915_CRIU_SESSION_RESTORE_BEGIN, 0, &cookie);
++	if (ret) {
++		close(image);
++		close(fd);
++		return ret;
++	}
++	restore_file = &restore_files[restore_file_count++];
++	*restore_file = (struct restore_file) {
++		.fd = fd,
++		.cookie = cookie,
++		.active = true,
++	};
++
++	for (uint32_t i = 0; i < header.object_count; i++) {
++		struct i915_image_object object;
++		void *contents;
++
++		ret = read_all(image, &object, sizeof(object));
++		if (ret)
++			break;
++		contents = xmalloc(object.size);
++		if (!contents) {
++			ret = -ENOMEM;
++			break;
++		}
++		ret = read_all(image, contents, object.size);
++		if (!ret)
++			ret = restore_object(fd, cookie, &object, contents);
++		xfree(contents);
++		if (ret)
++			break;
++	}
++	close(image);
++	if (ret) {
++		abort_restore_sessions();
++		close(fd);
++		return ret;
++	}
++	return fd;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESTORE_EXT_FILE,
++			 i915_plugin_restore_file)
++
++int i915_plugin_update_vma_map(const char *path, uint64_t addr,
++			       uint64_t old_pgoff, uint64_t *new_pgoff,
++			       int *plugin_fd)
++{
++	(void)path;
++	(void)addr;
++	for (size_t i = 0; i < restore_object_count; i++) {
++		if (restore_objects[i].old_mmap_offset != old_pgoff)
++			continue;
++		*new_pgoff = restore_objects[i].new_mmap_offset;
++		*plugin_fd = restore_objects[i].fd;
++		return 1;
++	}
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__UPDATE_VMA_MAP,
++			 i915_plugin_update_vma_map)
++
++int i915_plugin_resume_devices_late(int pid)
++{
++	(void)pid;
++	for (size_t i = 0; i < restore_file_count; i++) {
++		int ret;
++
++		if (!restore_files[i].active)
++			continue;
++		ret = session_ioctl(restore_files[i].fd, I915_CRIU_SESSION_COMMIT,
++				    0, &restore_files[i].cookie);
++		if (ret)
++			return ret;
++		restore_files[i].active = false;
++	}
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE,
++			 i915_plugin_resume_devices_late)
