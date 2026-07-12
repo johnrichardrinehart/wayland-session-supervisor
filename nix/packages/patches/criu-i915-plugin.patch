@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..e501f6648
+index 000000000..cc45ec6cb
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,371 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -345,7 +345,17 @@ index 000000000..e501f6648
 +exactly matches the driver's handle count. Restore creates the object once,
 +uses PRIME import to recreate subsequent private handles, compares duplicate
 +payloads, and delays every per-file transaction commit until all required
-+handles and mappings exist.
++handles and mappings exist. The plugin opts into CRIU's `PREPARE_RESTORE` hook,
++scans its private image names in the master before task forking, and stores both
++transaction and external-file descriptors in CRIU's shared fdstore. Restored
++tasks receive temporary fdstore copies, so plugin-owned descriptors cannot
++collide with target fd numbers and every task inherits one shared object graph.
++
++On 2026-07-12 the physical two-process test restored parent PID 30773 and child
++PID 30775 at their original `0x7e791ee99000` and `0x7e791ee95000` mappings. A
++child write was immediately visible through the parent's mapping, after which
++the parent completed `EXECBUFFER2` and `GEM_WAIT`. The external-peer mode also
++refused dump finalization after reporting one captured handle while two existed.
 +
 +`I915_CRIU_EXTERNAL_PEER=1 run-sharing-criu.sh` reparents the importing peer
 +outside the captured tree and requires the finalize hook to refuse the missing
@@ -1181,11 +1191,28 @@ index 60b8e793c..6b77061c6 100644
  	if (parent_ie) {
  		inventory_entry__free_unpacked(parent_ie, NULL);
  		parent_ie = NULL;
+diff --git a/criu/cr-restore.c b/criu/cr-restore.c
+index 057ec0e93..01dd1111d 100644
+--- a/criu/cr-restore.c
++++ b/criu/cr-restore.c
+@@ -2408,6 +2408,12 @@ int cr_restore_tasks(void)
+ 	if (cr_plugin_init(CR_PLUGIN_STAGE__RESTORE))
+ 		return -1;
+ 
++	ret = prepare_restore_plugins();
++	if (ret) {
++		pr_err("Failed to prepare restore plugins: %d\n", ret);
++		goto err;
++	}
++
+ 	if (inherit_fd_move_to_fdstore())
+ 		goto err;
+ 
 diff --git a/criu/include/criu-plugin.h b/criu/include/criu-plugin.h
-index 9fb21a449..289d28ce1 100644
+index 9fb21a449..89482988d 100644
 --- a/criu/include/criu-plugin.h
 +++ b/criu/include/criu-plugin.h
-@@ -62,6 +62,10 @@ enum {
+@@ -62,6 +62,12 @@ enum {
  
  	CR_PLUGIN_HOOK__POST_FORKING = 12,
  
@@ -1193,10 +1220,12 @@ index 9fb21a449..289d28ce1 100644
 +
 +	CR_PLUGIN_HOOK__FINALIZE_DEVICES = 14,
 +
++	CR_PLUGIN_HOOK__PREPARE_RESTORE = 15,
++
  	CR_PLUGIN_HOOK__MAX
  };
  
-@@ -81,6 +85,10 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
+@@ -81,6 +87,11 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PAUSE_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__CHECKPOINT_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__POST_FORKING, void);
@@ -1204,10 +1233,11 @@ index 9fb21a449..289d28ce1 100644
 +			 const char *name, int pid, uint64_t start,
 +			 uint64_t pgoff, int *surrogate_fd);
 +DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__FINALIZE_DEVICES, void);
++DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PREPARE_RESTORE, void);
  
  enum {
  	CR_PLUGIN_STAGE__DUMP,
-@@ -115,10 +123,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
+@@ -115,10 +126,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
  
  static inline int cr_plugin_dummy_init(int stage)
  {
@@ -1221,35 +1251,90 @@ index 9fb21a449..289d28ce1 100644
  }
  
  #define CR_PLUGIN_REGISTER_DUMMY(___name)         \
+@@ -138,6 +152,8 @@ static inline void cr_plugin_dummy_exit(int stage, int ret)
+ 
+ /* Public API */
+ extern int criu_get_image_dir(void);
++extern int criu_plugin_fdstore_add(int fd);
++extern int criu_plugin_fdstore_get(int id);
+ 
+ /*
+  * Deprecated, will be removed in next version.
 diff --git a/criu/include/plugin.h b/criu/include/plugin.h
-index 0115e6ea0..e5165feb9 100644
+index 0115e6ea0..de539783f 100644
 --- a/criu/include/plugin.h
 +++ b/criu/include/plugin.h
-@@ -11,6 +11,7 @@
+@@ -11,6 +11,8 @@
  
  void cr_plugin_fini(int stage, int err);
  int cr_plugin_init(int stage);
 +int finalize_device_plugins(void);
++int prepare_restore_plugins(void);
  
  typedef struct {
  	struct list_head head;
 diff --git a/criu/plugin.c b/criu/plugin.c
-index 18da0499d..c16c20adc 100644
+index 18da0499d..f5222e54d 100644
 --- a/criu/plugin.c
 +++ b/criu/plugin.c
-@@ -60,6 +60,8 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
+@@ -13,6 +13,7 @@
+ #include "servicefd.h"
+ #include "common/list.h"
+ #include "log.h"
++#include "fdstore.h"
+ 
+ cr_plugin_ctl_t cr_plugin_ctl = {
+ 	.head.next = &cr_plugin_ctl.head,
+@@ -60,6 +61,9 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
  	__assign_hook(PAUSE_DEVICES, "cr_plugin_pause_devices");
  	__assign_hook(CHECKPOINT_DEVICES, "cr_plugin_checkpoint_devices");
  	__assign_hook(POST_FORKING, "cr_plugin_post_forking");
 +	__assign_hook(HANDLE_ANON_DEVICE_VMA, "cr_plugin_handle_anon_device_vma");
 +	__assign_hook(FINALIZE_DEVICES, "cr_plugin_finalize_devices");
++	__assign_hook(PREPARE_RESTORE, "cr_plugin_prepare_restore");
  
  #undef __assign_hook
  
-@@ -200,6 +202,25 @@ void cr_plugin_fini(int stage, int ret)
+@@ -101,6 +105,16 @@ int criu_get_image_dir(void)
+ 	return get_service_fd(IMG_FD_OFF);
+ }
+ 
++int criu_plugin_fdstore_add(int fd)
++{
++	return fdstore_add(fd);
++}
++
++int criu_plugin_fdstore_get(int id)
++{
++	return fdstore_get(id);
++}
++
+ static int cr_lib_load(int stage, char *path)
+ {
+ 	cr_plugin_desc_t *d;
+@@ -200,6 +214,44 @@ void cr_plugin_fini(int stage, int ret)
  	}
  }
  
++int prepare_restore_plugins(void)
++{
++	plugin_desc_t *this;
++
++	list_for_each_entry(this,
++			    &cr_plugin_ctl.hook_chain[CR_PLUGIN_HOOK__PREPARE_RESTORE],
++			    link[CR_PLUGIN_HOOK__PREPARE_RESTORE]) {
++		int ret;
++
++		pr_debug("plugin: `%s' prepare restore -> %p\n", this->d->name,
++			 this->d->hooks[CR_PLUGIN_HOOK__PREPARE_RESTORE]);
++		ret = ((CR_PLUGIN_HOOK__PREPARE_RESTORE_t *)
++			this->d->hooks[CR_PLUGIN_HOOK__PREPARE_RESTORE])();
++		if (ret && ret != -ENOTSUP)
++			return ret;
++	}
++	return 0;
++}
++
 +int finalize_device_plugins(void)
 +{
 +	plugin_desc_t *this;
@@ -1359,11 +1444,12 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..c2d8ffc36
+index 000000000..ba2a56b09
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,820 @@
 +// SPDX-License-Identifier: GPL-2.0
++#include <dirent.h>
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <inttypes.h>
@@ -1430,14 +1516,20 @@ index 000000000..c2d8ffc36
 +	uint32_t sharing_flags;
 +	uint32_t handle;
 +	uint32_t restored_handles;
-+	int fd;
-+	int prime_fd;
++	int transient_fd;
++	int fdstore_id;
++	int prime_fdstore_id;
 +};
 +
 +struct restore_file {
-+	int fd;
++	int fdstore_id;
 +	uint64_t cookie;
 +	bool active;
++};
++
++struct prepared_file {
++	int file_id;
++	int fdstore_id;
 +};
 +
 +static int checkpoint_pid = -1;
@@ -1448,6 +1540,8 @@ index 000000000..c2d8ffc36
 +static size_t restore_object_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
 +static size_t restore_file_count;
++static struct prepared_file prepared_files[I915_MAX_RESTORE_FILES];
++static size_t prepared_file_count;
 +
 +static const char *render_node(void)
 +{
@@ -1668,6 +1762,7 @@ index 000000000..c2d8ffc36
 +	dump_relationship_count = 0;
 +	restore_object_count = 0;
 +	restore_file_count = 0;
++	prepared_file_count = 0;
 +	return 0;
 +}
 +
@@ -1676,9 +1771,14 @@ index 000000000..c2d8ffc36
 +	for (size_t i = 0; i < restore_file_count; i++) {
 +		if (!restore_files[i].active)
 +			continue;
-+		if (session_ioctl(restore_files[i].fd, I915_CRIU_SESSION_ABORT, 0,
++		int fd = criu_plugin_fdstore_get(restore_files[i].fdstore_id);
++
++		if (fd < 0 ||
++		    session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0,
 +				  &restore_files[i].cookie))
 +			pr_err("failed to abort i915 restore transaction\n");
++		if (fd >= 0)
++			close(fd);
 +		restore_files[i].active = false;
 +	}
 +}
@@ -1687,12 +1787,6 @@ index 000000000..c2d8ffc36
 +{
 +	if (stage == CR_PLUGIN_STAGE__RESTORE && ret)
 +		abort_restore_sessions();
-+	if (stage == CR_PLUGIN_STAGE__RESTORE) {
-+		for (size_t i = 0; i < restore_object_count; i++) {
-+			if (restore_objects[i].prime_fd >= 0)
-+				close(restore_objects[i].prime_fd);
-+		}
-+	}
 +}
 +
 +CR_PLUGIN_REGISTER("i915_plugin", i915_plugin_init, i915_plugin_fini)
@@ -1837,28 +1931,46 @@ index 000000000..c2d8ffc36
 +		struct drm_i915_gem_pread pread;
 +		void *verify;
 +		uint32_t handle;
++		int object_fd;
++		int prime_fd;
 +		int ret;
 +
 +		if (existing->object_id != image->object_id)
 +			continue;
-+		if (existing->prime_fd < 0)
++		if (existing->prime_fdstore_id < 0)
 +			return -EINVAL;
++		object_fd = existing->transient_fd >= 0 ? existing->transient_fd :
++			criu_plugin_fdstore_get(existing->fdstore_id);
++		prime_fd = criu_plugin_fdstore_get(existing->prime_fdstore_id);
++		if (object_fd < 0 || prime_fd < 0) {
++			if (existing->transient_fd < 0 && object_fd >= 0)
++				close(object_fd);
++			if (prime_fd >= 0)
++				close(prime_fd);
++			return -EIO;
++		}
 +		verify = xmalloc(image->size);
-+		if (!verify)
++		if (!verify) {
++			if (existing->transient_fd < 0)
++				close(object_fd);
++			close(prime_fd);
 +			return -ENOMEM;
++		}
 +		pread = (struct drm_i915_gem_pread) {
 +			.handle = existing->handle,
 +			.size = image->size,
 +			.data_ptr = (uintptr_t)verify,
 +		};
-+		if (ioctl(existing->fd, DRM_IOCTL_I915_GEM_PREAD, &pread) < 0)
++		if (ioctl(object_fd, DRM_IOCTL_I915_GEM_PREAD, &pread) < 0)
 +			ret = -errno;
 +		else
 +			ret = memcmp(verify, contents, image->size) ? -EILSEQ : 0;
 +		xfree(verify);
-+		if (ret)
-+			return ret;
-+		ret = drmPrimeFDToHandle(fd, existing->prime_fd, &handle);
++		if (existing->transient_fd < 0)
++			close(object_fd);
++		if (!ret)
++			ret = drmPrimeFDToHandle(fd, prime_fd, &handle);
++		close(prime_fd);
 +		if (ret)
 +			return ret;
 +		create.op = I915_CRIU_OBJECT_IMPORT;
@@ -1905,22 +2017,28 @@ index 000000000..c2d8ffc36
 +		.sharing_flags = image->sharing_flags,
 +		.handle = create.handle,
 +		.restored_handles = 1,
-+		.fd = fd,
-+		.prime_fd = -1,
++		.transient_fd = fd,
++		.fdstore_id = -1,
++		.prime_fdstore_id = -1,
 +	};
 +	if (image->handle_count > 1 ||
 +	    image->sharing_flags & I915_CRIU_OBJECT_SHARED) {
++		int prime_fd;
 +		int ret = drmPrimeHandleToFD(fd, create.handle,
-+					     DRM_CLOEXEC | DRM_RDWR,
-+					     &restore_objects[restore_object_count].prime_fd);
++					     DRM_CLOEXEC | DRM_RDWR, &prime_fd);
 +		if (ret)
 +			return ret;
++		ret = criu_plugin_fdstore_add(prime_fd);
++		close(prime_fd);
++		if (ret < 0)
++			return -EIO;
++		restore_objects[restore_object_count].prime_fdstore_id = ret;
 +	}
 +	restore_object_count++;
 +	return 0;
 +}
 +
-+int i915_plugin_restore_file(int id)
++static int restore_file_image(int id)
 +{
 +	struct i915_image_header header;
 +	struct restore_file *restore_file;
@@ -1961,13 +2079,6 @@ index 000000000..c2d8ffc36
 +		close(fd);
 +		return ret;
 +	}
-+	restore_file = &restore_files[restore_file_count++];
-+	*restore_file = (struct restore_file) {
-+		.fd = fd,
-+		.cookie = cookie,
-+		.active = true,
-+	};
-+
 +	for (uint32_t i = 0; i < header.object_count; i++) {
 +		struct i915_image_object object;
 +		void *contents;
@@ -2002,19 +2113,105 @@ index 000000000..c2d8ffc36
 +	}
 +	close(image);
 +	if (ret) {
++		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
 +		abort_restore_sessions();
 +		close(fd);
 +		return ret;
 +	}
 +
-+	ret = dup(fd);
++	ret = criu_plugin_fdstore_add(fd);
 +	if (ret < 0) {
-+		ret = -errno;
++		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
 +		abort_restore_sessions();
 +		close(fd);
-+		return ret;
++		return -EIO;
 +	}
-+	return ret;
++	restore_file = &restore_files[restore_file_count++];
++	*restore_file = (struct restore_file) {
++		.fdstore_id = ret,
++		.cookie = cookie,
++		.active = true,
++	};
++	for (size_t i = 0; i < restore_object_count; i++) {
++		if (restore_objects[i].transient_fd != fd)
++			continue;
++		restore_objects[i].transient_fd = -1;
++		restore_objects[i].fdstore_id = ret;
++	}
++	close(fd);
++	ret = criu_plugin_fdstore_get(restore_file->fdstore_id);
++	return ret < 0 ? -EIO : ret;
++}
++static int compare_file_ids(const void *left, const void *right)
++{
++	const int a = *(const int *)left;
++	const int b = *(const int *)right;
++
++	return (a > b) - (a < b);
++}
++
++int i915_plugin_prepare_restore(void)
++{
++	DIR *directory;
++	struct dirent *entry;
++	int image_ids[I915_MAX_RESTORE_FILES];
++	size_t image_count = 0;
++	int directory_fd;
++
++	directory_fd = dup(criu_get_image_dir());
++	if (directory_fd < 0)
++		return -errno;
++	directory = fdopendir(directory_fd);
++	if (!directory) {
++		close(directory_fd);
++		return -errno;
++	}
++	while ((entry = readdir(directory))) {
++		char trailing;
++		int id;
++
++		if (sscanf(entry->d_name, "i915-criu-%d.img%c", &id,
++			   &trailing) != 1)
++			continue;
++		if (id < 0 || image_count == I915_MAX_RESTORE_FILES) {
++			closedir(directory);
++			return -E2BIG;
++		}
++		image_ids[image_count++] = id;
++	}
++	closedir(directory);
++	qsort(image_ids, image_count, sizeof(image_ids[0]), compare_file_ids);
++
++	for (size_t i = 0; i < image_count; i++) {
++		int fd = restore_file_image(image_ids[i]);
++		int fdstore_id;
++
++		if (fd < 0) {
++			pr_err("failed to prepare i915 image %d: %d\n",
++			       image_ids[i], fd);
++			return fd;
++		}
++		fdstore_id = criu_plugin_fdstore_add(fd);
++		close(fd);
++		if (fdstore_id < 0)
++			return -EIO;
++		prepared_files[prepared_file_count++] = (struct prepared_file) {
++			.file_id = image_ids[i],
++			.fdstore_id = fdstore_id,
++		};
++	}
++	return 0;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__PREPARE_RESTORE,
++			 i915_plugin_prepare_restore)
++
++int i915_plugin_restore_file(int id)
++{
++	for (size_t i = 0; i < prepared_file_count; i++) {
++		if (prepared_files[i].file_id == id)
++			return criu_plugin_fdstore_get(prepared_files[i].fdstore_id);
++	}
++	return -ENOTSUP;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESTORE_EXT_FILE,
 +			 i915_plugin_restore_file)
@@ -2029,8 +2226,8 @@ index 000000000..c2d8ffc36
 +		if (restore_objects[i].old_mmap_offset != old_pgoff)
 +			continue;
 +		*new_pgoff = restore_objects[i].new_mmap_offset;
-+		*plugin_fd = restore_objects[i].fd;
-+		return 1;
++		*plugin_fd = criu_plugin_fdstore_get(restore_objects[i].fdstore_id);
++		return *plugin_fd < 0 ? -EIO : 1;
 +	}
 +	return 0;
 +}
@@ -2052,12 +2249,17 @@ index 000000000..c2d8ffc36
 +		}
 +	}
 +	for (size_t i = 0; i < restore_file_count; i++) {
++		int fd;
 +		int ret;
 +
 +		if (!restore_files[i].active)
 +			continue;
-+		ret = session_ioctl(restore_files[i].fd, I915_CRIU_SESSION_COMMIT,
++		fd = criu_plugin_fdstore_get(restore_files[i].fdstore_id);
++		if (fd < 0)
++			return -EIO;
++		ret = session_ioctl(fd, I915_CRIU_SESSION_COMMIT,
 +				    0, &restore_files[i].cookie);
++		close(fd);
 +		if (ret)
 +			return ret;
 +		restore_files[i].active = false;
@@ -2594,10 +2796,10 @@ index 000000000..37cc49b1f
 +}
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..bf0a3899c
+index 000000000..37341125e
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,120 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2609,7 +2811,9 @@ index 000000000..bf0a3899c
 +repo=$(cd "$(dirname "$0")/../../.." && pwd)
 +work=${I915_CRIU_TEST_DIR:-/tmp/i915-criu-minimal}
 +criu=${CRIU:-/run/current-system/sw/bin/criu}
-+plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-}
++plugin_args=()
++[[ -n $plugin_dir ]] && plugin_args+=(--libdir "$plugin_dir")
 +cc=${CC:-gcc}
 +fixture="$work/i915-gem-minimal"
 +fixture_source=${FIXTURE:-/tmp/i915-gem-minimal}
@@ -2648,13 +2852,13 @@ index 000000000..bf0a3899c
 +original_offset=$(sed -n 's/.* mmap_offset=\([^ ]*\).*/\1/p' "$log")
 +
 +"$criu" dump -t "$original_pid" -D "$images" --shell-job \
-+    --libdir "$plugin_dir" --log-file dump.log -v4
++    "${plugin_args[@]}" --log-file dump.log -v4
 +wait "$fixture_pid" 2>/dev/null || true
 +fixture_pid=
 +
 +test -s "$images"/i915-criu-*.img
 +"$criu" restore -D "$images" --shell-job --restore-detached \
-+    --libdir "$plugin_dir" --log-file restore.log -v4
++    "${plugin_args[@]}" --log-file restore.log -v4
 +fixture_pid=$original_pid
 +kill -USR1 "$fixture_pid"
 +
@@ -2697,11 +2901,12 @@ index 000000000..bf0a3899c
 +    esac
 +
 +    if "$criu" restore -D "$negative" --shell-job --restore-detached \
-+        --libdir "$plugin_dir" --log-file restore.log -v4; then
++        "${plugin_args[@]}" --log-file restore.log -v4; then
 +        echo "restore unexpectedly accepted $label image" >&2
 +        return 1
 +    fi
-+    grep -q 'Restoring FAILED' "$negative/restore.log"
++    grep -Eq 'Failed to prepare restore plugins|Restoring FAILED' \
++        "$negative/restore.log"
 +    if [[ $(cat "/proc/$original_pid/comm" 2>/dev/null || true) == i915-gem-minima ]]; then
 +        echo "failed $label restore left fixture pid $original_pid alive" >&2
 +        kill -KILL "$original_pid" 2>/dev/null || true
@@ -2717,10 +2922,10 @@ index 000000000..bf0a3899c
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
-index 000000000..7475aa14b
+index 000000000..e10984b16
 --- /dev/null
 +++ b/test/others/i915-criu/run-sharing-criu.sh
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,127 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -2732,7 +2937,9 @@ index 000000000..7475aa14b
 +repo=$(cd "$(dirname "$0")/../../.." && pwd)
 +work=${I915_CRIU_TEST_DIR:-/tmp/i915-criu-sharing}
 +criu=${CRIU:-/run/current-system/sw/bin/criu}
-+plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-}
++plugin_args=()
++[[ -n $plugin_dir ]] && plugin_args+=(--libdir "$plugin_dir")
 +expect_unsupported=${I915_CRIU_EXPECT_UNSUPPORTED:-0}
 +external_peer=${I915_CRIU_EXTERNAL_PEER:-0}
 +cc=${CC:-gcc}
@@ -2784,7 +2991,7 @@ index 000000000..7475aa14b
 +if [[ $expect_unsupported == 1 ]]; then
 +    set +e
 +    "$criu" dump -t "$original_pid" -D "$images" --shell-job \
-+        --libdir "$plugin_dir" --log-file dump.log -v4
++        "${plugin_args[@]}" --log-file dump.log -v4
 +    dump_status=$?
 +    set -e
 +    if (( dump_status == 0 || dump_status >= 128 )); then
@@ -2804,13 +3011,25 @@ index 000000000..7475aa14b
 +fi
 +
 +"$criu" dump -t "$original_pid" -D "$images" --shell-job \
-+    --libdir "$plugin_dir" --log-file dump.log -v4
++    "${plugin_args[@]}" --log-file dump.log -v4
 +wait "$fixture_pid" 2>/dev/null || true
 +fixture_pid=
++for _ in $(seq 1 200); do
++    [[ $(cat "/proc/$child_pid/comm" 2>/dev/null || true) != i915-gem-sharin ]] && break
++    sleep 0.05
++done
++if [[ $(cat "/proc/$child_pid/comm" 2>/dev/null || true) == i915-gem-sharin ]]; then
++    echo "dumped child pid $child_pid was not reaped before restore" >&2
++    exit 1
++fi
 +
-+test -s "$images"/i915-criu-*.img
++i915_images=("$images"/i915-criu-*.img)
++(( ${#i915_images[@]} >= 2 ))
++for image in "${i915_images[@]}"; do
++    test -s "$image"
++done
 +"$criu" restore -D "$images" --shell-job --restore-detached \
-+    --libdir "$plugin_dir" --log-file restore.log -v4
++    "${plugin_args[@]}" --log-file restore.log -v4
 +fixture_pid=$original_pid
 +kill -USR1 "$fixture_pid"
 +
