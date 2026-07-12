@@ -18,6 +18,8 @@ criu.overrideAttrs (old: {
     substituteInPlace plugins/amdgpu/Makefile \
       --replace-fail 'LIBDRM_INC 		:= -I/usr/include/libdrm' \
       'LIBDRM_INC := $(shell pkg-config --cflags libdrm)'
+    substituteInPlace criu/include/plugin.h \
+      --replace-fail '"/usr/lib/criu/"' '"'"$out"'/lib/criu/"'
   '';
   src = fetchFromGitHub {
     owner = "checkpoint-restore";
