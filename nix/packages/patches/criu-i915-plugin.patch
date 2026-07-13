@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..4d5a7cb03
+index 000000000..a5851f636
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,451 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -361,17 +361,28 @@ index 000000000..4d5a7cb03
 +outside the captured tree and requires the finalize hook to refuse the missing
 +handle before dump completion.
 +
-+This stage does not yet admit an independently held dma-buf fd, an external
-+attachment, or an imported non-i915 object. `i915-gem-sharing
-+--retained-dmabuf` keeps the exported descriptor live, validates its object
-+identity after resume in the native control, and is a mandatory dump-refusal
-+case until fd/attachment membership can be proven against the complete captured
-+domain; handle equality alone is not sufficient evidence.
++ABI and private image version 6 add independently retained i915-exported
++dma-buf file descriptions. CRIU invokes a plugin reference hook for every fd,
++including duplicate descriptors, while retaining one image per shared file
++description. At finalization, after CRIU closes its temporary drained-fd
++copies, the plugin re-queries each object through an authorized captured DRM
++file. Admission requires the kernel dma-buf refcount to equal the exporter
++cache reference, every proven i915 handle relationship, and every captured
++dma-buf fd. Attachments and imported non-i915 objects remain refused. This
++catches an external process retaining only the dma-buf fd even when all GEM
++handles are inside the captured domain.
++
++`i915-gem-sharing --retained-dmabuf` keeps two duplicate descriptors live and
++validates their restored object identity. `--external-dmabuf-peer` reparents a
++process that holds only the exported fd and requires finalization refusal.
++Physical ABI-6 proof remains pending; handle equality alone is not treated as
++sufficient evidence.
 +
 +### Synchronization expansion
 +
-+ABI and private image version 5 (building on version 3 synchronization and
-+version 4 idle-context support) enumerates each DRM file's syncobj handle table
++ABI and private image version 6 (building on version 3 synchronization,
++version 4 idle-context support, and version 5 GPU bindings) enumerates each DRM
++file's syncobj handle table
 +inside the authorized dump transaction. The supported subset is deliberately
 +limited to empty syncobjs, signaled binary syncobjs, and timeline syncobjs whose
 +latest submitted point is fully signaled. Restore creates the handles in their
@@ -417,11 +428,17 @@ index 000000000..4d5a7cb03
 +context/VM restoration, and submitted-context refusal. The retained evidence is
 +`/var/tmp/i915-criu-abi4-20260713T122717Z`.
 +
-+After booting a matching kernel/plugin generation,
-+`run-physical-suite.sh` executes the minimal corruption suite, shared GEM
-+positive, external-peer and retained-dma-buf negatives, syncobj positive and
-+callback negative, idle context/VM positive, context/VM/GPU-binding positive,
-+and custom-engine refusal in one privileged run.
++On 2026-07-13 ABI/image version 5 passed all nine staged cases on the Framework
++target. The retained mode-0700 evidence is
++`/var/tmp/i915-criu-physical-20260713T183559Z`: minimal GEM plus incompatible
++schema and truncation negatives; shared GEM positive; external-peer and
++retained-dma-buf negatives; binary/timeline syncobj positive; callback refusal;
++idle context/VM positive; materialized context/VM/exact-GPU-address positive;
++and custom-engine refusal. The materialized-context fixture submitted before
++capture, restored GPU address zero as a valid exact binding, then completed a
++new pinned-address submission and bounded GEM wait after restore.
++
++`run-physical-suite.sh` reproduces these cases in one privileged run.
 +It creates a private mode-0700 evidence directory containing per-case logs,
 +kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
 +verdict. When invoked through sudo, an exit trap returns that directory to the
@@ -505,10 +522,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..5c6d763a8
+index 000000000..4ada1a004
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,125 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -517,7 +534,7 @@ index 000000000..5c6d763a8
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 5
++#define I915_CRIU_ABI_VERSION 6
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -569,7 +586,9 @@ index 000000000..5c6d763a8
 +	uint32_t pad;
 +	uint32_t handle_count;
 +	uint32_t sharing_flags;
-+	uint64_t reserved[3];
++	uint32_t dma_buf_refcount;
++	uint32_t dma_buf_attachment_count;
++	uint64_t reserved[2];
 +};
 +
 +struct drm_i915_criu_data {
@@ -634,10 +653,10 @@ index 000000000..5c6d763a8
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..5e70deea4
+index 000000000..19adab78e
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,1386 @@
+@@ -0,0 +1,1425 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -699,14 +718,15 @@ index 000000000..5e70deea4
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..9af2b9b
++index 0000000..d4eba8d
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1026 @@
++@@ -0,0 +1,1059 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 5. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 6. */
 ++
 ++#include <linux/capability.h>
+++#include <linux/dma-buf.h>
 ++#include <linux/dma-fence-chain.h>
 ++#include <linux/pid.h>
 ++#include <linux/ptrace.h>
@@ -1057,6 +1077,34 @@ index 000000000..5e70deea4
 ++	return 0;
 ++}
 ++
+++static int describe_dma_buf(struct drm_i915_gem_object *obj,
+++			    struct drm_i915_criu_object *args)
+++{
+++	struct dma_buf_attachment *attachment;
+++	struct dma_buf *dmabuf = obj->base.dma_buf;
+++	long refcount;
+++	u32 attachment_count = 0;
+++
+++	if (!dmabuf)
+++		return 0;
+++
+++	refcount = file_count(dmabuf->file);
+++	if (refcount <= 0 || refcount > U32_MAX)
+++		return -EOVERFLOW;
+++	dma_resv_lock(dmabuf->resv, NULL);
+++	list_for_each_entry(attachment, &dmabuf->attachments, node) {
+++		if (attachment_count == U32_MAX) {
+++			dma_resv_unlock(dmabuf->resv);
+++			return -EOVERFLOW;
+++		}
+++		attachment_count++;
+++	}
+++	dma_resv_unlock(dmabuf->resv);
+++	args->dma_buf_refcount = refcount;
+++	args->dma_buf_attachment_count = attachment_count;
+++	return attachment_count ? -EOPNOTSUPP : 0;
+++}
+++
 ++static int validate_syncobjs(struct drm_file *file)
 ++{
 ++	struct drm_syncobj *syncobj;
@@ -1209,6 +1257,10 @@ index 000000000..5e70deea4
 ++			ret = -EOPNOTSUPP;
 ++			goto put_obj;
 ++		}
+++
+++		ret = describe_dma_buf(obj, args);
+++		if (ret)
+++			goto put_obj;
 ++
 ++		ret = i915_gem_object_wait(obj, I915_WAIT_ALL, 5 * HZ);
 ++		if (ret)
@@ -1842,7 +1894,7 @@ index 000000000..5e70deea4
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..73a9b05 100644
++index 535cb68..3478013 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,12 @@ typedef struct _drm_i915_sarea {
@@ -1871,7 +1923,7 @@ index 000000000..5e70deea4
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3918,140 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3918,146 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -1886,11 +1938,13 @@ index 000000000..5e70deea4
 ++ * Version 4 preserves configured but not yet submitted contexts and empty
 ++ * explicit GPU VMs. Version 5 preserves idle materialized contexts using the
 ++ * default engine map and ordinary local object bindings at exact GPU virtual
-++ * addresses. It still refuses userptr, external imports, protected content,
-++ * custom engine maps, active requests, special VMA views, exported syncobjs,
-++ * in-flight fences, and KMS state.
+++ * addresses. Version 6 accounts for retained i915-exported dma-buf descriptor
+++ * references while refusing attachments and imported non-i915 objects. It
+++ * still refuses userptr, protected content, custom engine maps, active
+++ * requests, special VMA views, exported syncobjs, in-flight fences, and KMS
+++ * state.
 ++ */
-++#define I915_CRIU_ABI_VERSION 5
+++#define I915_CRIU_ABI_VERSION 6
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -1929,7 +1983,11 @@ index 000000000..5e70deea4
 ++	__u32 pad;
 ++	__u32 handle_count;
 ++	__u32 sharing_flags;
-++	__u64 reserved[3];
+++	/* Zero when unexported; otherwise the complete dma-buf file refcount. */
+++	__u32 dma_buf_refcount;
+++	/* Attachments are reported for strict userspace refusal in version 6. */
+++	__u32 dma_buf_attachment_count;
+++	__u64 reserved[2];
 ++};
 ++
 ++#define I915_CRIU_DATA_READ  1
@@ -2055,11 +2113,45 @@ index 057ec0e93..01dd1111d 100644
  	if (inherit_fd_move_to_fdstore())
  		goto err;
  
+diff --git a/criu/files.c b/criu/files.c
+index af4b8aeac..6fb80d27d 100644
+--- a/criu/files.c
++++ b/criu/files.c
+@@ -19,6 +19,7 @@
+ #include "files-reg.h"
+ #include "file-lock.h"
+ #include "image.h"
++#include "plugin.h"
+ #include "common/list.h"
+ #include "rst-malloc.h"
+ #include "util-caps.h"
+@@ -339,6 +340,12 @@ int do_dump_gen_file(struct fd_parms *p, int lfd, const struct fdtype_ops *ops,
+ 	e->flags = p->fd_flags;
+ 
+ 	ret = fd_id_generate(p->pid, e, p);
++	if (ret >= 0 && ops == &ext_dump_ops) {
++		int hook_ret = run_plugins(HANDLE_EXT_FILE_REFERENCE, lfd, e->id);
++
++		if (hook_ret < 0 && hook_ret != -ENOTSUP)
++			return hook_ret;
++	}
+ 	if (ret == 1) /* new ID generated */
+ 		ret = ops->dump(lfd, e->id, p);
+ 	else
 diff --git a/criu/include/criu-plugin.h b/criu/include/criu-plugin.h
-index 9fb21a449..89482988d 100644
+index 9fb21a449..b7effb2dd 100644
 --- a/criu/include/criu-plugin.h
 +++ b/criu/include/criu-plugin.h
-@@ -62,6 +62,12 @@ enum {
+@@ -27,7 +27,7 @@
+ 
+ #define CRIU_PLUGIN_GEN_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
+ #define CRIU_PLUGIN_VERSION_MAJOR	 0
+-#define CRIU_PLUGIN_VERSION_MINOR	 2
++#define CRIU_PLUGIN_VERSION_MINOR	 3
+ #define CRIU_PLUGIN_VERSION_SUBLEVEL	 0
+ 
+ #define CRIU_PLUGIN_VERSION_OLD CRIU_PLUGIN_GEN_VERSION(0, 1, 0)
+@@ -62,6 +62,14 @@ enum {
  
  	CR_PLUGIN_HOOK__POST_FORKING = 12,
  
@@ -2069,10 +2161,12 @@ index 9fb21a449..89482988d 100644
 +
 +	CR_PLUGIN_HOOK__PREPARE_RESTORE = 15,
 +
++	CR_PLUGIN_HOOK__HANDLE_EXT_FILE_REFERENCE = 16,
++
  	CR_PLUGIN_HOOK__MAX
  };
  
-@@ -81,6 +87,11 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
+@@ -81,6 +89,13 @@ DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PAUSE_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__CHECKPOINT_DEVICES, int pid);
  DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__POST_FORKING, void);
@@ -2081,10 +2175,12 @@ index 9fb21a449..89482988d 100644
 +			 uint64_t pgoff, int *surrogate_fd);
 +DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__FINALIZE_DEVICES, void);
 +DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__PREPARE_RESTORE, void);
++DECLARE_PLUGIN_HOOK_ARGS(CR_PLUGIN_HOOK__HANDLE_EXT_FILE_REFERENCE,
++			 int fd, int id);
  
  enum {
  	CR_PLUGIN_STAGE__DUMP,
-@@ -115,10 +126,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
+@@ -115,10 +130,13 @@ extern cr_plugin_desc_t CR_PLUGIN_DESC;
  
  static inline int cr_plugin_dummy_init(int stage)
  {
@@ -2098,7 +2194,7 @@ index 9fb21a449..89482988d 100644
  }
  
  #define CR_PLUGIN_REGISTER_DUMMY(___name)         \
-@@ -138,6 +152,8 @@ static inline void cr_plugin_dummy_exit(int stage, int ret)
+@@ -138,6 +156,8 @@ static inline void cr_plugin_dummy_exit(int stage, int ret)
  
  /* Public API */
  extern int criu_get_image_dir(void);
@@ -2107,6 +2203,18 @@ index 9fb21a449..89482988d 100644
  
  /*
   * Deprecated, will be removed in next version.
+diff --git a/criu/include/files.h b/criu/include/files.h
+index 31ebb0ca0..5c9beea2e 100644
+--- a/criu/include/files.h
++++ b/criu/include/files.h
+@@ -137,6 +137,7 @@ struct fdtype_ops {
+ 
+ struct cr_img;
+ 
++extern const struct fdtype_ops ext_dump_ops;
+ extern int dump_my_file(int lfd, u32 *, int *type);
+ extern int do_dump_gen_file(struct fd_parms *p, int lfd, const struct fdtype_ops *ops, FdinfoEntry *e);
+ struct parasite_drain_fd;
 diff --git a/criu/include/plugin.h b/criu/include/plugin.h
 index 0115e6ea0..de539783f 100644
 --- a/criu/include/plugin.h
@@ -2291,15 +2399,16 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..51a1704c3
+index 000000000..de28c61ec
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,1213 @@
+@@ -0,0 +1,1697 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <inttypes.h>
++#include <linux/magic.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
@@ -2307,6 +2416,7 @@ index 000000000..51a1704c3
 +#include <string.h>
 +#include <sys/ioctl.h>
 +#include <sys/stat.h>
++#include <sys/statfs.h>
 +#include <sys/sysmacros.h>
 +#include <unistd.h>
 +
@@ -2320,7 +2430,9 @@ index 000000000..51a1704c3
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 5
++#define I915_IMAGE_VERSION 6
++#define I915_IMAGE_KIND_DRM_FILE 1
++#define I915_IMAGE_KIND_DMABUF 2
 +#define I915_MAX_RESTORE_OBJECTS 256
 +#define I915_MAX_RESTORE_SYNCOBJS 256
 +#define I915_MAX_RESTORE_VMS 64
@@ -2338,7 +2450,7 @@ index 000000000..51a1704c3
 +	uint32_t vm_count;
 +	uint32_t context_count;
 +	uint32_t binding_count;
-+	uint32_t reserved;
++	uint32_t kind;
 +};
 +
 +struct i915_image_object {
@@ -2349,6 +2461,8 @@ index 000000000..51a1704c3
 +	uint32_t flags;
 +	uint32_t handle_count;
 +	uint32_t sharing_flags;
++	uint32_t dma_buf_refcount;
++	uint32_t dma_buf_attachment_count;
 +};
 +
 +struct i915_image_syncobj {
@@ -2372,6 +2486,12 @@ index 000000000..51a1704c3
 +	uint64_t size;
 +};
 +
++struct i915_image_dmabuf {
++	uint64_t object_id;
++	uint32_t fd_count;
++	uint32_t reserved;
++};
++
 +struct dump_object {
 +	struct i915_image_object image;
 +	void *data;
@@ -2381,6 +2501,17 @@ index 000000000..51a1704c3
 +	uint64_t object_id;
 +	uint32_t expected_handles;
 +	uint32_t seen_handles;
++	uint32_t expected_dma_buf_refcount;
++	uint32_t seen_dma_buf_fds;
++	uint32_t verification_handle;
++	int verification_fd;
++	bool metadata_seen;
++};
++
++struct dump_dmabuf_file {
++	int file_id;
++	uint64_t object_id;
++	uint32_t fd_count;
 +};
 +
 +struct restore_object {
@@ -2390,6 +2521,8 @@ index 000000000..51a1704c3
 +	uint64_t size;
 +	uint32_t handle_count;
 +	uint32_t sharing_flags;
++	uint32_t dma_buf_refcount;
++	uint32_t restored_dma_buf_fds;
 +	uint32_t handle;
 +	uint32_t restored_handles;
 +	int transient_fd;
@@ -2412,6 +2545,8 @@ index 000000000..51a1704c3
 +static bool inventory_added;
 +static struct object_relationship dump_relationships[I915_MAX_RESTORE_OBJECTS];
 +static size_t dump_relationship_count;
++static struct dump_dmabuf_file dump_dmabuf_files[I915_MAX_RESTORE_FILES];
++static size_t dump_dmabuf_file_count;
 +static struct restore_object restore_objects[I915_MAX_RESTORE_OBJECTS];
 +static size_t restore_object_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
@@ -2436,6 +2571,14 @@ index 000000000..51a1704c3
 +	return match;
 +}
 +
++static bool is_dmabuf_fd(int fd)
++{
++	struct statfs statfs;
++
++	return !fstatfs(fd, &statfs) &&
++		(uint64_t)statfs.f_type == (uint64_t)DMA_BUF_MAGIC;
++}
++
 +static int image_fd(int file_id, int flags)
 +{
 +	char name[64];
@@ -2456,6 +2599,26 @@ index 000000000..51a1704c3
 +			return -errno;
 +		}
 +		cursor += written;
++		size -= written;
++	}
++	return 0;
++}
++
++static int pwrite_all(int fd, const void *data, size_t size, off_t offset)
++{
++	const char *cursor = data;
++
++	while (size) {
++		ssize_t written = pwrite(fd, cursor, size, offset);
++		if (written < 0) {
++			if (errno == EINTR)
++				continue;
++			return -errno;
++		}
++		if (!written)
++			return -EIO;
++		cursor += written;
++		offset += written;
 +		size -= written;
 +	}
 +	return 0;
@@ -2495,6 +2658,79 @@ index 000000000..51a1704c3
 +	return 0;
 +}
 +
++static int resolve_dmabuf_object(int dmabuf_fd, uint64_t *object_id)
++{
++	struct drm_i915_criu_object query = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_OBJECT_QUERY,
++	};
++	struct drm_gem_close close_handle;
++	uint64_t cookie = 0;
++	uint32_t handle;
++	int fd;
++	int ret;
++
++	fd = open(render_node(), O_RDWR | O_CLOEXEC);
++	if (fd < 0)
++		return errno == ENOENT || errno == ENODEV ? -ENOTSUP : -errno;
++	if (!is_i915_fd(fd)) {
++		close(fd);
++		return -ENOTSUP;
++	}
++	ret = drmPrimeFDToHandle(fd, dmabuf_fd, &handle);
++	if (ret)
++		goto out;
++	close_handle = (struct drm_gem_close) { .handle = handle };
++	ret = session_ioctl(fd, I915_CRIU_SESSION_DUMP_BEGIN,
++			    checkpoint_pid, &cookie);
++	if (ret)
++		goto close_handle;
++	query.cookie = cookie;
++	query.handle = handle - 1;
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_OBJECT, &query) < 0)
++		ret = -errno;
++	else if (query.handle != handle || !query.object_id ||
++		 !(query.sharing_flags & I915_CRIU_OBJECT_SHARED))
++		ret = -EXDEV;
++	else
++		*object_id = query.object_id;
++	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
++				       I915_CRIU_SESSION_COMMIT,
++			  0, &cookie) && !ret)
++		ret = -EIO;
++close_handle:
++	ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
++out:
++	close(fd);
++	return ret;
++}
++
++static int write_dmabuf_image(int file_id, uint64_t object_id,
++			      uint32_t fd_count)
++{
++	struct i915_image_header header = {
++		.magic = I915_IMAGE_MAGIC,
++		.version = I915_IMAGE_VERSION,
++		.file_id = file_id,
++		.kind = I915_IMAGE_KIND_DMABUF,
++	};
++	struct i915_image_dmabuf image = {
++		.object_id = object_id,
++		.fd_count = fd_count,
++	};
++	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
++	int ret;
++
++	if (fd < 0)
++		return fd;
++	ret = write_all(fd, &header, sizeof(header));
++	if (!ret)
++		ret = write_all(fd, &image, sizeof(image));
++	if (close(fd) && !ret)
++		ret = -errno;
++	return ret;
++}
++
 +static void free_dump_objects(struct dump_object *objects, size_t count)
 +{
 +	for (size_t i = 0; i < count; i++)
@@ -2502,25 +2738,57 @@ index 000000000..51a1704c3
 +	xfree(objects);
 +}
 +
-+static int record_dump_relationship(uint64_t object_id,
-+				    uint32_t expected_handles)
++static struct object_relationship *dump_relationship(uint64_t object_id)
 +{
 +	for (size_t i = 0; i < dump_relationship_count; i++) {
-+		if (dump_relationships[i].object_id != object_id)
-+			continue;
-+		if (dump_relationships[i].expected_handles != expected_handles)
-+			return -EINVAL;
-+		dump_relationships[i].seen_handles++;
-+		return 0;
++		if (dump_relationships[i].object_id == object_id)
++			return &dump_relationships[i];
 +	}
 +	if (dump_relationship_count == I915_MAX_RESTORE_OBJECTS)
-+		return -E2BIG;
-+	dump_relationships[dump_relationship_count++] =
++		return NULL;
++	dump_relationships[dump_relationship_count] =
 +		(struct object_relationship) {
 +			.object_id = object_id,
-+			.expected_handles = expected_handles,
-+			.seen_handles = 1,
++			.verification_fd = -1,
 +		};
++	return &dump_relationships[dump_relationship_count++];
++}
++
++static int record_dump_relationship(int fd, uint32_t handle,
++				    uint64_t object_id,
++				    uint32_t expected_handles,
++				    uint32_t dma_buf_attachment_count)
++{
++	struct object_relationship *relationship = dump_relationship(object_id);
++
++	if (!relationship)
++		return -E2BIG;
++	if (dma_buf_attachment_count)
++		return -EOPNOTSUPP;
++	if (relationship->metadata_seen &&
++	    relationship->expected_handles != expected_handles)
++		return -EINVAL;
++	if (relationship->verification_fd < 0) {
++		relationship->verification_fd = dup(fd);
++		if (relationship->verification_fd < 0)
++			return -errno;
++		relationship->verification_handle = handle;
++	}
++	relationship->metadata_seen = true;
++	relationship->expected_handles = expected_handles;
++	relationship->seen_handles++;
++	return 0;
++}
++
++static int record_dump_dmabuf_reference(uint64_t object_id)
++{
++	struct object_relationship *relationship = dump_relationship(object_id);
++
++	if (!relationship)
++		return -E2BIG;
++	if (relationship->seen_dma_buf_fds == UINT32_MAX)
++		return -EOVERFLOW;
++	relationship->seen_dma_buf_fds++;
 +	return 0;
 +}
 +
@@ -2569,7 +2837,12 @@ index 000000000..51a1704c3
 +		objects[count].image.flags = query.flags;
 +		objects[count].image.handle_count = query.handle_count;
 +		objects[count].image.sharing_flags = query.sharing_flags;
-+		ret = record_dump_relationship(query.object_id, query.handle_count);
++		objects[count].image.dma_buf_refcount = query.dma_buf_refcount;
++		objects[count].image.dma_buf_attachment_count =
++			query.dma_buf_attachment_count;
++		ret = record_dump_relationship(fd, query.handle, query.object_id,
++					       query.handle_count,
++					       query.dma_buf_attachment_count);
 +		if (ret)
 +			goto err;
 +		objects[count].data = xmalloc(query.size);
@@ -2770,6 +3043,7 @@ index 000000000..51a1704c3
 +		.vm_count = vm_count,
 +		.context_count = context_count,
 +		.binding_count = binding_count,
++		.kind = I915_IMAGE_KIND_DRM_FILE,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
 +	int ret;
@@ -2808,6 +3082,7 @@ index 000000000..51a1704c3
 +	checkpoint_pid = -1;
 +	inventory_added = false;
 +	dump_relationship_count = 0;
++	dump_dmabuf_file_count = 0;
 +	restore_object_count = 0;
 +	restore_file_count = 0;
 +	prepared_file_count = 0;
@@ -2833,6 +3108,11 @@ index 000000000..51a1704c3
 +
 +static void i915_plugin_fini(int stage, int ret)
 +{
++	for (size_t i = 0; i < dump_relationship_count; i++) {
++		if (dump_relationships[i].verification_fd >= 0)
++			close(dump_relationships[i].verification_fd);
++		dump_relationships[i].verification_fd = -1;
++	}
 +	if (stage == CR_PLUGIN_STAGE__RESTORE && ret)
 +		abort_restore_sessions();
 +}
@@ -2886,6 +3166,47 @@ index 000000000..51a1704c3
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_DEVICE_VMA,
 +			 i915_plugin_handle_device_vma)
 +
++static int record_dump_dmabuf_file(int file_id, uint64_t object_id)
++{
++	for (size_t i = 0; i < dump_dmabuf_file_count; i++) {
++		struct dump_dmabuf_file *file = &dump_dmabuf_files[i];
++
++		if (file->file_id != file_id)
++			continue;
++		if (file->object_id != object_id || file->fd_count == UINT32_MAX)
++			return -EINVAL;
++		file->fd_count++;
++		return 0;
++	}
++	if (dump_dmabuf_file_count == I915_MAX_RESTORE_FILES)
++		return -E2BIG;
++	dump_dmabuf_files[dump_dmabuf_file_count++] =
++		(struct dump_dmabuf_file) {
++			.file_id = file_id,
++			.object_id = object_id,
++			.fd_count = 1,
++		};
++	return 0;
++}
++
++int i915_plugin_handle_ext_file_reference(int fd, int id)
++{
++	uint64_t object_id;
++	int ret;
++
++	if (!is_dmabuf_fd(fd))
++		return -ENOTSUP;
++	ret = resolve_dmabuf_object(fd, &object_id);
++	if (ret)
++		return ret;
++	ret = record_dump_dmabuf_reference(object_id);
++	if (ret)
++		return ret;
++	return record_dump_dmabuf_file(id, object_id);
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_EXT_FILE_REFERENCE,
++			 i915_plugin_handle_ext_file_reference)
++
 +int i915_plugin_dump_file(int fd, int id)
 +{
 +	struct dump_object *objects = NULL;
@@ -2901,8 +3222,21 @@ index 000000000..51a1704c3
 +	uint64_t cookie = 0;
 +	int ret;
 +
-+	if (!is_i915_fd(fd))
-+		return -ENOTSUP;
++	if (!is_i915_fd(fd)) {
++		uint64_t object_id;
++
++		if (!is_dmabuf_fd(fd))
++			return -ENOTSUP;
++		ret = resolve_dmabuf_object(fd, &object_id);
++		if (ret)
++			return ret;
++		for (size_t i = 0; i < dump_dmabuf_file_count; i++) {
++			if (dump_dmabuf_files[i].file_id == id &&
++			    dump_dmabuf_files[i].object_id == object_id)
++				return 0;
++		}
++		return -EINVAL;
++	}
 +	if (checkpoint_pid <= 0)
 +		return -EINVAL;
 +
@@ -2944,18 +3278,172 @@ index 000000000..51a1704c3
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
 +
++static int refresh_dump_relationship(struct object_relationship *relationship)
++{
++	struct drm_i915_criu_object query = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_OBJECT_QUERY,
++		.handle = relationship->verification_handle - 1,
++	};
++	uint64_t cookie = 0;
++	int ret;
++
++	if (relationship->verification_fd < 0 ||
++	    !relationship->verification_handle)
++		return -EINVAL;
++	ret = session_ioctl(relationship->verification_fd,
++			    I915_CRIU_SESSION_DUMP_BEGIN,
++			    checkpoint_pid, &cookie);
++	if (ret)
++		goto out;
++	query.cookie = cookie;
++	if (ioctl(relationship->verification_fd,
++		  DRM_IOCTL_I915_CRIU_OBJECT, &query) < 0)
++		ret = -errno;
++	else if (query.handle != relationship->verification_handle ||
++		 query.object_id != relationship->object_id ||
++		 query.handle_count != relationship->expected_handles ||
++		 query.dma_buf_attachment_count)
++		ret = -EXDEV;
++	else
++		relationship->expected_dma_buf_refcount =
++			query.dma_buf_refcount;
++	if (session_ioctl(relationship->verification_fd,
++			  ret ? I915_CRIU_SESSION_ABORT :
++				I915_CRIU_SESSION_COMMIT,
++			  0, &cookie) && !ret)
++		ret = -EIO;
++out:
++	close(relationship->verification_fd);
++	relationship->verification_fd = -1;
++	return ret;
++}
++
++static int patch_dump_image_refcounts(int file_id)
++{
++	struct i915_image_header header;
++	int fd = image_fd(file_id, O_RDWR);
++	int ret;
++
++	if (fd < 0)
++		return fd;
++	ret = read_all(fd, &header, sizeof(header));
++	if (ret || header.magic != I915_IMAGE_MAGIC ||
++	    header.version != I915_IMAGE_VERSION ||
++	    header.file_id != (uint32_t)file_id ||
++	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
++		close(fd);
++		return ret ? ret : -EINVAL;
++	}
++	for (uint32_t i = 0; i < header.object_count; i++) {
++		struct i915_image_object object;
++		off_t offset = lseek(fd, 0, SEEK_CUR);
++		struct object_relationship *relationship;
++
++		if (offset < 0 || read_all(fd, &object, sizeof(object))) {
++			close(fd);
++			return -EIO;
++		}
++		relationship = dump_relationship(object.object_id);
++		if (!relationship || !relationship->metadata_seen) {
++			close(fd);
++			return -ENOENT;
++		}
++		object.dma_buf_refcount =
++			relationship->expected_dma_buf_refcount;
++		ret = pwrite_all(fd, &object, sizeof(object), offset);
++		if (ret || lseek(fd, object.size, SEEK_CUR) < 0) {
++			close(fd);
++			return ret ? ret : -EIO;
++		}
++	}
++	close(fd);
++	return 0;
++}
++
++static int patch_dump_images(void)
++{
++	DIR *directory;
++	struct dirent *entry;
++	int directory_fd = dup(criu_get_image_dir());
++	int ret = 0;
++
++	if (directory_fd < 0)
++		return -errno;
++	directory = fdopendir(directory_fd);
++	if (!directory) {
++		close(directory_fd);
++		return -errno;
++	}
++	while ((entry = readdir(directory))) {
++		char trailing;
++		int id;
++
++		if (sscanf(entry->d_name, "i915-criu-%d.img%c", &id,
++			   &trailing) != 1)
++			continue;
++		ret = patch_dump_image_refcounts(id);
++		if (ret)
++			break;
++	}
++	closedir(directory);
++	return ret;
++}
++
 +int i915_plugin_finalize_devices(void)
 +{
 +	for (size_t i = 0; i < dump_relationship_count; i++) {
-+		if (dump_relationships[i].seen_handles !=
-+		    dump_relationships[i].expected_handles) {
-+			pr_err("i915 object %#" PRIx64
-+			       " has %u captured handles but %u exist\n",
-+			       dump_relationships[i].object_id,
-+			       dump_relationships[i].seen_handles,
-+			       dump_relationships[i].expected_handles);
++		struct object_relationship *relationship = &dump_relationships[i];
++		uint64_t expected_dma_buf_refcount;
++
++		if (!relationship->metadata_seen) {
++			pr_err("i915 dma-buf object %#" PRIx64
++			       " has no captured GEM handle\n",
++			       relationship->object_id);
 +			return -EXDEV;
 +		}
++		if (refresh_dump_relationship(relationship)) {
++			pr_err("failed final i915 relationship query for object %#" PRIx64
++			       "\n", relationship->object_id);
++			return -EXDEV;
++		}
++		if (relationship->seen_handles != relationship->expected_handles) {
++			pr_err("i915 object %#" PRIx64
++			       " has %u captured handles but %u exist\n",
++			       relationship->object_id,
++			       relationship->seen_handles,
++			       relationship->expected_handles);
++			return -EXDEV;
++		}
++		expected_dma_buf_refcount = relationship->expected_dma_buf_refcount;
++		if (!expected_dma_buf_refcount &&
++		    relationship->seen_dma_buf_fds) {
++			pr_err("i915 object %#" PRIx64
++			       " has dma-buf fds but no exported dma-buf\n",
++			       relationship->object_id);
++			return -EXDEV;
++		}
++		if (expected_dma_buf_refcount &&
++		    expected_dma_buf_refcount !=
++			1 + (uint64_t)relationship->expected_handles +
++			relationship->seen_dma_buf_fds) {
++			pr_err("i915 object %#" PRIx64
++			       " has %u captured dma-buf fds but refcount %u is not complete\n",
++			       relationship->object_id,
++			       relationship->seen_dma_buf_fds,
++			       relationship->expected_dma_buf_refcount);
++			return -EXDEV;
++		}
++	}
++	if (patch_dump_images())
++		return -EIO;
++	for (size_t i = 0; i < dump_dmabuf_file_count; i++) {
++		struct dump_dmabuf_file *file = &dump_dmabuf_files[i];
++		int ret = write_dmabuf_image(file->file_id, file->object_id,
++					     file->fd_count);
++
++		if (ret)
++			return ret;
 +	}
 +	return 0;
 +}
@@ -2969,7 +3457,10 @@ index 000000000..51a1704c3
 +	    image->flags != I915_CRIU_OBJECT_SHMEM ||
 +	    image->mmap_type != I915_MMAP_OFFSET_WB ||
 +	    !image->mmap_offset || !image->handle_count ||
-+	    image->sharing_flags & ~I915_CRIU_OBJECT_SHARED)
++	    image->sharing_flags & ~I915_CRIU_OBJECT_SHARED ||
++	    image->dma_buf_attachment_count ||
++	    (image->dma_buf_refcount &&
++	     !(image->sharing_flags & I915_CRIU_OBJECT_SHARED)))
 +		return -EINVAL;
 +
 +	for (size_t i = 0; i < restore_object_count; i++) {
@@ -2977,7 +3468,9 @@ index 000000000..51a1704c3
 +			if (restore_objects[i].old_mmap_offset != image->mmap_offset ||
 +			    restore_objects[i].size != image->size ||
 +			    restore_objects[i].handle_count != image->handle_count ||
-+			    restore_objects[i].sharing_flags != image->sharing_flags)
++			    restore_objects[i].sharing_flags != image->sharing_flags ||
++			    restore_objects[i].dma_buf_refcount !=
++				image->dma_buf_refcount)
 +				return -EINVAL;
 +			return 0;
 +		}
@@ -3093,6 +3586,7 @@ index 000000000..51a1704c3
 +		.size = image->size,
 +		.handle_count = image->handle_count,
 +		.sharing_flags = image->sharing_flags,
++		.dma_buf_refcount = image->dma_buf_refcount,
 +		.handle = create.handle,
 +		.restored_handles = 1,
 +		.transient_fd = fd,
@@ -3243,7 +3737,7 @@ index 000000000..51a1704c3
 +	    header.vm_count > I915_MAX_RESTORE_VMS ||
 +	    header.context_count > I915_MAX_RESTORE_CONTEXTS ||
 +	    header.binding_count > I915_MAX_RESTORE_BINDINGS ||
-+	    header.reserved) {
++	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
@@ -3382,19 +3876,98 @@ index 000000000..51a1704c3
 +	ret = criu_plugin_fdstore_get(restore_file->fdstore_id);
 +	return ret < 0 ? -EIO : ret;
 +}
-+static int compare_file_ids(const void *left, const void *right)
++static int restore_dmabuf_image(int id)
 +{
-+	const int a = *(const int *)left;
-+	const int b = *(const int *)right;
++	struct i915_image_header header;
++	struct i915_image_dmabuf image;
++	int fd;
++	int ret;
 +
-+	return (a > b) - (a < b);
++	fd = image_fd(id, O_RDONLY);
++	if (fd < 0)
++		return -ENOTSUP;
++	ret = read_all(fd, &header, sizeof(header));
++	if (!ret)
++		ret = read_all(fd, &image, sizeof(image));
++	if (!ret && (header.magic != I915_IMAGE_MAGIC ||
++		     header.version != I915_IMAGE_VERSION ||
++		     header.file_id != (uint32_t)id ||
++		     header.kind != I915_IMAGE_KIND_DMABUF ||
++		     header.object_count || header.syncobj_count ||
++		     header.vm_count || header.context_count ||
++		     header.binding_count || !image.object_id || !image.fd_count ||
++		     image.reserved))
++		ret = -EINVAL;
++	if (!ret) {
++		char trailing;
++		ssize_t got;
++
++		do {
++			got = read(fd, &trailing, sizeof(trailing));
++		} while (got < 0 && errno == EINTR);
++		if (got != 0)
++			ret = got < 0 ? -errno : -EINVAL;
++	}
++	close(fd);
++	if (ret)
++		return ret;
++	for (size_t i = 0; i < restore_object_count; i++) {
++		struct restore_object *object = &restore_objects[i];
++
++		if (object->object_id != image.object_id)
++			continue;
++		if (object->prime_fdstore_id < 0 ||
++		    image.fd_count > UINT32_MAX - object->restored_dma_buf_fds)
++			return -EINVAL;
++		object->restored_dma_buf_fds += image.fd_count;
++		fd = criu_plugin_fdstore_get(object->prime_fdstore_id);
++		return fd < 0 ? -EIO : fd;
++	}
++	return -ENOENT;
++}
++
++struct restore_image {
++	int id;
++	uint32_t kind;
++};
++
++static int read_image_kind(int id, uint32_t *kind)
++{
++	struct i915_image_header header;
++	int fd = image_fd(id, O_RDONLY);
++	int ret;
++
++	if (fd < 0)
++		return fd;
++	ret = read_all(fd, &header, sizeof(header));
++	close(fd);
++	if (ret)
++		return ret;
++	if (header.magic != I915_IMAGE_MAGIC ||
++	    header.version != I915_IMAGE_VERSION ||
++	    header.file_id != (uint32_t)id ||
++	    (header.kind != I915_IMAGE_KIND_DRM_FILE &&
++	     header.kind != I915_IMAGE_KIND_DMABUF))
++		return -EINVAL;
++	*kind = header.kind;
++	return 0;
++}
++
++static int compare_restore_images(const void *left, const void *right)
++{
++	const struct restore_image *a = left;
++	const struct restore_image *b = right;
++
++	if (a->kind != b->kind)
++		return (a->kind > b->kind) - (a->kind < b->kind);
++	return (a->id > b->id) - (a->id < b->id);
 +}
 +
 +int i915_plugin_prepare_restore(void)
 +{
 +	DIR *directory;
 +	struct dirent *entry;
-+	int image_ids[I915_MAX_RESTORE_FILES];
++	struct restore_image images[I915_MAX_RESTORE_FILES];
 +	size_t image_count = 0;
 +	int directory_fd;
 +
@@ -3417,18 +3990,25 @@ index 000000000..51a1704c3
 +			closedir(directory);
 +			return -E2BIG;
 +		}
-+		image_ids[image_count++] = id;
++		images[image_count].id = id;
++		if (read_image_kind(id, &images[image_count].kind)) {
++			closedir(directory);
++			return -EINVAL;
++		}
++		image_count++;
 +	}
 +	closedir(directory);
-+	qsort(image_ids, image_count, sizeof(image_ids[0]), compare_file_ids);
++	qsort(images, image_count, sizeof(images[0]), compare_restore_images);
 +
 +	for (size_t i = 0; i < image_count; i++) {
-+		int fd = restore_file_image(image_ids[i]);
++		int fd = images[i].kind == I915_IMAGE_KIND_DRM_FILE ?
++			restore_file_image(images[i].id) :
++			restore_dmabuf_image(images[i].id);
 +		int fdstore_id;
 +
 +		if (fd < 0) {
 +			pr_err("failed to prepare i915 image %d: %d\n",
-+			       image_ids[i], fd);
++			       images[i].id, fd);
 +			return fd;
 +		}
 +		fdstore_id = criu_plugin_fdstore_add(fd);
@@ -3436,9 +4016,21 @@ index 000000000..51a1704c3
 +		if (fdstore_id < 0)
 +			return -EIO;
 +		prepared_files[prepared_file_count++] = (struct prepared_file) {
-+			.file_id = image_ids[i],
++			.file_id = images[i].id,
 +			.fdstore_id = fdstore_id,
 +		};
++	}
++	for (size_t i = 0; i < restore_object_count; i++) {
++		struct restore_object *object = &restore_objects[i];
++		uint64_t expected_fds;
++
++		if (!object->dma_buf_refcount)
++			continue;
++		if (object->dma_buf_refcount < 1 + object->handle_count)
++			return -EINVAL;
++		expected_fds = object->dma_buf_refcount - 1 - object->handle_count;
++		if (expected_fds != object->restored_dma_buf_fds)
++			return -EXDEV;
 +	}
 +	return 0;
 +}
@@ -4033,10 +4625,10 @@ index 000000000..f770602df
 +}
 diff --git a/test/others/i915-criu/i915-gem-sharing.c b/test/others/i915-criu/i915-gem-sharing.c
 new file mode 100644
-index 000000000..d1668c492
+index 000000000..dfd0160de
 --- /dev/null
 +++ b/test/others/i915-criu/i915-gem-sharing.c
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,340 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -4222,21 +4814,27 @@ index 000000000..d1668c492
 +{
 +	bool external_peer = argc == 2 && !strcmp(argv[1], "--external-peer");
 +	bool retained_dmabuf = argc == 2 && !strcmp(argv[1], "--retained-dmabuf");
++	bool external_dmabuf = argc == 2 &&
++		!strcmp(argv[1], "--external-dmabuf-peer");
 +	struct sigaction action = { .sa_handler = on_signal };
 +	struct drm_i915_gem_create create = { .size = OBJECT_SIZE };
 +	struct drm_prime_handle export = { .flags = DRM_CLOEXEC | DRM_RDWR };
 +	int command_pipe[2];
 +	int reply_pipe[2];
++	int external_pipe[2] = { -1, -1 };
 +	uint64_t mmap_offset;
 +	void *mapping;
 +	struct child_reply reply;
 +	pid_t child;
 +	pid_t peer;
++	pid_t external_dmabuf_pid = 0;
 +	int fd;
++	int retained_dup = -1;
 +	int status;
 +
-+	if (argc > 2 || (argc == 2 && !external_peer && !retained_dmabuf)) {
-+		fprintf(stderr, "usage: %s [--external-peer|--retained-dmabuf]\n",
++	if (argc > 2 || (argc == 2 && !external_peer && !retained_dmabuf &&
++				 !external_dmabuf)) {
++		fprintf(stderr, "usage: %s [--external-peer|--retained-dmabuf|--external-dmabuf-peer]\n",
 +			argv[0]);
 +		return EXIT_FAILURE;
 +	}
@@ -4248,8 +4846,45 @@ index 000000000..d1668c492
 +	fill_pattern(mapping);
 +	export.handle = create.handle;
 +	xioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &export, "PRIME_HANDLE_TO_FD");
-+	if (pipe2(command_pipe, O_CLOEXEC) || pipe2(reply_pipe, O_CLOEXEC))
++	if (pipe2(command_pipe, O_CLOEXEC) || pipe2(reply_pipe, O_CLOEXEC) ||
++	    (external_dmabuf && pipe2(external_pipe, O_CLOEXEC)))
 +		die("pipe2");
++	if (external_dmabuf) {
++		pid_t intermediary = fork();
++
++		if (intermediary < 0)
++			die("external dma-buf fork");
++		if (!intermediary) {
++			pid_t grandchild;
++
++			close(external_pipe[0]);
++			grandchild = fork();
++			if (grandchild < 0)
++				die("external dma-buf grandchild fork");
++			if (grandchild)
++				_exit(EXIT_SUCCESS);
++			close(fd);
++			close(command_pipe[0]);
++			close(command_pipe[1]);
++			close(reply_pipe[0]);
++			close(reply_pipe[1]);
++			external_dmabuf_pid = getpid();
++			xwrite(external_pipe[1], &external_dmabuf_pid,
++			       sizeof(external_dmabuf_pid),
++			       "external dma-buf ready");
++			for (;;)
++				pause();
++		}
++		close(external_pipe[1]);
++		xread(external_pipe[0], &external_dmabuf_pid,
++		      sizeof(external_dmabuf_pid), "external dma-buf pid");
++		close(external_pipe[0]);
++		if (waitpid(intermediary, &status, 0) != intermediary ||
++		    !WIFEXITED(status) || WEXITSTATUS(status)) {
++			fprintf(stderr, "external dma-buf intermediary failed\n");
++			return EXIT_FAILURE;
++		}
++	}
 +
 +	child = fork();
 +	if (child < 0)
@@ -4269,6 +4904,11 @@ index 000000000..d1668c492
 +	}
 +	close(command_pipe[0]);
 +	close(reply_pipe[1]);
++	if (retained_dmabuf) {
++		retained_dup = dup(export.fd);
++		if (retained_dup < 0)
++			die("dup retained dma-buf");
++	}
 +	if (!retained_dmabuf)
 +		close(export.fd);
 +	xread(reply_pipe[0], &reply, sizeof(reply), "parent ready reply");
@@ -4286,24 +4926,29 @@ index 000000000..d1668c492
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
-+	printf("READY parent=%d child=%d external=%d retained_dmabuf=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
-+	       getpid(), peer, external_peer, retained_dmabuf, create.handle,
-+	       mapping, mmap_offset);
++	printf("READY parent=%d child=%d external=%d retained_dmabuf=%d external_dmabuf=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
++	       getpid(), peer, external_peer, retained_dmabuf,
++	       external_dmabuf_pid, create.handle, mapping, mmap_offset);
 +	fflush(stdout);
 +	while (!resume_test)
 +		pause();
 +
 +	verify_pattern(mapping);
 +	if (retained_dmabuf) {
-+		struct drm_prime_handle import = { .fd = export.fd };
++		int retained_fds[] = { export.fd, retained_dup };
 +
-+		if (fcntl(export.fd, F_GETFD) < 0)
-+			die("retained dma-buf fd");
-+		xioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import,
-+		       "retained PRIME_FD_TO_HANDLE");
-+		if (import.handle != create.handle) {
-+			errno = EXDEV;
-+			die("retained dma-buf object identity");
++		for (size_t i = 0; i < sizeof(retained_fds) / sizeof(retained_fds[0]);
++		     i++) {
++			struct drm_prime_handle import = { .fd = retained_fds[i] };
++
++			if (fcntl(retained_fds[i], F_GETFD) < 0)
++				die("retained dma-buf fd");
++			xioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import,
++			       "retained PRIME_FD_TO_HANDLE");
++			if (import.handle != create.handle) {
++				errno = EXDEV;
++				die("retained dma-buf object identity");
++			}
 +		}
 +	}
 +	reply.state = 'G';
@@ -4436,7 +5081,7 @@ index 000000000..8c3d6902f
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..21865ca82
+index 000000000..6ddfd4867
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
 @@ -0,0 +1,120 @@
@@ -4529,7 +5174,7 @@ index 000000000..21865ca82
 +    image=$(printf '%s\n' "$negative"/i915-criu-*.img)
 +    case "$mode" in
 +        incompatible-version)
-+            printf '\006\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
++            printf '\007\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "$image"
@@ -4562,10 +5207,10 @@ index 000000000..21865ca82
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..7287c19b0
+index 000000000..67a23ea22
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,134 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -4631,7 +5276,7 @@ index 000000000..7287c19b0
 +    --arg modeset "$(read_parameter modeset)" \
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,abi:5,image_schema:5,niri:$niri,i915:{enable_guc:$enable_guc,
++      plugin:$plugin,abi:6,image_schema:6,niri:$niri,i915:{enable_guc:$enable_guc,
 +      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
 +    >"$suite/metadata.json"
 +
@@ -4662,10 +5307,14 @@ index 000000000..7287c19b0
 +    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_PEER=1 \
 +    I915_CRIU_TEST_DIR="$suite/external-sharing-refusal" \
 +    "$scripts/run-sharing-criu.sh"
-+run_case retained-dmabuf-refusal env "${common[@]}" \
++run_case retained-dmabuf env "${common[@]}" \
 +    FIXTURE="$sharing_fixture" I915_CRIU_RETAINED_DMABUF=1 \
-+    I915_CRIU_EXPECT_UNSUPPORTED=1 \
-+    I915_CRIU_TEST_DIR="$suite/retained-dmabuf-refusal" \
++    I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_TEST_DIR="$suite/retained-dmabuf" \
++    "$scripts/run-sharing-criu.sh"
++run_case external-dmabuf-refusal env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_DMABUF_PEER=1 \
++    I915_CRIU_TEST_DIR="$suite/external-dmabuf-refusal" \
 +    "$scripts/run-sharing-criu.sh"
 +run_case synchronization env "${common[@]}" \
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
@@ -4692,16 +5341,16 @@ index 000000000..7287c19b0
 +jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
 +    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
 +      cases:["minimal-gem","shared-gem","external-sharing-refusal",
-+      "retained-dmabuf-refusal","synchronization","idle-context-vm",
-+      "sync-callback-refusal",
++      "retained-dmabuf","external-dmabuf-refusal","synchronization",
++      "idle-context-vm","sync-callback-refusal",
 +      "context-vm-binding","custom-engine-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
-index 000000000..6d9b11bd5
+index 000000000..5dea1d004
 --- /dev/null
 +++ b/test/others/i915-criu/run-sharing-criu.sh
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,146 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -4719,6 +5368,7 @@ index 000000000..6d9b11bd5
 +expect_unsupported=${I915_CRIU_EXPECT_UNSUPPORTED:-0}
 +external_peer=${I915_CRIU_EXTERNAL_PEER:-0}
 +retained_dmabuf=${I915_CRIU_RETAINED_DMABUF:-0}
++external_dmabuf=${I915_CRIU_EXTERNAL_DMABUF_PEER:-0}
 +cc=${CC:-gcc}
 +fixture="$work/i915-gem-sharing"
 +fixture_source=${FIXTURE:-/tmp/i915-gem-sharing}
@@ -4731,6 +5381,9 @@ index 000000000..6d9b11bd5
 +    fi
 +    if [[ -n ${child_pid:-} ]]; then
 +        kill -KILL "$child_pid" 2>/dev/null || true
++    fi
++    if [[ -n ${external_dmabuf_pid:-} && $external_dmabuf_pid != 0 ]]; then
++        kill -KILL "$external_dmabuf_pid" 2>/dev/null || true
 +    fi
 +}
 +trap cleanup EXIT
@@ -4748,14 +5401,17 @@ index 000000000..6d9b11bd5
 +fi
 +
 +fixture_args=()
-+if (( external_peer + retained_dmabuf > 1 )); then
-+    echo 'external-peer and retained-dmabuf modes are mutually exclusive' >&2
++if (( external_peer + retained_dmabuf + external_dmabuf > 1 )); then
++    echo 'external-peer, retained-dmabuf, and external-dmabuf-peer modes are mutually exclusive' >&2
 +    exit 2
 +elif [[ $external_peer == 1 ]]; then
 +    fixture_args+=(--external-peer)
 +    expect_unsupported=1
 +elif [[ $retained_dmabuf == 1 ]]; then
 +    fixture_args+=(--retained-dmabuf)
++elif [[ $external_dmabuf == 1 ]]; then
++    fixture_args+=(--external-dmabuf-peer)
++    expect_unsupported=1
 +fi
 +"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
 +fixture_pid=$!
@@ -4768,6 +5424,7 @@ index 000000000..6d9b11bd5
 +original_pid=$fixture_pid
 +original_address=$(sed -n 's/^READY .* address=\([^ ]*\).*/\1/p' "$log")
 +child_pid=$(sed -n 's/^READY .* child=\([0-9]*\).*/\1/p' "$log")
++external_dmabuf_pid=$(sed -n 's/^READY .* external_dmabuf=\([0-9]*\).*/\1/p' "$log")
 +child_address=$(sed -n 's/^CHILD .* address=\([^ ]*\).*/\1/p' "$log")
 +
 +if [[ $expect_unsupported == 1 ]]; then
@@ -4784,6 +5441,11 @@ index 000000000..6d9b11bd5
 +    if [[ $external_peer == 1 ]]; then
 +        grep -q 'captured handles but .* exist' "$images/dump.log"
 +        printf 'PASS: external sharing peer refused before dump completion (status=%s)\n' \
++            "$dump_status"
++    elif [[ $external_dmabuf == 1 ]]; then
++        grep -q 'captured dma-buf fds but refcount .* is not complete' \
++            "$images/dump.log"
++        printf 'PASS: external dma-buf peer refused before dump completion (status=%s)\n' \
 +            "$dump_status"
 +    else
 +        printf 'PASS: unsupported sharing dump refused without a CRIU crash (status=%s)\n' \
