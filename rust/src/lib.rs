@@ -698,7 +698,12 @@ impl ResourceAdapters {
                             })
                     });
                     let Some(display) = display else { continue };
+                    // A freshly connected virtual keyboard can be accepted before
+                    // its seat is ready to consume the first event. Keep one input
+                    // attempt, but let the compositor finish registration first.
                     let status = Command::new("wtype")
+                        .arg("-s")
+                        .arg("200")
                         .arg(text)
                         .arg("-k")
                         .arg("Return")
