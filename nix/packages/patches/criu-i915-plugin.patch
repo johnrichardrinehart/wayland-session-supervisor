@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..af4f9069b
+index 000000000..87ad85c88
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,432 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -368,9 +368,9 @@ index 000000000..af4f9069b
 +
 +### Synchronization expansion
 +
-+ABI and private image version 4 (building on version 3 synchronization support)
-+enumerates each DRM file's syncobj handle table inside the authorized dump
-+transaction. The supported subset is deliberately
++ABI and private image version 5 (building on version 3 synchronization and
++version 4 idle-context support) enumerates each DRM file's syncobj handle table
++inside the authorized dump transaction. The supported subset is deliberately
 +limited to empty syncobjs, signaled binary syncobjs, and timeline syncobjs whose
 +latest submitted point is fully signaled. Restore creates the handles in their
 +original order through the transaction, requires exact handle values, and
@@ -386,34 +386,46 @@ index 000000000..af4f9069b
 +`i915-context-sync.c --sync-only` mode isolates binary/timeline coverage from
 +custom-context and explicit-VM state and performs its first GPU submission only
 +after resume. Its uncheckpointed control passes; physical CRIU proof requires
-+booting the matching version-4 kernel/plugin and remains pending. `--callback` registers an eventfd
++booting the matching kernel/plugin. `--callback` registers an eventfd
 +waiter on its empty binary syncobj and requires dump admission to return a
 +normal refusal; the fixture treats any resume as failure.
 +
-+Version 4 also inventories dense explicit VM and proto-context ID tables. It
++Version 4 introduced dense explicit VM and proto-context ID tables. It
 +preserves context priority, bannable/recoverable/persistence/error-capture
 +flags, optional single-timeline mode, and the context-to-VM relationship. Only
 +configured contexts that have never submitted and VMs with no bound or unbound
 +VMA are admitted. The default context is likewise refused if its VM contains
 +any user binding, preventing an earlier submission from being mistaken for the
-+minimal idle state. Restore recreates exact IDs through the privileged transaction
-+and abort removes contexts before their VMs. `--idle-context` exercises this
++minimal idle state. Restore recreates exact IDs through the privileged
++transaction and abort removes contexts before their VMs. `--idle-context` exercises this
 +narrow stage and requires a new post-restore submission through the recreated
 +context and VM.
 +
-+The default fixture mode additionally binds the VM and submits work before the
-+checkpoint. It remains a mandatory refusal case until active logical-context
-+state, engine selection, and object GPU-VA bindings are represented rather than
-+reconstructed.
++Version 5 admits idle materialized contexts only when they use the default
++engine map and have no active engine. It inventories each ordinary local VMA
++binding by VM ID, opaque object ID, size, and exact GPU virtual address. Restore
++recreates the binding through validated i915 VMA APIs before transaction commit;
++the fixture resubmits with `EXEC_OBJECT_PINNED` and requires the original GPU
++address, including valid address zero. Custom engine maps, active requests,
++special views, scanout/fenced/userfault/global bindings, and inaccessible
++objects remain refused.
++
++On 2026-07-13 the version-4 suite passed minimal GEM and corruption, shared GEM,
++external-peer refusal, binary/timeline synchronization, callback refusal, idle
++context/VM restoration, and submitted-context refusal. The retained evidence is
++`/var/tmp/i915-criu-abi4-20260713T122717Z`.
 +
 +After booting a matching kernel/plugin generation,
-+`run-abi4-physical-suite.sh` executes the minimal corruption suite, shared GEM
++`run-physical-suite.sh` executes the minimal corruption suite, shared GEM
 +positive and external-peer negative, syncobj positive and callback negative,
-+idle context/VM positive, and submitted-context negative in one privileged run.
++idle context/VM positive, context/VM/GPU-binding positive, and custom-engine
++refusal in one privileged run.
 +It creates a private mode-0700 evidence directory containing per-case logs,
 +kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
-+verdict. Fixtures are compiled unprivileged beforehand and passed from `/tmp`
-+by default, keeping the root run free of ad-hoc toolchain dependencies.
++verdict. When invoked through sudo, an exit trap returns that directory to the
++invoking UID/GID without broadening its mode. Fixtures are compiled unprivileged
++beforehand and passed from `/tmp` by default, keeping the root run free of
++ad-hoc toolchain dependencies.
 +
 +## Privileged evidence policy
 +
@@ -491,10 +503,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..bfb3c44b6
+index 000000000..5c6d763a8
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,123 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -503,7 +515,7 @@ index 000000000..bfb3c44b6
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 4
++#define I915_CRIU_ABI_VERSION 5
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -529,6 +541,9 @@ index 000000000..bfb3c44b6
 +#define I915_CRIU_CONTEXT_BANNABLE (1u << 2)
 +#define I915_CRIU_CONTEXT_RECOVERABLE (1u << 3)
 +#define I915_CRIU_CONTEXT_PERSISTENCE (1u << 4)
++#define I915_CRIU_BINDING_QUERY 1
++#define I915_CRIU_BINDING_CREATE 2
++#define I915_CRIU_BINDING_LOCAL (1u << 0)
 +
 +struct drm_i915_criu_session {
 +	uint32_t version;
@@ -588,6 +603,19 @@ index 000000000..bfb3c44b6
 +	uint64_t reserved[4];
 +};
 +
++struct drm_i915_criu_binding {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t vm_id;
++	uint32_t flags;
++	uint64_t object_id;
++	uint64_t cursor;
++	uint64_t address;
++	uint64_t size;
++	uint64_t reserved[3];
++};
++
 +#define DRM_IOCTL_I915_CRIU_SESSION \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3d, struct drm_i915_criu_session)
 +#define DRM_IOCTL_I915_CRIU_OBJECT \
@@ -598,14 +626,16 @@ index 000000000..bfb3c44b6
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x40, struct drm_i915_criu_syncobj)
 +#define DRM_IOCTL_I915_CRIU_CONTEXT \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x41, struct drm_i915_criu_context)
++#define DRM_IOCTL_I915_CRIU_BINDING \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x42, struct drm_i915_criu_binding)
 +
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..9033aa7da
+index 000000000..942ae2641
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,1151 @@
+@@ -0,0 +1,1388 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -667,12 +697,12 @@ index 000000000..9033aa7da
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..91d124c
++index 0000000..9673e42
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,818 @@
++@@ -0,0 +1,1028 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 4. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 5. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-fence-chain.h>
@@ -691,6 +721,8 @@ index 000000000..9033aa7da
 ++#include "gem/i915_gem_context.h"
 ++#include "gem/i915_gem_ioctls.h"
 ++#include "gem/i915_gem_object.h"
+++#include "i915_request.h"
+++#include "i915_vma.h"
 ++
 ++#define I915_CRIU_MODE_NONE    0
 ++#define I915_CRIU_MODE_DUMP    1
@@ -821,56 +853,126 @@ index 000000000..9033aa7da
 ++	return U32_MAX;
 ++}
 ++
-++static u32 checkpoint_context_flags(const struct i915_gem_proto_context *pc)
+++static u32 checkpoint_user_context_flags(unsigned long user_flags,
+++					 bool single_timeline)
 ++{
 ++	u32 flags = 0;
 ++
-++	if (pc->single_timeline)
+++	if (single_timeline)
 ++		flags |= I915_CRIU_CONTEXT_SINGLE_TIMELINE;
-++	if (pc->user_flags & BIT(UCONTEXT_NO_ERROR_CAPTURE))
+++	if (user_flags & BIT(UCONTEXT_NO_ERROR_CAPTURE))
 ++		flags |= I915_CRIU_CONTEXT_NO_ERROR_CAPTURE;
-++	if (pc->user_flags & BIT(UCONTEXT_BANNABLE))
+++	if (user_flags & BIT(UCONTEXT_BANNABLE))
 ++		flags |= I915_CRIU_CONTEXT_BANNABLE;
-++	if (pc->user_flags & BIT(UCONTEXT_RECOVERABLE))
+++	if (user_flags & BIT(UCONTEXT_RECOVERABLE))
 ++		flags |= I915_CRIU_CONTEXT_RECOVERABLE;
-++	if (pc->user_flags & BIT(UCONTEXT_PERSISTENCE))
+++	if (user_flags & BIT(UCONTEXT_PERSISTENCE))
 ++		flags |= I915_CRIU_CONTEXT_PERSISTENCE;
 ++	return flags;
 ++}
 ++
-++static int validate_checkpoint_contexts(struct drm_i915_file_private *fpriv)
+++static u32 checkpoint_proto_context_flags(const struct i915_gem_proto_context *pc)
+++{
+++	return checkpoint_user_context_flags(pc->user_flags,
+++					     pc->single_timeline);
+++}
+++
+++static u32 checkpoint_active_context_flags(const struct i915_gem_context *ctx)
+++{
+++	return checkpoint_user_context_flags(ctx->user_flags, !!ctx->syncobj);
+++}
+++
+++static bool object_has_file_handle(struct drm_file *file,
+++				   struct drm_i915_gem_object *object)
+++{
+++	struct drm_gem_object *candidate;
+++	int handle;
+++	bool found = false;
+++
+++	spin_lock(&file->table_lock);
+++	idr_for_each_entry(&file->object_idr, candidate, handle) {
+++		if (candidate == &object->base) {
+++			found = true;
+++			break;
+++		}
+++	}
+++	spin_unlock(&file->table_lock);
+++	return found;
+++}
+++
+++static int validate_active_context(struct drm_i915_file_private *fpriv,
+++				   struct i915_gem_context *ctx,
+++				   bool require_tracked_vm)
 ++{
 ++	const unsigned long allowed_user_flags =
 ++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
 ++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
+++	struct i915_gem_engines_iter it;
+++	struct i915_gem_engines *engines;
+++	struct intel_context *ce;
+++	int ret = 0;
+++
+++	if (ctx->uses_protected_content ||
+++	    ctx->user_flags & ~allowed_user_flags ||
+++	    test_bit(CONTEXT_USER_ENGINES, &ctx->flags) ||
+++	    (require_tracked_vm && context_vm_id(fpriv, ctx->vm) == U32_MAX))
+++		return -EOPNOTSUPP;
+++
+++	engines = i915_gem_context_lock_engines(ctx);
+++	for_each_gem_engine(ce, engines, it) {
+++		if (!intel_context_pin_if_active(ce))
+++			continue;
+++		intel_context_unpin(ce);
+++		ret = -EBUSY;
+++		break;
+++	}
+++	i915_gem_context_unlock_engines(ctx);
+++	return ret;
+++}
+++
+++static int validate_checkpoint_contexts(struct drm_file *file)
+++{
+++	const unsigned long allowed_user_flags =
+++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
+++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
 ++	struct i915_gem_proto_context *pc;
 ++	struct i915_gem_context *ctx;
 ++	struct i915_address_space *vm;
+++	struct i915_vma *vma;
 ++	unsigned long id;
-++	u32 expected = 1;
+++	u32 context_count = 0;
+++	u32 context_max = 0;
+++	u32 expected_vm = 1;
 ++	int ret = 0;
 ++
-++	/* Fully materialized custom contexts contain logical HW state. */
 ++	xa_for_each(&fpriv->context_xa, id, ctx) {
-++		if (id != 0)
-++			return -EOPNOTSUPP;
-++		if (!ctx->vm)
-++			continue;
-++		mutex_lock(&ctx->vm->mutex);
-++		if (!list_empty(&ctx->vm->bound_list) ||
-++		    !list_empty(&ctx->vm->unbound_list))
-++			ret = -EOPNOTSUPP;
-++		mutex_unlock(&ctx->vm->mutex);
+++		ret = validate_active_context(fpriv, ctx, id != 0);
 ++		if (ret)
 ++			return ret;
+++		if (id == 0) {
+++			if (!ctx->vm)
+++				continue;
+++			mutex_lock(&ctx->vm->mutex);
+++			if (!list_empty(&ctx->vm->bound_list) ||
+++			    !list_empty(&ctx->vm->unbound_list))
+++				ret = -EOPNOTSUPP;
+++			mutex_unlock(&ctx->vm->mutex);
+++			if (ret)
+++				return ret;
+++			continue;
+++		}
+++		context_count++;
+++		context_max = max_t(u32, context_max, id);
 ++	}
 ++
 ++	mutex_lock(&fpriv->proto_context_lock);
 ++	xa_for_each(&fpriv->proto_context_xa, id, pc) {
-++		if (id != expected++ || pc->num_user_engines != -1 ||
-++		    pc->user_engines || pc->uses_protected_content ||
-++		    pc->pxp_wakeref ||
-++		    (pc->user_flags & ~allowed_user_flags) ||
+++		context_count++;
+++		context_max = max_t(u32, context_max, id);
+++		if (pc->num_user_engines != -1 || pc->user_engines ||
+++		    pc->uses_protected_content || pc->pxp_wakeref ||
+++		    pc->user_flags & ~allowed_user_flags ||
 ++		    memchr_inv(&pc->legacy_rcs_sseu, 0,
 ++			       sizeof(pc->legacy_rcs_sseu)) ||
 ++		    context_vm_id(fpriv, pc->vm) == U32_MAX) {
@@ -881,15 +983,34 @@ index 000000000..9033aa7da
 ++	mutex_unlock(&fpriv->proto_context_lock);
 ++	if (ret)
 ++		return ret;
+++	if (context_count != context_max)
+++		return -EOPNOTSUPP;
 ++
-++	expected = 1;
 ++	xa_for_each(&fpriv->vm_xa, id, vm) {
-++		if (id != expected++)
+++		if (id != expected_vm++)
 ++			return -EOPNOTSUPP;
 ++		mutex_lock(&vm->mutex);
-++		if (!list_empty(&vm->bound_list) ||
-++		    !list_empty(&vm->unbound_list))
+++		if (!list_empty(&vm->unbound_list)) {
 ++			ret = -EOPNOTSUPP;
+++			goto unlock_vm;
+++		}
+++		list_for_each_entry(vma, &vm->bound_list, vm_link) {
+++			int flags = atomic_read(&vma->flags);
+++
+++			if (!drm_mm_node_allocated(&vma->node) || vma->guard ||
+++			    vma->size != vma->obj->base.size ||
+++			    vma->gtt_view.type != I915_GTT_VIEW_NORMAL ||
+++			    i915_vma_is_active(vma) ||
+++			    (flags & I915_VMA_BIND_MASK) != I915_VMA_LOCAL_BIND ||
+++			    flags & (I915_VMA_GLOBAL_BIND | I915_VMA_ERROR |
+++				     I915_VMA_GGTT | I915_VMA_CAN_FENCE |
+++				     I915_VMA_USERFAULT | I915_VMA_SCANOUT) ||
+++			    !object_has_file_handle(file, vma->obj)) {
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++		}
+++unlock_vm:
 ++		mutex_unlock(&vm->mutex);
 ++		if (ret)
 ++			return ret;
@@ -984,7 +1105,7 @@ index 000000000..9033aa7da
 ++		ret = authorize_dump_target(args->target_pid);
 ++		if (ret)
 ++			break;
-++		ret = validate_checkpoint_contexts(fpriv);
+++		ret = validate_checkpoint_contexts(file);
 ++		if (ret)
 ++			break;
 ++		ret = validate_syncobjs(file);
@@ -1364,26 +1485,33 @@ index 000000000..9033aa7da
 ++		ret = 0;
 ++	} else if (args->op == I915_CRIU_CONTEXT_QUERY_CONTEXT) {
 ++		struct i915_gem_proto_context *pc;
+++		struct i915_gem_context *ctx;
 ++
-++		if (args->flags || args->vm_id || args->priority) {
+++		if (args->flags || args->vm_id || args->priority ||
+++		    args->id == U32_MAX) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
 ++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
 ++		if (ret)
 ++			goto out;
-++		id = args->id;
+++		id = args->id + 1;
 ++		mutex_lock(&fpriv->proto_context_lock);
-++		pc = xa_find_after(&fpriv->proto_context_xa, &id, ULONG_MAX,
-++				   XA_PRESENT);
-++		if (pc) {
+++		ctx = xa_load(&fpriv->context_xa, id);
+++		pc = xa_load(&fpriv->proto_context_xa, id);
+++		if (ctx) {
 ++			args->id = id;
-++			args->flags = checkpoint_context_flags(pc);
+++			args->flags = checkpoint_active_context_flags(ctx);
+++			args->vm_id = context_vm_id(fpriv, ctx->vm);
+++			args->priority = ctx->sched.priority;
+++		} else if (pc) {
+++			args->id = id;
+++			args->flags = checkpoint_proto_context_flags(pc);
 ++			args->vm_id = context_vm_id(fpriv, pc->vm);
 ++			args->priority = pc->sched.priority;
 ++		}
 ++		mutex_unlock(&fpriv->proto_context_lock);
-++		ret = pc ? 0 : -ENOENT;
+++		ret = ctx || pc ? 0 : -ENOENT;
 ++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_VM) {
 ++		struct drm_i915_gem_vm_control create = { 0 };
 ++
@@ -1489,12 +1617,124 @@ index 000000000..9033aa7da
 ++	mutex_unlock(&fpriv->criu_lock);
 ++	return ret;
 ++}
+++
+++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file)
+++{
+++	struct drm_i915_criu_binding *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	struct i915_address_space *vm;
+++	struct drm_i915_gem_object *object;
+++	struct i915_vma *vma;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)) ||
+++	    !args->vm_id)
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_BINDING_QUERY) {
+++		struct i915_vma *candidate = NULL;
+++		u64 candidate_address = U64_MAX;
+++
+++		if (args->flags || args->object_id || args->size) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		vm = xa_load(&fpriv->vm_xa, args->vm_id);
+++		if (!vm) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		mutex_lock(&vm->mutex);
+++		list_for_each_entry(vma, &vm->bound_list, vm_link) {
+++			u64 address = i915_vma_offset(vma);
+++
+++			if ((!args->cursor || address > args->address) &&
+++			    address < candidate_address) {
+++				candidate = vma;
+++				candidate_address = address;
+++			}
+++		}
+++		if (candidate) {
+++			args->flags = I915_CRIU_BINDING_LOCAL;
+++			args->object_id = checkpoint_object_id(candidate->obj);
+++			args->cursor++;
+++			args->address = candidate_address;
+++			args->size = candidate->size;
+++		}
+++		mutex_unlock(&vm->mutex);
+++		ret = candidate ? 0 : -ENOENT;
+++	} else if (args->op == I915_CRIU_BINDING_CREATE) {
+++		void *entry;
+++		u32 handle;
+++		u64 pin_flags;
+++
+++		if (args->flags != I915_CRIU_BINDING_LOCAL || args->cursor ||
+++		    !args->object_id || !args->size ||
+++		    args->address & ~PIN_OFFSET_MASK ||
+++		    !IS_ALIGNED(args->address, I915_GTT_PAGE_SIZE) ||
+++		    !IS_ALIGNED(args->size, I915_GTT_PAGE_SIZE)) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		if (!xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		vm = xa_load(&fpriv->vm_xa, args->vm_id);
+++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
+++		if (!vm || !entry) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		handle = xa_to_value(entry);
+++		object = i915_gem_object_lookup(file, handle);
+++		if (!object) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		if (args->size != object->base.size) {
+++			ret = -EINVAL;
+++			goto put_object;
+++		}
+++		vma = i915_vma_instance(object, vm, NULL);
+++		if (IS_ERR(vma)) {
+++			ret = PTR_ERR(vma);
+++			goto put_object;
+++		}
+++		pin_flags = args->address | PIN_OFFSET_FIXED | PIN_USER |
+++			    PIN_NOEVICT | PIN_VALIDATE;
+++		ret = i915_vma_pin(vma, args->size, 0, pin_flags);
+++		if (!ret) {
+++			if (i915_vma_offset(vma) != args->address ||
+++			    vma->size != args->size ||
+++			    !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
+++				ret = -EIO;
+++			i915_vma_unpin(vma);
+++		}
+++put_object:
+++		i915_gem_object_put(object);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..e704e06
++index 0000000..3ba39b2
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
-+@@ -0,0 +1,22 @@
++@@ -0,0 +1,24 @@
 ++/* SPDX-License-Identifier: MIT */
 ++#ifndef __I915_CRIU_H__
 ++#define __I915_CRIU_H__
@@ -1515,10 +1755,12 @@ index 000000000..9033aa7da
 ++			    struct drm_file *file);
 ++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file);
+++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file);
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..2d1faa2 100644
++index d9be7a5..570ddae 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -1537,7 +1779,7 @@ index 000000000..9033aa7da
 + 	i915_drm_client_put(file_priv->client);
 + 
 + 	kfree_rcu(file_priv, rcu);
-+@@ -1849,6 +1851,11 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++@@ -1849,6 +1851,12 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
 + 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
@@ -1546,6 +1788,7 @@ index 000000000..9033aa7da
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_DATA, i915_criu_data_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNCOBJ, i915_criu_syncobj_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_CONTEXT, i915_criu_context_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_BINDING, i915_criu_binding_ioctl, DRM_RENDER_ALLOW),
 + };
 + 
 + /*
@@ -1599,10 +1842,10 @@ index 000000000..9033aa7da
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..0351ba7 100644
++index 535cb68..73a9b05 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -485,6 +485,11 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,12 @@ typedef struct _drm_i915_sarea {
 + #define DRM_I915_GEM_VM_CREATE		0x3a
 + #define DRM_I915_GEM_VM_DESTROY		0x3b
 + #define DRM_I915_GEM_CREATE_EXT		0x3c
@@ -1611,10 +1854,11 @@ index 000000000..9033aa7da
 ++#define DRM_I915_CRIU_DATA		0x3f
 ++#define DRM_I915_CRIU_SYNCOBJ		0x40
 ++#define DRM_I915_CRIU_CONTEXT		0x41
+++#define DRM_I915_CRIU_BINDING		0x42
 + /* Must be kept compact -- no holes */
 + 
 + #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
-+@@ -518,6 +523,11 @@ typedef struct _drm_i915_sarea {
++@@ -518,6 +524,12 @@ typedef struct _drm_i915_sarea {
 + #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
 + #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
 + #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
@@ -1623,10 +1867,11 @@ index 000000000..9033aa7da
 ++#define DRM_IOCTL_I915_CRIU_DATA	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_DATA, struct drm_i915_criu_data)
 ++#define DRM_IOCTL_I915_CRIU_SYNCOBJ	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNCOBJ, struct drm_i915_criu_syncobj)
 ++#define DRM_IOCTL_I915_CRIU_CONTEXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_CONTEXT, struct drm_i915_criu_context)
+++#define DRM_IOCTL_I915_CRIU_BINDING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BINDING, struct drm_i915_criu_binding)
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3916,118 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3918,140 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -1639,11 +1884,13 @@ index 000000000..9033aa7da
 ++ * GEM objects shared between i915 file descriptions. Version 3 additionally
 ++ * preserves idle empty, signaled binary, and fully signaled timeline syncobjs.
 ++ * Version 4 preserves configured but not yet submitted contexts and empty
-++ * explicit GPU VMs. It still refuses userptr, external imports, protected
-++ * content, active contexts, GPU VM bindings, exported syncobjs, in-flight
-++ * fences, and KMS state.
+++ * explicit GPU VMs. Version 5 preserves idle materialized contexts using the
+++ * default engine map and ordinary local object bindings at exact GPU virtual
+++ * addresses. It still refuses userptr, external imports, protected content,
+++ * custom engine maps, active requests, special VMA views, exported syncobjs,
+++ * in-flight fences, and KMS state.
 ++ */
-++#define I915_CRIU_ABI_VERSION 4
+++#define I915_CRIU_ABI_VERSION 5
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -1740,6 +1987,26 @@ index 000000000..9033aa7da
 ++	__u32 vm_id;
 ++	__s32 priority;
 ++	__u64 reserved[4];
+++};
+++
+++#define I915_CRIU_BINDING_QUERY  1
+++#define I915_CRIU_BINDING_CREATE 2
+++
+++#define I915_CRIU_BINDING_LOCAL (1u << 0)
+++
+++struct drm_i915_criu_binding {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	__u32 vm_id;
+++	__u32 flags;
+++	__u64 object_id;
+++	/* Zero starts query; incremented on output. Must be zero for create. */
+++	__u64 cursor;
+++	/* Previous query address on input; exact address on output/create. */
+++	__u64 address;
+++	__u64 size;
+++	__u64 reserved[3];
 ++};
 ++
 + /* ID of the protected content session managed by i915 when PXP is active */
@@ -2024,10 +2291,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..18ce66506
+index 000000000..51a1704c3
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,1074 @@
+@@ -0,0 +1,1213 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -2053,11 +2320,12 @@ index 000000000..18ce66506
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 4
++#define I915_IMAGE_VERSION 5
 +#define I915_MAX_RESTORE_OBJECTS 256
 +#define I915_MAX_RESTORE_SYNCOBJS 256
 +#define I915_MAX_RESTORE_VMS 64
 +#define I915_MAX_RESTORE_CONTEXTS 64
++#define I915_MAX_RESTORE_BINDINGS 1024
 +#define I915_MAX_RESTORE_FILES 32
 +#define I915_MAX_OBJECT_SIZE (UINT64_C(1) << 30)
 +
@@ -2069,6 +2337,8 @@ index 000000000..18ce66506
 +	uint32_t syncobj_count;
 +	uint32_t vm_count;
 +	uint32_t context_count;
++	uint32_t binding_count;
++	uint32_t reserved;
 +};
 +
 +struct i915_image_object {
@@ -2092,6 +2362,14 @@ index 000000000..18ce66506
 +	uint32_t flags;
 +	uint32_t vm_id;
 +	int32_t priority;
++};
++
++struct i915_image_binding {
++	uint32_t vm_id;
++	uint32_t flags;
++	uint64_t object_id;
++	uint64_t address;
++	uint64_t size;
 +};
 +
 +struct dump_object {
@@ -2415,12 +2693,73 @@ index 000000000..18ce66506
 +	return 0;
 +}
 +
++static int collect_dump_bindings(int fd, uint64_t cookie,
++				 const struct i915_image_context *vms,
++				 size_t vm_count,
++				 struct i915_image_binding **result,
++				 size_t *result_count)
++{
++	struct i915_image_binding *bindings = NULL;
++	size_t count = 0;
++
++	for (size_t vm_index = 0; vm_index < vm_count; vm_index++) {
++		uint64_t cursor = 0;
++		uint64_t previous_address = 0;
++
++		for (;;) {
++			struct drm_i915_criu_binding query = {
++				.version = I915_CRIU_ABI_VERSION,
++				.op = I915_CRIU_BINDING_QUERY,
++				.cookie = cookie,
++				.vm_id = vms[vm_index].id,
++				.cursor = cursor,
++				.address = previous_address,
++			};
++			struct i915_image_binding *grown;
++
++			if (ioctl(fd, DRM_IOCTL_I915_CRIU_BINDING, &query) < 0) {
++				if (errno == ENOENT)
++					break;
++				xfree(bindings);
++				return -errno;
++			}
++			if (count == I915_MAX_RESTORE_BINDINGS ||
++			    query.cursor != cursor + 1 ||
++			    (cursor && query.address <= previous_address)) {
++				xfree(bindings);
++				return -E2BIG;
++			}
++			grown = xrealloc(bindings,
++					 (count + 1) * sizeof(*bindings));
++			if (!grown) {
++				xfree(bindings);
++				return -ENOMEM;
++			}
++			bindings = grown;
++			bindings[count++] = (struct i915_image_binding) {
++				.vm_id = query.vm_id,
++				.flags = query.flags,
++				.object_id = query.object_id,
++				.address = query.address,
++				.size = query.size,
++			};
++			cursor = query.cursor;
++			previous_address = query.address;
++		}
++	}
++	*result = bindings;
++	*result_count = count;
++	return 0;
++}
++
 +static int write_image(int file_id, struct dump_object *objects, size_t count,
 +		       const struct i915_image_syncobj *syncobjs,
 +		       size_t syncobj_count,
 +		       const struct i915_image_context *vms, size_t vm_count,
 +		       const struct i915_image_context *contexts,
-+		       size_t context_count)
++		       size_t context_count,
++		       const struct i915_image_binding *bindings,
++		       size_t binding_count)
 +{
 +	struct i915_image_header header = {
 +		.magic = I915_IMAGE_MAGIC,
@@ -2430,6 +2769,7 @@ index 000000000..18ce66506
 +		.syncobj_count = syncobj_count,
 +		.vm_count = vm_count,
 +		.context_count = context_count,
++		.binding_count = binding_count,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
 +	int ret;
@@ -2450,6 +2790,9 @@ index 000000000..18ce66506
 +	if (!ret && context_count)
 +		ret = write_all(fd, contexts,
 +				context_count * sizeof(*contexts));
++	if (!ret && binding_count)
++		ret = write_all(fd, bindings,
++				binding_count * sizeof(*bindings));
 +	if (close(fd) && !ret)
 +		ret = -errno;
 +	return ret;
@@ -2549,10 +2892,12 @@ index 000000000..18ce66506
 +	struct i915_image_syncobj *syncobjs = NULL;
 +	struct i915_image_context *vms = NULL;
 +	struct i915_image_context *contexts = NULL;
++	struct i915_image_binding *bindings = NULL;
 +	size_t count = 0;
 +	size_t syncobj_count = 0;
 +	size_t vm_count = 0;
 +	size_t context_count = 0;
++	size_t binding_count = 0;
 +	uint64_t cookie = 0;
 +	int ret;
 +
@@ -2580,8 +2925,12 @@ index 000000000..18ce66506
 +					    &contexts, &context_count,
 +					    I915_MAX_RESTORE_CONTEXTS);
 +	if (!ret)
++		ret = collect_dump_bindings(fd, cookie, vms, vm_count,
++					    &bindings, &binding_count);
++	if (!ret)
 +		ret = write_image(id, objects, count, syncobjs, syncobj_count,
-+				  vms, vm_count, contexts, context_count);
++				  vms, vm_count, contexts, context_count,
++				  bindings, binding_count);
 +	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
 +				       I915_CRIU_SESSION_COMMIT,
 +			  0, &cookie) && !ret)
@@ -2590,6 +2939,7 @@ index 000000000..18ce66506
 +	xfree(syncobjs);
 +	xfree(vms);
 +	xfree(contexts);
++	xfree(bindings);
 +	return ret;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
@@ -2839,6 +3189,40 @@ index 000000000..18ce66506
 +	return 0;
 +}
 +
++static int restore_binding(int fd, uint64_t cookie,
++			   const struct i915_image_binding *image,
++			   uint32_t previous_vm, uint64_t previous_address)
++{
++	struct drm_i915_criu_binding create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_BINDING_CREATE,
++		.cookie = cookie,
++		.vm_id = image->vm_id,
++		.flags = image->flags,
++		.object_id = image->object_id,
++		.address = image->address,
++		.size = image->size,
++	};
++	bool object_found = false;
++
++	if (!image->vm_id || !image->object_id || !image->size ||
++	    image->flags != I915_CRIU_BINDING_LOCAL ||
++	    image->vm_id < previous_vm ||
++	    (image->vm_id == previous_vm && image->address <= previous_address))
++		return -EINVAL;
++	for (size_t i = 0; i < restore_object_count; i++) {
++		if (restore_objects[i].object_id == image->object_id) {
++			object_found = restore_objects[i].size == image->size;
++			break;
++		}
++	}
++	if (!object_found)
++		return -ENOENT;
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_BINDING, &create) < 0)
++		return -errno;
++	return 0;
++}
++
 +static int restore_file_image(int id)
 +{
 +	struct i915_image_header header;
@@ -2857,7 +3241,9 @@ index 000000000..18ce66506
 +	    header.object_count > I915_MAX_RESTORE_OBJECTS ||
 +	    header.syncobj_count > I915_MAX_RESTORE_SYNCOBJS ||
 +	    header.vm_count > I915_MAX_RESTORE_VMS ||
-+	    header.context_count > I915_MAX_RESTORE_CONTEXTS) {
++	    header.context_count > I915_MAX_RESTORE_CONTEXTS ||
++	    header.binding_count > I915_MAX_RESTORE_BINDINGS ||
++	    header.reserved) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
@@ -2934,6 +3320,26 @@ index 000000000..18ce66506
 +						    previous);
 +		if (!ret)
 +			previous = context.id;
++	}
++	{
++		uint32_t previous_vm = 0;
++		uint64_t previous_address = 0;
++
++		for (uint32_t i = 0; !ret && i < header.binding_count; i++) {
++			struct i915_image_binding binding;
++
++			ret = read_all(image, &binding, sizeof(binding));
++			if (!ret && binding.vm_id != previous_vm)
++				previous_address = 0;
++			if (!ret)
++				ret = restore_binding(fd, cookie, &binding,
++						      previous_vm,
++						      previous_address);
++			if (!ret) {
++				previous_vm = binding.vm_id;
++				previous_address = binding.address;
++			}
++		}
 +	}
 +	if (!ret) {
 +		char trailing;
@@ -3104,10 +3510,10 @@ index 000000000..18ce66506
 +			 i915_plugin_resume_devices_late)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 000000000..7b9ea8484
+index 000000000..a68a2f73d
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,252 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -3199,11 +3605,17 @@ index 000000000..7b9ea8484
 +	       "SYNCOBJ_TIMELINE_WAIT");
 +}
 +
-+static void submit(int fd, uint32_t context, uint32_t handle, void *mapping)
++static void submit(int fd, uint32_t context, uint32_t handle, void *mapping,
++		   uint64_t *gpu_address, bool *gpu_address_valid,
++		   bool require_exact_address)
 +{
 +	uint32_t *batch = (uint32_t *)((char *)mapping + OBJECT_SIZE - 8);
 +	uint32_t saved[2] = { batch[0], batch[1] };
-+	struct drm_i915_gem_exec_object2 object = { .handle = handle };
++	struct drm_i915_gem_exec_object2 object = {
++		.handle = handle,
++		.offset = *gpu_address,
++		.flags = require_exact_address ? EXEC_OBJECT_PINNED : 0,
++	};
 +	struct drm_i915_gem_execbuffer2 execbuf = {
 +		.buffers_ptr = (uintptr_t)&object,
 +		.buffer_count = 1,
@@ -3217,6 +3629,12 @@ index 000000000..7b9ea8484
 +	batch[0] = 0x05000000;
 +	batch[1] = 0;
 +	xioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf, "EXECBUFFER2 context");
++	if (require_exact_address && object.offset != *gpu_address) {
++		errno = EADDRNOTAVAIL;
++		die("EXECBUFFER2 changed restored GPU address");
++	}
++	*gpu_address = object.offset;
++	*gpu_address_valid = true;
 +	xioctl(fd, DRM_IOCTL_I915_GEM_WAIT, &wait, "GEM_WAIT context");
 +	batch[0] = saved[0];
 +	batch[1] = saved[1];
@@ -3228,6 +3646,7 @@ index 000000000..7b9ea8484
 +	bool sync_only = argc == 2 && !strcmp(argv[1], "--sync-only");
 +	bool idle_context = argc == 2 && !strcmp(argv[1], "--idle-context");
 +	bool callback = argc == 2 && !strcmp(argv[1], "--callback");
++	bool custom_engine = argc == 2 && !strcmp(argv[1], "--custom-engine");
 +	struct drm_i915_gem_vm_control vm = { 0 };
 +	struct drm_i915_gem_context_create context = { 0 };
 +	struct drm_i915_gem_context_param context_vm;
@@ -3236,16 +3655,46 @@ index 000000000..7b9ea8484
 +	struct drm_syncobj_create binary = { 0 };
 +	struct drm_syncobj_create timeline = { 0 };
 +	void *mapping;
++	uint64_t gpu_address = 0;
++	bool gpu_address_valid = false;
 +	int callback_fd = -1;
 +	int fd;
 +
++	if (argc > 2 || (argc == 2 && !sync_only && !idle_context &&
++				 !callback && !custom_engine)) {
++		fprintf(stderr, "usage: %s [--sync-only|--idle-context|--callback|--custom-engine]\n",
++			argv[0]);
++		return EXIT_FAILURE;
++	}
 +	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
 +	if (fd < 0)
 +		die("open render node");
 +	if (!sync_only && !callback) {
 +		xioctl(fd, DRM_IOCTL_I915_GEM_VM_CREATE, &vm, "GEM_VM_CREATE");
-+		xioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &context,
-+		       "GEM_CONTEXT_CREATE");
++		if (custom_engine) {
++			I915_DEFINE_CONTEXT_PARAM_ENGINES(engines, 1) = {
++				.engines = { { I915_ENGINE_CLASS_RENDER, 0 } },
++			};
++			struct drm_i915_gem_context_create_ext_setparam set_engines = {
++				.base.name = I915_CONTEXT_CREATE_EXT_SETPARAM,
++				.param = {
++					.param = I915_CONTEXT_PARAM_ENGINES,
++					.value = (uintptr_t)&engines,
++					.size = sizeof(engines),
++				},
++			};
++			struct drm_i915_gem_context_create_ext create = {
++				.flags = I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS,
++				.extensions = (uintptr_t)&set_engines,
++			};
++
++			xioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE_EXT, &create,
++			       "GEM_CONTEXT_CREATE_EXT engines");
++			context.ctx_id = create.ctx_id;
++		} else {
++			xioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &context,
++			       "GEM_CONTEXT_CREATE");
++		}
 +		context_vm = (struct drm_i915_gem_context_param) {
 +			.ctx_id = context.ctx_id,
 +			.param = I915_CONTEXT_PARAM_VM,
@@ -3285,31 +3734,36 @@ index 000000000..7b9ea8484
 +		signal_binary(fd, binary.handle);
 +	}
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
-+	if (!idle_context && !sync_only && !callback)
-+		submit(fd, context.ctx_id, object.handle, mapping);
++	if (!idle_context && !sync_only && !callback && !custom_engine)
++		submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
++		       &gpu_address_valid, false);
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
-+	printf("READY pid=%d context=%u vm=%u binary=%u timeline=%u address=%p mmap_offset=%#" PRIx64 "\n",
++	printf("READY pid=%d context=%u vm=%u binary=%u timeline=%u address=%p mmap_offset=%#" PRIx64 " gpu_address=%#" PRIx64 " gpu_address_valid=%u\n",
 +	       getpid(), context.ctx_id, vm.vm_id, binary.handle,
-+	       timeline.handle, mapping, (uint64_t)mmap_offset.offset);
++	       timeline.handle, mapping, (uint64_t)mmap_offset.offset,
++	       gpu_address, gpu_address_valid);
 +	fflush(stdout);
 +	while (!resume_test)
 +		pause();
 +
-+	if (callback) {
-+		fprintf(stderr, "callback mode must be refused before resume\n");
++	if (callback || custom_engine) {
++		fprintf(stderr, "unsupported mode must be refused before resume\n");
 +		return EXIT_FAILURE;
 +	}
 +	wait_binary(fd, binary.handle);
 +	wait_timeline(fd, timeline.handle, TIMELINE_POINT);
-+	submit(fd, context.ctx_id, object.handle, mapping);
++	submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
++	       &gpu_address_valid, gpu_address_valid);
 +	signal_timeline(fd, timeline.handle, POST_RESTORE_POINT);
 +	wait_timeline(fd, timeline.handle, POST_RESTORE_POINT);
 +	if (sync_only)
 +		puts("PASS: binary syncobj, timeline, and GPU submission");
++	else if (idle_context)
++		puts("PASS: idle context, explicit VM, binary syncobj, timeline, and GPU submission");
 +	else
-+		puts("PASS: context, explicit VM, binary syncobj, timeline, and GPU submission");
++		puts("PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission");
 +	return EXIT_SUCCESS;
 +}
 diff --git a/test/others/i915-criu/i915-gem-minimal.c b/test/others/i915-criu/i915-gem-minimal.c
@@ -3838,129 +4292,12 @@ index 000000000..37cc49b1f
 +	puts("PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution");
 +	return EXIT_SUCCESS;
 +}
-diff --git a/test/others/i915-criu/run-abi4-physical-suite.sh b/test/others/i915-criu/run-abi4-physical-suite.sh
-new file mode 100755
-index 000000000..63f1f29e0
---- /dev/null
-+++ b/test/others/i915-criu/run-abi4-physical-suite.sh
-@@ -0,0 +1,111 @@
-+#!/usr/bin/env bash
-+set -euo pipefail
-+
-+if (( EUID != 0 )); then
-+    echo "run as root: sudo $0" >&2
-+    exit 2
-+fi
-+
-+repo=$(cd "$(dirname "$0")/../../.." && pwd)
-+scripts="$repo/test/others/i915-criu"
-+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-+suite=${I915_CRIU_SUITE_DIR:-/var/tmp/i915-criu-abi4-$timestamp}
-+criu=${CRIU:-/run/current-system/sw/bin/criu}
-+plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
-+minimal_fixture=${MINIMAL_FIXTURE:-/tmp/i915-gem-minimal}
-+sharing_fixture=${SHARING_FIXTURE:-/tmp/i915-gem-sharing}
-+context_fixture=${CONTEXT_FIXTURE:-/tmp/i915-context-sync}
-+
-+umask 077
-+mkdir -p "$suite"
-+chmod 0700 "$suite"
-+
-+for required in "$criu" "$plugin_dir/i915_plugin.so" \
-+    "$minimal_fixture" "$sharing_fixture" "$context_fixture"; do
-+    if [[ ! -e $required ]]; then
-+        echo "required ABI-4 suite artifact is missing: $required" >&2
-+        exit 2
-+    fi
-+done
-+
-+kernel_module=$(modinfo -F filename i915)
-+if [[ $kernel_module == *.xz ]]; then
-+    xzgrep -a -q 'i915_criu_context_ioctl' "$kernel_module"
-+else
-+    grep -a -q 'i915_criu_context_ioctl' "$kernel_module"
-+fi
-+
-+read_parameter() {
-+    local name=$1
-+    cat "/sys/module/i915/parameters/$name" 2>/dev/null || printf '<unavailable>'
-+}
-+
-+jq -n \
-+    --arg timestamp "$timestamp" \
-+    --arg kernel "$(uname -r)" \
-+    --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
-+    --arg system "$(readlink -f /run/current-system)" \
-+    --arg pci "$(lspci -Dnn -s 0000:00:02.0)" \
-+    --arg kernel_module "$kernel_module" \
-+    --arg criu "$($criu --version | head -1)" \
-+    --arg plugin "$(readlink -f "$plugin_dir/i915_plugin.so")" \
-+    --arg niri "$(niri --version 2>/dev/null || printf '<unavailable>')" \
-+    --arg enable_guc "$(read_parameter enable_guc)" \
-+    --arg enable_hangcheck "$(read_parameter enable_hangcheck)" \
-+    --arg modeset "$(read_parameter modeset)" \
-+    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
-+      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,niri:$niri,i915:{enable_guc:$enable_guc,
-+      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
-+    >"$suite/metadata.json"
-+
-+run_case() {
-+    local name=$1
-+    shift
-+    local log="$suite/$name.log"
-+
-+    echo "RUN: $name"
-+    if "$@" >"$log" 2>&1; then
-+        echo "PASS: $name"
-+    else
-+        local status=$?
-+        echo "FAIL: $name (status=$status); log=$log" >&2
-+        tail -80 "$log" >&2
-+        exit "$status"
-+    fi
-+}
-+
-+common=(CRIU="$criu" CRIU_PLUGIN_DIR="$plugin_dir")
-+run_case minimal-gem env "${common[@]}" \
-+    FIXTURE="$minimal_fixture" I915_CRIU_TEST_DIR="$suite/minimal-gem" \
-+    "$scripts/run-minimal-criu.sh"
-+run_case shared-gem env "${common[@]}" \
-+    FIXTURE="$sharing_fixture" I915_CRIU_TEST_DIR="$suite/shared-gem" \
-+    "$scripts/run-sharing-criu.sh"
-+run_case external-sharing-refusal env "${common[@]}" \
-+    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_PEER=1 \
-+    I915_CRIU_TEST_DIR="$suite/external-sharing-refusal" \
-+    "$scripts/run-sharing-criu.sh"
-+run_case synchronization env "${common[@]}" \
-+    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
-+    I915_CRIU_SYNC_ONLY=1 I915_CRIU_TEST_DIR="$suite/synchronization" \
-+    "$scripts/run-context-sync-criu.sh"
-+run_case idle-context-vm env "${common[@]}" \
-+    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
-+    I915_CRIU_IDLE_CONTEXT=1 I915_CRIU_TEST_DIR="$suite/idle-context-vm" \
-+    "$scripts/run-context-sync-criu.sh"
-+run_case sync-callback-refusal env "${common[@]}" \
-+    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
-+    I915_CRIU_CALLBACK=1 I915_CRIU_TEST_DIR="$suite/sync-callback-refusal" \
-+    "$scripts/run-context-sync-criu.sh"
-+run_case submitted-context-refusal env "${common[@]}" \
-+    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
-+    I915_CRIU_TEST_DIR="$suite/submitted-context-refusal" \
-+    "$scripts/run-context-sync-criu.sh"
-+
-+jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
-+    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
-+      cases:["minimal-gem","shared-gem","external-sharing-refusal",
-+      "synchronization","idle-context-vm","sync-callback-refusal",
-+      "submitted-context-refusal"]}' >"$suite/verdict.json"
-+printf 'PASS: ABI-4 physical suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
-new file mode 100644
-index 000000000..2f1fd4f25
+new file mode 100755
+index 000000000..8c3d6902f
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,104 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3979,6 +4316,7 @@ index 000000000..2f1fd4f25
 +sync_only=${I915_CRIU_SYNC_ONLY:-0}
 +idle_context=${I915_CRIU_IDLE_CONTEXT:-0}
 +callback=${I915_CRIU_CALLBACK:-0}
++custom_engine=${I915_CRIU_CUSTOM_ENGINE:-0}
 +cc=${CC:-gcc}
 +fixture="$work/i915-context-sync"
 +fixture_source=${FIXTURE:-/tmp/i915-context-sync}
@@ -4005,17 +4343,20 @@ index 000000000..2f1fd4f25
 +fi
 +
 +fixture_args=()
-+expected_pass='PASS: context, explicit VM, binary syncobj, timeline, and GPU submission'
-+if (( sync_only + idle_context + callback > 1 )); then
-+    echo 'sync-only, idle-context, and callback modes are mutually exclusive' >&2
++expected_pass='PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission'
++if (( sync_only + idle_context + callback + custom_engine > 1 )); then
++    echo 'sync-only, idle-context, callback, and custom-engine modes are mutually exclusive' >&2
 +    exit 2
 +elif [[ $callback == 1 ]]; then
 +    fixture_args+=(--callback)
++elif [[ $custom_engine == 1 ]]; then
++    fixture_args+=(--custom-engine)
 +elif [[ $sync_only == 1 ]]; then
 +    fixture_args+=(--sync-only)
 +    expected_pass='PASS: binary syncobj, timeline, and GPU submission'
 +elif [[ $idle_context == 1 ]]; then
 +    fixture_args+=(--idle-context)
++    expected_pass='PASS: idle context, explicit VM, binary syncobj, timeline, and GPU submission'
 +fi
 +"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
 +fixture_pid=$!
@@ -4063,7 +4404,7 @@ index 000000000..2f1fd4f25
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..16124e4c3
+index 000000000..21865ca82
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
 @@ -0,0 +1,120 @@
@@ -4156,7 +4497,7 @@ index 000000000..16124e4c3
 +    image=$(printf '%s\n' "$negative"/i915-criu-*.img)
 +    case "$mode" in
 +        incompatible-version)
-+            printf '\005\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
++            printf '\006\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "$image"
@@ -4187,6 +4528,136 @@ index 000000000..16124e4c3
 +
 +printf 'PASS: CRIU restored pid=%s address=%s mmap_offset=%s\n' \
 +    "$original_pid" "$original_address" "$original_offset"
+diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
+new file mode 100755
+index 000000000..37eccd838
+--- /dev/null
++++ b/test/others/i915-criu/run-physical-suite.sh
+@@ -0,0 +1,124 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if (( EUID != 0 )); then
++    echo "run as root: sudo $0" >&2
++    exit 2
++fi
++
++repo=$(cd "$(dirname "$0")/../../.." && pwd)
++scripts="$repo/test/others/i915-criu"
++timestamp=$(date -u +%Y%m%dT%H%M%SZ)
++suite=${I915_CRIU_SUITE_DIR:-/var/tmp/i915-criu-physical-$timestamp}
++criu=${CRIU:-/run/current-system/sw/bin/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
++minimal_fixture=${MINIMAL_FIXTURE:-/tmp/i915-gem-minimal}
++sharing_fixture=${SHARING_FIXTURE:-/tmp/i915-gem-sharing}
++context_fixture=${CONTEXT_FIXTURE:-/tmp/i915-context-sync}
++
++umask 077
++mkdir -p "$suite"
++chmod 0700 "$suite"
++
++return_evidence_to_invoker() {
++    if [[ -n ${SUDO_UID:-} && -n ${SUDO_GID:-} ]]; then
++        chown -R "$SUDO_UID:$SUDO_GID" "$suite"
++        chmod 0700 "$suite"
++    fi
++}
++trap return_evidence_to_invoker EXIT
++
++for required in "$criu" "$plugin_dir/i915_plugin.so" \
++    "$minimal_fixture" "$sharing_fixture" "$context_fixture"; do
++    if [[ ! -e $required ]]; then
++        echo "required physical-suite artifact is missing: $required" >&2
++        exit 2
++    fi
++done
++
++kernel_module=$(modinfo -F filename i915)
++if [[ $kernel_module == *.xz ]]; then
++    xzgrep -a -q 'i915_criu_binding_ioctl' "$kernel_module"
++else
++    grep -a -q 'i915_criu_binding_ioctl' "$kernel_module"
++fi
++
++read_parameter() {
++    local name=$1
++    cat "/sys/module/i915/parameters/$name" 2>/dev/null || printf '<unavailable>'
++}
++
++jq -n \
++    --arg timestamp "$timestamp" \
++    --arg kernel "$(uname -r)" \
++    --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
++    --arg system "$(readlink -f /run/current-system)" \
++    --arg pci "$(lspci -Dnn -s 0000:00:02.0)" \
++    --arg kernel_module "$kernel_module" \
++    --arg criu "$($criu --version | head -1)" \
++    --arg plugin "$(readlink -f "$plugin_dir/i915_plugin.so")" \
++    --arg niri "$(niri --version 2>/dev/null || printf '<unavailable>')" \
++    --arg enable_guc "$(read_parameter enable_guc)" \
++    --arg enable_hangcheck "$(read_parameter enable_hangcheck)" \
++    --arg modeset "$(read_parameter modeset)" \
++    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
++      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
++      plugin:$plugin,abi:5,image_schema:5,niri:$niri,i915:{enable_guc:$enable_guc,
++      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
++    >"$suite/metadata.json"
++
++run_case() {
++    local name=$1
++    shift
++    local log="$suite/$name.log"
++
++    echo "RUN: $name"
++    if "$@" >"$log" 2>&1; then
++        echo "PASS: $name"
++    else
++        local status=$?
++        echo "FAIL: $name (status=$status); log=$log" >&2
++        tail -80 "$log" >&2
++        exit "$status"
++    fi
++}
++
++common=(CRIU="$criu" CRIU_PLUGIN_DIR="$plugin_dir")
++run_case minimal-gem env "${common[@]}" \
++    FIXTURE="$minimal_fixture" I915_CRIU_TEST_DIR="$suite/minimal-gem" \
++    "$scripts/run-minimal-criu.sh"
++run_case shared-gem env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_TEST_DIR="$suite/shared-gem" \
++    "$scripts/run-sharing-criu.sh"
++run_case external-sharing-refusal env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_PEER=1 \
++    I915_CRIU_TEST_DIR="$suite/external-sharing-refusal" \
++    "$scripts/run-sharing-criu.sh"
++run_case synchronization env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_SYNC_ONLY=1 I915_CRIU_TEST_DIR="$suite/synchronization" \
++    "$scripts/run-context-sync-criu.sh"
++run_case idle-context-vm env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_IDLE_CONTEXT=1 I915_CRIU_TEST_DIR="$suite/idle-context-vm" \
++    "$scripts/run-context-sync-criu.sh"
++run_case sync-callback-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_CALLBACK=1 I915_CRIU_TEST_DIR="$suite/sync-callback-refusal" \
++    "$scripts/run-context-sync-criu.sh"
++run_case context-vm-binding env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_TEST_DIR="$suite/context-vm-binding" \
++    "$scripts/run-context-sync-criu.sh"
++run_case custom-engine-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_CUSTOM_ENGINE=1 \
++    I915_CRIU_TEST_DIR="$suite/custom-engine-refusal" \
++    "$scripts/run-context-sync-criu.sh"
++
++jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
++    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
++      cases:["minimal-gem","shared-gem","external-sharing-refusal",
++      "synchronization","idle-context-vm","sync-callback-refusal",
++      "context-vm-binding","custom-engine-refusal"]}' >"$suite/verdict.json"
++printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
 index 000000000..e10984b16
