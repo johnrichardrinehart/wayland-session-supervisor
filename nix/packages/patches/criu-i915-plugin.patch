@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..334998c6a
+index 000000000..15884053d
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,411 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -368,8 +368,9 @@ index 000000000..334998c6a
 +
 +### Synchronization expansion
 +
-+ABI and private image version 3 enumerate each DRM file's syncobj handle table
-+inside the authorized dump transaction. The supported subset is deliberately
++ABI and private image version 4 (building on version 3 synchronization support)
++enumerates each DRM file's syncobj handle table inside the authorized dump
++transaction. The supported subset is deliberately
 +limited to empty syncobjs, signaled binary syncobjs, and timeline syncobjs whose
 +latest submitted point is fully signaled. Restore creates the handles in their
 +original order through the transaction, requires exact handle values, and
@@ -383,14 +384,27 @@ index 000000000..334998c6a
 +referenced fence graph as unsupported rather than converting it to a completed
 +fence. The
 +`i915-context-sync.c --sync-only` mode isolates binary/timeline coverage from
-+the separately unsupported custom-context and explicit-VM state. Its
-+uncheckpointed control passes; physical CRIU proof requires booting the matching
-+version-3 kernel/plugin and remains pending.
++custom-context and explicit-VM state and performs its first GPU submission only
++after resume. Its uncheckpointed control passes; physical CRIU proof requires
++booting the matching version-4 kernel/plugin and remains pending. `--callback` registers an eventfd
++waiter on its empty binary syncobj and requires dump admission to return a
++normal refusal; the fixture treats any resume as failure.
 +
-+The default fixture mode creates context 1, VM 1, binds them, submits work, and
-+then checks a new submission after resume. It remains a mandatory refusal case
-+until context properties, engine selection, VM identity, and object bindings
-+are represented rather than reconstructed.
++Version 4 also inventories dense explicit VM and proto-context ID tables. It
++preserves context priority, bannable/recoverable/persistence/error-capture
++flags, optional single-timeline mode, and the context-to-VM relationship. Only
++configured contexts that have never submitted and VMs with no bound or unbound
++VMA are admitted. The default context is likewise refused if its VM contains
++any user binding, preventing an earlier submission from being mistaken for the
++minimal idle state. Restore recreates exact IDs through the privileged transaction
++and abort removes contexts before their VMs. `--idle-context` exercises this
++narrow stage and requires a new post-restore submission through the recreated
++context and VM.
++
++The default fixture mode additionally binds the VM and submits work before the
++checkpoint. It remains a mandatory refusal case until active logical-context
++state, engine selection, and object GPU-VA bindings are represented rather than
++reconstructed.
 +
 +## Privileged evidence policy
 +
@@ -468,10 +482,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..7625b7f63
+index 000000000..bfb3c44b6
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,105 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -480,7 +494,7 @@ index 000000000..7625b7f63
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 3
++#define I915_CRIU_ABI_VERSION 4
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -497,6 +511,15 @@ index 000000000..7625b7f63
 +#define I915_CRIU_SYNCOBJ_EMPTY (1u << 0)
 +#define I915_CRIU_SYNCOBJ_BINARY_SIGNALED (1u << 1)
 +#define I915_CRIU_SYNCOBJ_TIMELINE (1u << 2)
++#define I915_CRIU_CONTEXT_QUERY_VM 1
++#define I915_CRIU_CONTEXT_QUERY_CONTEXT 2
++#define I915_CRIU_CONTEXT_CREATE_VM 3
++#define I915_CRIU_CONTEXT_CREATE_CONTEXT 4
++#define I915_CRIU_CONTEXT_SINGLE_TIMELINE (1u << 0)
++#define I915_CRIU_CONTEXT_NO_ERROR_CAPTURE (1u << 1)
++#define I915_CRIU_CONTEXT_BANNABLE (1u << 2)
++#define I915_CRIU_CONTEXT_RECOVERABLE (1u << 3)
++#define I915_CRIU_CONTEXT_PERSISTENCE (1u << 4)
 +
 +struct drm_i915_criu_session {
 +	uint32_t version;
@@ -545,6 +568,17 @@ index 000000000..7625b7f63
 +	uint64_t reserved[4];
 +};
 +
++struct drm_i915_criu_context {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t id;
++	uint32_t flags;
++	uint32_t vm_id;
++	int32_t priority;
++	uint64_t reserved[4];
++};
++
 +#define DRM_IOCTL_I915_CRIU_SESSION \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3d, struct drm_i915_criu_session)
 +#define DRM_IOCTL_I915_CRIU_OBJECT \
@@ -553,14 +587,16 @@ index 000000000..7625b7f63
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x3f, struct drm_i915_criu_data)
 +#define DRM_IOCTL_I915_CRIU_SYNCOBJ \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x40, struct drm_i915_criu_syncobj)
++#define DRM_IOCTL_I915_CRIU_CONTEXT \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x41, struct drm_i915_criu_context)
 +
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..1e4117c3b
+index 000000000..9033aa7da
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,846 @@
+@@ -0,0 +1,1151 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -622,12 +658,12 @@ index 000000000..1e4117c3b
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..ab30036
++index 0000000..91d124c
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,545 @@
++@@ -0,0 +1,818 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 3. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 4. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-fence-chain.h>
@@ -643,6 +679,7 @@ index 000000000..1e4117c3b
 ++#include "i915_criu.h"
 ++#include "i915_drv.h"
 ++#include "i915_file_private.h"
+++#include "gem/i915_gem_context.h"
 ++#include "gem/i915_gem_ioctls.h"
 ++#include "gem/i915_gem_object.h"
 ++
@@ -716,6 +753,22 @@ index 000000000..1e4117c3b
 ++		if (syncobj)
 ++			drm_syncobj_put(syncobj);
 ++	}
+++	xa_for_each(&fpriv->criu_restore_contexts, index, entry) {
+++		struct drm_i915_gem_context_destroy destroy = {
+++			.ctx_id = xa_to_value(entry),
+++		};
+++
+++		xa_erase(&fpriv->criu_restore_contexts, index);
+++		i915_gem_context_destroy_ioctl(file->minor->dev, &destroy, file);
+++	}
+++	xa_for_each(&fpriv->criu_restore_vms, index, entry) {
+++		struct drm_i915_gem_vm_control destroy = {
+++			.vm_id = xa_to_value(entry),
+++		};
+++
+++		xa_erase(&fpriv->criu_restore_vms, index);
+++		i915_gem_vm_destroy_ioctl(file->minor->dev, &destroy, file);
+++	}
 ++}
 ++
 ++void i915_criu_file_init(struct drm_file *file)
@@ -725,6 +778,8 @@ index 000000000..1e4117c3b
 ++	mutex_init(&fpriv->criu_lock);
 ++	xa_init(&fpriv->criu_restore_handles);
 ++	xa_init(&fpriv->criu_restore_syncobjs);
+++	xa_init(&fpriv->criu_restore_contexts);
+++	xa_init(&fpriv->criu_restore_vms);
 ++}
 ++
 ++void i915_criu_file_fini(struct drm_file *file)
@@ -739,22 +794,98 @@ index 000000000..1e4117c3b
 ++	mutex_unlock(&fpriv->criu_lock);
 ++	xa_destroy(&fpriv->criu_restore_handles);
 ++	xa_destroy(&fpriv->criu_restore_syncobjs);
+++	xa_destroy(&fpriv->criu_restore_contexts);
+++	xa_destroy(&fpriv->criu_restore_vms);
 ++}
 ++
-++static bool has_only_untouched_default_context(struct drm_i915_file_private *fpriv)
+++static u32 context_vm_id(struct drm_i915_file_private *fpriv,
+++			 struct i915_address_space *context_vm)
 ++{
-++	unsigned long index = 0;
-++	void *entry;
+++	struct i915_address_space *vm;
+++	unsigned long id;
 ++
-++	if (fpriv->criu_context_touched || !xa_empty(&fpriv->proto_context_xa) ||
-++	    !xa_empty(&fpriv->vm_xa))
-++		return false;
+++	if (!context_vm)
+++		return 0;
+++	xa_for_each(&fpriv->vm_xa, id, vm)
+++		if (vm == context_vm)
+++			return id;
+++	return U32_MAX;
+++}
 ++
-++	entry = xa_find(&fpriv->context_xa, &index, ULONG_MAX, XA_PRESENT);
-++	if (!entry || index != 0)
-++		return false;
+++static u32 checkpoint_context_flags(const struct i915_gem_proto_context *pc)
+++{
+++	u32 flags = 0;
 ++
-++	return !xa_find_after(&fpriv->context_xa, &index, ULONG_MAX, XA_PRESENT);
+++	if (pc->single_timeline)
+++		flags |= I915_CRIU_CONTEXT_SINGLE_TIMELINE;
+++	if (pc->user_flags & BIT(UCONTEXT_NO_ERROR_CAPTURE))
+++		flags |= I915_CRIU_CONTEXT_NO_ERROR_CAPTURE;
+++	if (pc->user_flags & BIT(UCONTEXT_BANNABLE))
+++		flags |= I915_CRIU_CONTEXT_BANNABLE;
+++	if (pc->user_flags & BIT(UCONTEXT_RECOVERABLE))
+++		flags |= I915_CRIU_CONTEXT_RECOVERABLE;
+++	if (pc->user_flags & BIT(UCONTEXT_PERSISTENCE))
+++		flags |= I915_CRIU_CONTEXT_PERSISTENCE;
+++	return flags;
+++}
+++
+++static int validate_checkpoint_contexts(struct drm_i915_file_private *fpriv)
+++{
+++	const unsigned long allowed_user_flags =
+++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
+++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
+++	struct i915_gem_proto_context *pc;
+++	struct i915_gem_context *ctx;
+++	struct i915_address_space *vm;
+++	unsigned long id;
+++	u32 expected = 1;
+++	int ret = 0;
+++
+++	/* Fully materialized custom contexts contain logical HW state. */
+++	xa_for_each(&fpriv->context_xa, id, ctx) {
+++		if (id != 0)
+++			return -EOPNOTSUPP;
+++		if (!ctx->vm)
+++			continue;
+++		mutex_lock(&ctx->vm->mutex);
+++		if (!list_empty(&ctx->vm->bound_list) ||
+++		    !list_empty(&ctx->vm->unbound_list))
+++			ret = -EOPNOTSUPP;
+++		mutex_unlock(&ctx->vm->mutex);
+++		if (ret)
+++			return ret;
+++	}
+++
+++	mutex_lock(&fpriv->proto_context_lock);
+++	xa_for_each(&fpriv->proto_context_xa, id, pc) {
+++		if (id != expected++ || pc->num_user_engines != -1 ||
+++		    pc->user_engines || pc->uses_protected_content ||
+++		    pc->pxp_wakeref ||
+++		    (pc->user_flags & ~allowed_user_flags) ||
+++		    memchr_inv(&pc->legacy_rcs_sseu, 0,
+++			       sizeof(pc->legacy_rcs_sseu)) ||
+++		    context_vm_id(fpriv, pc->vm) == U32_MAX) {
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
+++	}
+++	mutex_unlock(&fpriv->proto_context_lock);
+++	if (ret)
+++		return ret;
+++
+++	expected = 1;
+++	xa_for_each(&fpriv->vm_xa, id, vm) {
+++		if (id != expected++)
+++			return -EOPNOTSUPP;
+++		mutex_lock(&vm->mutex);
+++		if (!list_empty(&vm->bound_list) ||
+++		    !list_empty(&vm->unbound_list))
+++			ret = -EOPNOTSUPP;
+++		mutex_unlock(&vm->mutex);
+++		if (ret)
+++			return ret;
+++	}
+++	return 0;
 ++}
 ++
 ++static int describe_syncobj(struct drm_syncobj *syncobj, u32 *flags, u64 *point)
@@ -844,11 +975,9 @@ index 000000000..1e4117c3b
 ++		ret = authorize_dump_target(args->target_pid);
 ++		if (ret)
 ++			break;
-++		/* Version 1 relies only on the pristine context created at open. */
-++		if (!has_only_untouched_default_context(fpriv)) {
-++			ret = -EOPNOTSUPP;
+++		ret = validate_checkpoint_contexts(fpriv);
+++		if (ret)
 ++			break;
-++		}
 ++		ret = validate_syncobjs(file);
 ++		if (ret)
 ++			break;
@@ -883,6 +1012,10 @@ index 000000000..1e4117c3b
 ++		xa_init(&fpriv->criu_restore_handles);
 ++		xa_destroy(&fpriv->criu_restore_syncobjs);
 ++		xa_init(&fpriv->criu_restore_syncobjs);
+++		xa_destroy(&fpriv->criu_restore_contexts);
+++		xa_init(&fpriv->criu_restore_contexts);
+++		xa_destroy(&fpriv->criu_restore_vms);
+++		xa_init(&fpriv->criu_restore_vms);
 ++		fpriv->criu_mode = I915_CRIU_MODE_NONE;
 ++		fpriv->criu_cookie = 0;
 ++		break;
@@ -1171,12 +1304,188 @@ index 000000000..1e4117c3b
 ++	mutex_unlock(&fpriv->criu_lock);
 ++	return ret;
 ++}
+++
+++static int restore_context_param(struct drm_device *dev, struct drm_file *file,
+++				 u32 context_id, u64 param, u64 value)
+++{
+++	struct drm_i915_gem_context_param context_param = {
+++		.ctx_id = context_id,
+++		.param = param,
+++		.value = value,
+++	};
+++
+++	return i915_gem_context_setparam_ioctl(dev, &context_param, file);
+++}
+++
+++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file)
+++{
+++	const u32 supported_flags = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
+++		I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
+++		I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
+++		I915_CRIU_CONTEXT_PERSISTENCE;
+++	struct drm_i915_criu_context *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	unsigned long id;
+++	void *old;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_CONTEXT_QUERY_VM) {
+++		struct i915_address_space *vm;
+++
+++		if (args->flags || args->vm_id || args->priority) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		id = args->id;
+++		vm = xa_find_after(&fpriv->vm_xa, &id, ULONG_MAX, XA_PRESENT);
+++		if (!vm) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		args->id = id;
+++		ret = 0;
+++	} else if (args->op == I915_CRIU_CONTEXT_QUERY_CONTEXT) {
+++		struct i915_gem_proto_context *pc;
+++
+++		if (args->flags || args->vm_id || args->priority) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		id = args->id;
+++		mutex_lock(&fpriv->proto_context_lock);
+++		pc = xa_find_after(&fpriv->proto_context_xa, &id, ULONG_MAX,
+++				   XA_PRESENT);
+++		if (pc) {
+++			args->id = id;
+++			args->flags = checkpoint_context_flags(pc);
+++			args->vm_id = context_vm_id(fpriv, pc->vm);
+++			args->priority = pc->sched.priority;
+++		}
+++		mutex_unlock(&fpriv->proto_context_lock);
+++		ret = pc ? 0 : -ENOENT;
+++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_VM) {
+++		struct drm_i915_gem_vm_control create = { 0 };
+++
+++		if (!args->id || args->flags || args->vm_id || args->priority) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		ret = i915_gem_vm_create_ioctl(dev, &create, file);
+++		if (ret)
+++			goto out;
+++		if (create.vm_id != args->id) {
+++			i915_gem_vm_destroy_ioctl(dev, &create, file);
+++			ret = -ERANGE;
+++			goto out;
+++		}
+++		old = xa_store(&fpriv->criu_restore_vms, args->id,
+++			       xa_mk_value(args->id), GFP_KERNEL);
+++		if (xa_is_err(old) || old) {
+++			i915_gem_vm_destroy_ioctl(dev, &create, file);
+++			ret = old ? -EEXIST : xa_err(old);
+++			goto out;
+++		}
+++		ret = 0;
+++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_CONTEXT) {
+++		struct drm_i915_gem_context_create_ext create = {
+++			.flags = args->flags & I915_CRIU_CONTEXT_SINGLE_TIMELINE ?
+++				 I915_CONTEXT_CREATE_FLAGS_SINGLE_TIMELINE : 0,
+++		};
+++		struct drm_i915_gem_context_destroy destroy;
+++
+++		if (!args->id || args->flags & ~supported_flags ||
+++		    args->vm_id == U32_MAX) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		if (args->vm_id && !xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		ret = i915_gem_context_create_ioctl(dev, &create, file);
+++		if (ret)
+++			goto out;
+++		if (create.ctx_id != args->id) {
+++			ret = -ERANGE;
+++			goto destroy_context;
+++		}
+++		if (!(args->flags & I915_CRIU_CONTEXT_RECOVERABLE)) {
+++			ret = restore_context_param(dev, file, args->id,
+++					    I915_CONTEXT_PARAM_RECOVERABLE, 0);
+++			if (ret)
+++				goto destroy_context;
+++		}
+++		ret = restore_context_param(dev, file, args->id,
+++					    I915_CONTEXT_PARAM_BANNABLE,
+++					    !!(args->flags & I915_CRIU_CONTEXT_BANNABLE));
+++		if (ret)
+++			goto destroy_context;
+++		ret = restore_context_param(dev, file, args->id,
+++					    I915_CONTEXT_PARAM_PERSISTENCE,
+++					    !!(args->flags & I915_CRIU_CONTEXT_PERSISTENCE));
+++		if (ret)
+++			goto destroy_context;
+++		ret = restore_context_param(dev, file, args->id,
+++					    I915_CONTEXT_PARAM_NO_ERROR_CAPTURE,
+++					    !!(args->flags & I915_CRIU_CONTEXT_NO_ERROR_CAPTURE));
+++		if (ret)
+++			goto destroy_context;
+++		ret = restore_context_param(dev, file, args->id,
+++					    I915_CONTEXT_PARAM_PRIORITY, args->priority);
+++		if (ret)
+++			goto destroy_context;
+++		if (args->vm_id) {
+++			ret = restore_context_param(dev, file, args->id,
+++						    I915_CONTEXT_PARAM_VM,
+++						    args->vm_id);
+++			if (ret)
+++				goto destroy_context;
+++		}
+++		old = xa_store(&fpriv->criu_restore_contexts, args->id,
+++			       xa_mk_value(args->id), GFP_KERNEL);
+++		if (xa_is_err(old) || old) {
+++			ret = old ? -EEXIST : xa_err(old);
+++			goto destroy_context;
+++		}
+++		ret = 0;
+++		goto out;
+++
+++destroy_context:
+++		destroy = (struct drm_i915_gem_context_destroy) {
+++			.ctx_id = create.ctx_id,
+++		};
+++		i915_gem_context_destroy_ioctl(dev, &destroy, file);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..cbc7d85
++index 0000000..e704e06
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
-+@@ -0,0 +1,20 @@
++@@ -0,0 +1,22 @@
 ++/* SPDX-License-Identifier: MIT */
 ++#ifndef __I915_CRIU_H__
 ++#define __I915_CRIU_H__
@@ -1195,10 +1504,12 @@ index 000000000..1e4117c3b
 ++			 struct drm_file *file);
 ++int i915_criu_syncobj_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file);
+++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file);
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..4ca6981 100644
++index d9be7a5..2d1faa2 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -1217,7 +1528,7 @@ index 000000000..1e4117c3b
 + 	i915_drm_client_put(file_priv->client);
 + 
 + 	kfree_rcu(file_priv, rcu);
-+@@ -1849,6 +1851,10 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++@@ -1849,6 +1851,11 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
 + 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
@@ -1225,14 +1536,15 @@ index 000000000..1e4117c3b
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_OBJECT, i915_criu_object_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_DATA, i915_criu_data_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNCOBJ, i915_criu_syncobj_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_CONTEXT, i915_criu_context_ioctl, DRM_RENDER_ALLOW),
 + };
 + 
 + /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
-+index c9cb8ee..dc836c9 100644
++index c9cb8ee..5a69eaa 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
-+@@ -106,6 +106,14 @@ struct drm_i915_file_private {
++@@ -106,6 +106,16 @@ struct drm_i915_file_private {
 + 	unsigned long hang_timestamp;
 + 
 + 	struct i915_drm_client *client;
@@ -1241,6 +1553,8 @@ index 000000000..1e4117c3b
 ++	struct mutex criu_lock;
 ++	struct xarray criu_restore_handles;
 ++	struct xarray criu_restore_syncobjs;
+++	struct xarray criu_restore_contexts;
+++	struct xarray criu_restore_vms;
 ++	u64 criu_cookie;
 ++	u32 criu_mode;
 ++	bool criu_context_touched;
@@ -1276,10 +1590,10 @@ index 000000000..1e4117c3b
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..02954c6 100644
++index 535cb68..0351ba7 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -485,6 +485,10 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,11 @@ typedef struct _drm_i915_sarea {
 + #define DRM_I915_GEM_VM_CREATE		0x3a
 + #define DRM_I915_GEM_VM_DESTROY		0x3b
 + #define DRM_I915_GEM_CREATE_EXT		0x3c
@@ -1287,10 +1601,11 @@ index 000000000..1e4117c3b
 ++#define DRM_I915_CRIU_OBJECT		0x3e
 ++#define DRM_I915_CRIU_DATA		0x3f
 ++#define DRM_I915_CRIU_SYNCOBJ		0x40
+++#define DRM_I915_CRIU_CONTEXT		0x41
 + /* Must be kept compact -- no holes */
 + 
 + #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
-+@@ -518,6 +522,10 @@ typedef struct _drm_i915_sarea {
++@@ -518,6 +523,11 @@ typedef struct _drm_i915_sarea {
 + #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
 + #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
 + #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
@@ -1298,10 +1613,11 @@ index 000000000..1e4117c3b
 ++#define DRM_IOCTL_I915_CRIU_OBJECT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_OBJECT, struct drm_i915_criu_object)
 ++#define DRM_IOCTL_I915_CRIU_DATA	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_DATA, struct drm_i915_criu_data)
 ++#define DRM_IOCTL_I915_CRIU_SYNCOBJ	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNCOBJ, struct drm_i915_criu_syncobj)
+++#define DRM_IOCTL_I915_CRIU_CONTEXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_CONTEXT, struct drm_i915_criu_context)
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3914,93 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3916,118 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -1313,10 +1629,12 @@ index 000000000..1e4117c3b
 ++ * COMMIT and destroy them on ABORT. Version 2 supports idle ordinary shmem
 ++ * GEM objects shared between i915 file descriptions. Version 3 additionally
 ++ * preserves idle empty, signaled binary, and fully signaled timeline syncobjs.
-++ * It still refuses userptr, external imports, protected content, mutable
-++ * contexts, GPU VM bindings, exported syncobjs, in-flight fences, and KMS state.
+++ * Version 4 preserves configured but not yet submitted contexts and empty
+++ * explicit GPU VMs. It still refuses userptr, external imports, protected
+++ * content, active contexts, GPU VM bindings, exported syncobjs, in-flight
+++ * fences, and KMS state.
 ++ */
-++#define I915_CRIU_ABI_VERSION 3
+++#define I915_CRIU_ABI_VERSION 4
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -1389,6 +1707,29 @@ index 000000000..1e4117c3b
 ++	__u32 flags;
 ++	/* Last fully signaled point for a timeline syncobj. */
 ++	__u64 point;
+++	__u64 reserved[4];
+++};
+++
+++#define I915_CRIU_CONTEXT_QUERY_VM       1
+++#define I915_CRIU_CONTEXT_QUERY_CONTEXT  2
+++#define I915_CRIU_CONTEXT_CREATE_VM      3
+++#define I915_CRIU_CONTEXT_CREATE_CONTEXT 4
+++
+++#define I915_CRIU_CONTEXT_SINGLE_TIMELINE  (1u << 0)
+++#define I915_CRIU_CONTEXT_NO_ERROR_CAPTURE (1u << 1)
+++#define I915_CRIU_CONTEXT_BANNABLE         (1u << 2)
+++#define I915_CRIU_CONTEXT_RECOVERABLE      (1u << 3)
+++#define I915_CRIU_CONTEXT_PERSISTENCE      (1u << 4)
+++
+++struct drm_i915_criu_context {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	/* Previous ID on query input; next/exact ID on output/create input. */
+++	__u32 id;
+++	__u32 flags;
+++	__u32 vm_id;
+++	__s32 priority;
 ++	__u64 reserved[4];
 ++};
 ++
@@ -1674,10 +2015,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..ef82650b1
+index 000000000..18ce66506
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,930 @@
+@@ -0,0 +1,1074 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -1703,9 +2044,11 @@ index 000000000..ef82650b1
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 3
++#define I915_IMAGE_VERSION 4
 +#define I915_MAX_RESTORE_OBJECTS 256
 +#define I915_MAX_RESTORE_SYNCOBJS 256
++#define I915_MAX_RESTORE_VMS 64
++#define I915_MAX_RESTORE_CONTEXTS 64
 +#define I915_MAX_RESTORE_FILES 32
 +#define I915_MAX_OBJECT_SIZE (UINT64_C(1) << 30)
 +
@@ -1715,6 +2058,8 @@ index 000000000..ef82650b1
 +	uint32_t file_id;
 +	uint32_t object_count;
 +	uint32_t syncobj_count;
++	uint32_t vm_count;
++	uint32_t context_count;
 +};
 +
 +struct i915_image_object {
@@ -1731,6 +2076,13 @@ index 000000000..ef82650b1
 +	uint32_t handle;
 +	uint32_t flags;
 +	uint64_t point;
++};
++
++struct i915_image_context {
++	uint32_t id;
++	uint32_t flags;
++	uint32_t vm_id;
++	int32_t priority;
 +};
 +
 +struct dump_object {
@@ -2008,9 +2360,58 @@ index 000000000..ef82650b1
 +	return 0;
 +}
 +
++static int collect_dump_contexts(int fd, uint64_t cookie, uint32_t op,
++				 struct i915_image_context **result,
++				 size_t *result_count, size_t limit)
++{
++	struct i915_image_context *states = NULL;
++	size_t count = 0;
++	uint32_t cursor = 0;
++
++	for (;;) {
++		struct drm_i915_criu_context query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = op,
++			.cookie = cookie,
++			.id = cursor,
++		};
++		struct i915_image_context *grown;
++
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_CONTEXT, &query) < 0) {
++			if (errno == ENOENT)
++				break;
++			xfree(states);
++			return -errno;
++		}
++		if (count == limit || query.id <= cursor) {
++			xfree(states);
++			return -E2BIG;
++		}
++		grown = xrealloc(states, (count + 1) * sizeof(*states));
++		if (!grown) {
++			xfree(states);
++			return -ENOMEM;
++		}
++		states = grown;
++		states[count++] = (struct i915_image_context) {
++			.id = query.id,
++			.flags = query.flags,
++			.vm_id = query.vm_id,
++			.priority = query.priority,
++		};
++		cursor = query.id;
++	}
++	*result = states;
++	*result_count = count;
++	return 0;
++}
++
 +static int write_image(int file_id, struct dump_object *objects, size_t count,
 +		       const struct i915_image_syncobj *syncobjs,
-+		       size_t syncobj_count)
++		       size_t syncobj_count,
++		       const struct i915_image_context *vms, size_t vm_count,
++		       const struct i915_image_context *contexts,
++		       size_t context_count)
 +{
 +	struct i915_image_header header = {
 +		.magic = I915_IMAGE_MAGIC,
@@ -2018,6 +2419,8 @@ index 000000000..ef82650b1
 +		.file_id = file_id,
 +		.object_count = count,
 +		.syncobj_count = syncobj_count,
++		.vm_count = vm_count,
++		.context_count = context_count,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
 +	int ret;
@@ -2033,6 +2436,11 @@ index 000000000..ef82650b1
 +	if (!ret && syncobj_count)
 +		ret = write_all(fd, syncobjs,
 +				syncobj_count * sizeof(*syncobjs));
++	if (!ret && vm_count)
++		ret = write_all(fd, vms, vm_count * sizeof(*vms));
++	if (!ret && context_count)
++		ret = write_all(fd, contexts,
++				context_count * sizeof(*contexts));
 +	if (close(fd) && !ret)
 +		ret = -errno;
 +	return ret;
@@ -2130,8 +2538,12 @@ index 000000000..ef82650b1
 +{
 +	struct dump_object *objects = NULL;
 +	struct i915_image_syncobj *syncobjs = NULL;
++	struct i915_image_context *vms = NULL;
++	struct i915_image_context *contexts = NULL;
 +	size_t count = 0;
 +	size_t syncobj_count = 0;
++	size_t vm_count = 0;
++	size_t context_count = 0;
 +	uint64_t cookie = 0;
 +	int ret;
 +
@@ -2149,13 +2561,26 @@ index 000000000..ef82650b1
 +		ret = collect_dump_syncobjs(fd, cookie, &syncobjs,
 +					    &syncobj_count);
 +	if (!ret)
-+		ret = write_image(id, objects, count, syncobjs, syncobj_count);
++		ret = collect_dump_contexts(fd, cookie,
++					    I915_CRIU_CONTEXT_QUERY_VM,
++					    &vms, &vm_count,
++					    I915_MAX_RESTORE_VMS);
++	if (!ret)
++		ret = collect_dump_contexts(fd, cookie,
++					    I915_CRIU_CONTEXT_QUERY_CONTEXT,
++					    &contexts, &context_count,
++					    I915_MAX_RESTORE_CONTEXTS);
++	if (!ret)
++		ret = write_image(id, objects, count, syncobjs, syncobj_count,
++				  vms, vm_count, contexts, context_count);
 +	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
 +				       I915_CRIU_SESSION_COMMIT,
 +			  0, &cookie) && !ret)
 +		ret = -EIO;
 +	free_dump_objects(objects, count);
 +	xfree(syncobjs);
++	xfree(vms);
++	xfree(contexts);
 +	return ret;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
@@ -2371,6 +2796,40 @@ index 000000000..ef82650b1
 +	return 0;
 +}
 +
++static int restore_context_state(int fd, uint64_t cookie,
++				 const struct i915_image_context *image,
++				 uint32_t op, uint32_t previous_id)
++{
++	const uint32_t supported = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
++		I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
++		I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
++		I915_CRIU_CONTEXT_PERSISTENCE;
++	struct drm_i915_criu_context create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = op,
++		.cookie = cookie,
++		.id = image->id,
++		.flags = image->flags,
++		.vm_id = image->vm_id,
++		.priority = image->priority,
++	};
++
++	if (!image->id || image->id <= previous_id)
++		return -EINVAL;
++	if (op == I915_CRIU_CONTEXT_CREATE_VM) {
++		if (image->flags || image->vm_id || image->priority)
++			return -EINVAL;
++	} else if (op == I915_CRIU_CONTEXT_CREATE_CONTEXT) {
++		if (image->flags & ~supported)
++			return -EINVAL;
++	} else {
++		return -EINVAL;
++	}
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_CONTEXT, &create) < 0)
++		return -errno;
++	return 0;
++}
++
 +static int restore_file_image(int id)
 +{
 +	struct i915_image_header header;
@@ -2387,7 +2846,9 @@ index 000000000..ef82650b1
 +	if (ret || header.magic != I915_IMAGE_MAGIC ||
 +	    header.version != I915_IMAGE_VERSION || header.file_id != (uint32_t)id ||
 +	    header.object_count > I915_MAX_RESTORE_OBJECTS ||
-+	    header.syncobj_count > I915_MAX_RESTORE_SYNCOBJS) {
++	    header.syncobj_count > I915_MAX_RESTORE_SYNCOBJS ||
++	    header.vm_count > I915_MAX_RESTORE_VMS ||
++	    header.context_count > I915_MAX_RESTORE_CONTEXTS) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
@@ -2440,6 +2901,30 @@ index 000000000..ef82650b1
 +			ret = restore_syncobj(fd, cookie, &syncobj, previous);
 +		if (!ret)
 +			previous = syncobj.handle;
++	}
++	for (uint32_t i = 0, previous = 0;
++	     !ret && i < header.vm_count; i++) {
++		struct i915_image_context vm;
++
++		ret = read_all(image, &vm, sizeof(vm));
++		if (!ret)
++			ret = restore_context_state(fd, cookie, &vm,
++						    I915_CRIU_CONTEXT_CREATE_VM,
++						    previous);
++		if (!ret)
++			previous = vm.id;
++	}
++	for (uint32_t i = 0, previous = 0;
++	     !ret && i < header.context_count; i++) {
++		struct i915_image_context context;
++
++		ret = read_all(image, &context, sizeof(context));
++		if (!ret)
++			ret = restore_context_state(fd, cookie, &context,
++						    I915_CRIU_CONTEXT_CREATE_CONTEXT,
++						    previous);
++		if (!ret)
++			previous = context.id;
 +	}
 +	if (!ret) {
 +		char trailing;
@@ -2610,10 +3095,10 @@ index 000000000..ef82650b1
 +			 i915_plugin_resume_devices_late)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 000000000..73ced2e26
+index 000000000..7b9ea8484
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,204 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -2625,6 +3110,7 @@ index 000000000..73ced2e26
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++#include <sys/eventfd.h>
 +#include <sys/ioctl.h>
 +#include <sys/mman.h>
 +#include <unistd.h>
@@ -2731,6 +3217,8 @@ index 000000000..73ced2e26
 +{
 +	struct sigaction action = { .sa_handler = on_signal };
 +	bool sync_only = argc == 2 && !strcmp(argv[1], "--sync-only");
++	bool idle_context = argc == 2 && !strcmp(argv[1], "--idle-context");
++	bool callback = argc == 2 && !strcmp(argv[1], "--callback");
 +	struct drm_i915_gem_vm_control vm = { 0 };
 +	struct drm_i915_gem_context_create context = { 0 };
 +	struct drm_i915_gem_context_param context_vm;
@@ -2739,12 +3227,13 @@ index 000000000..73ced2e26
 +	struct drm_syncobj_create binary = { 0 };
 +	struct drm_syncobj_create timeline = { 0 };
 +	void *mapping;
++	int callback_fd = -1;
 +	int fd;
 +
 +	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
 +	if (fd < 0)
 +		die("open render node");
-+	if (!sync_only) {
++	if (!sync_only && !callback) {
 +		xioctl(fd, DRM_IOCTL_I915_GEM_VM_CREATE, &vm, "GEM_VM_CREATE");
 +		xioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &context,
 +		       "GEM_CONTEXT_CREATE");
@@ -2771,9 +3260,24 @@ index 000000000..73ced2e26
 +	xioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &binary, "binary SYNCOBJ_CREATE");
 +	xioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &timeline,
 +	       "timeline SYNCOBJ_CREATE");
-+	signal_binary(fd, binary.handle);
++	if (callback) {
++		struct drm_syncobj_eventfd registration;
++
++		callback_fd = eventfd(0, EFD_CLOEXEC);
++		if (callback_fd < 0)
++			die("eventfd");
++		registration = (struct drm_syncobj_eventfd) {
++			.handle = binary.handle,
++			.fd = callback_fd,
++		};
++		xioctl(fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &registration,
++		       "SYNCOBJ_EVENTFD");
++	} else {
++		signal_binary(fd, binary.handle);
++	}
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
-+	submit(fd, context.ctx_id, object.handle, mapping);
++	if (!idle_context && !sync_only && !callback)
++		submit(fd, context.ctx_id, object.handle, mapping);
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
@@ -2784,6 +3288,10 @@ index 000000000..73ced2e26
 +	while (!resume_test)
 +		pause();
 +
++	if (callback) {
++		fprintf(stderr, "callback mode must be refused before resume\n");
++		return EXIT_FAILURE;
++	}
 +	wait_binary(fd, binary.handle);
 +	wait_timeline(fd, timeline.handle, TIMELINE_POINT);
 +	submit(fd, context.ctx_id, object.handle, mapping);
@@ -3323,10 +3831,10 @@ index 000000000..37cc49b1f
 +}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100644
-index 000000000..a5e3cc7bc
+index 000000000..2f1fd4f25
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,100 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3343,6 +3851,8 @@ index 000000000..a5e3cc7bc
 +[[ -n $plugin_dir ]] && plugin_args+=(--libdir "$plugin_dir")
 +expect_unsupported=${I915_CRIU_EXPECT_UNSUPPORTED:-1}
 +sync_only=${I915_CRIU_SYNC_ONLY:-0}
++idle_context=${I915_CRIU_IDLE_CONTEXT:-0}
++callback=${I915_CRIU_CALLBACK:-0}
 +cc=${CC:-gcc}
 +fixture="$work/i915-context-sync"
 +fixture_source=${FIXTURE:-/tmp/i915-context-sync}
@@ -3370,9 +3880,16 @@ index 000000000..a5e3cc7bc
 +
 +fixture_args=()
 +expected_pass='PASS: context, explicit VM, binary syncobj, timeline, and GPU submission'
-+if [[ $sync_only == 1 ]]; then
++if (( sync_only + idle_context + callback > 1 )); then
++    echo 'sync-only, idle-context, and callback modes are mutually exclusive' >&2
++    exit 2
++elif [[ $callback == 1 ]]; then
++    fixture_args+=(--callback)
++elif [[ $sync_only == 1 ]]; then
 +    fixture_args+=(--sync-only)
 +    expected_pass='PASS: binary syncobj, timeline, and GPU submission'
++elif [[ $idle_context == 1 ]]; then
++    fixture_args+=(--idle-context)
 +fi
 +"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
 +fixture_pid=$!
@@ -3420,7 +3937,7 @@ index 000000000..a5e3cc7bc
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..d4635d458
+index 000000000..16124e4c3
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
 @@ -0,0 +1,120 @@
@@ -3513,7 +4030,7 @@ index 000000000..d4635d458
 +    image=$(printf '%s\n' "$negative"/i915-criu-*.img)
 +    case "$mode" in
 +        incompatible-version)
-+            printf '\004\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
++            printf '\005\000\000\000' | dd of="$image" bs=1 seek=8 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "$image"
