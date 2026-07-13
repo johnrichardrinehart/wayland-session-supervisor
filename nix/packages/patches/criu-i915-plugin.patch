@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..87ad85c88
+index 000000000..4d5a7cb03
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,434 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -362,8 +362,10 @@ index 000000000..87ad85c88
 +handle before dump completion.
 +
 +This stage does not yet admit an independently held dma-buf fd, an external
-+attachment, or an imported non-i915 object. Those states remain unsupported
-+until fd/attachment membership can be proven against the complete captured
++attachment, or an imported non-i915 object. `i915-gem-sharing
++--retained-dmabuf` keeps the exported descriptor live, validates its object
++identity after resume in the native control, and is a mandatory dump-refusal
++case until fd/attachment membership can be proven against the complete captured
 +domain; handle equality alone is not sufficient evidence.
 +
 +### Synchronization expansion
@@ -417,9 +419,9 @@ index 000000000..87ad85c88
 +
 +After booting a matching kernel/plugin generation,
 +`run-physical-suite.sh` executes the minimal corruption suite, shared GEM
-+positive and external-peer negative, syncobj positive and callback negative,
-+idle context/VM positive, context/VM/GPU-binding positive, and custom-engine
-+refusal in one privileged run.
++positive, external-peer and retained-dma-buf negatives, syncobj positive and
++callback negative, idle context/VM positive, context/VM/GPU-binding positive,
++and custom-engine refusal in one privileged run.
 +It creates a private mode-0700 evidence directory containing per-case logs,
 +kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
 +verdict. When invoked through sudo, an exit trap returns that directory to the
@@ -632,10 +634,10 @@ index 000000000..5c6d763a8
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..942ae2641
+index 000000000..5e70deea4
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,1388 @@
+@@ -0,0 +1,1386 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -697,10 +699,10 @@ index 000000000..942ae2641
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..9673e42
++index 0000000..9af2b9b
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1028 @@
++@@ -0,0 +1,1026 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 5. */
 ++
@@ -1710,16 +1712,14 @@ index 000000000..942ae2641
 ++			ret = PTR_ERR(vma);
 ++			goto put_object;
 ++		}
+++		/* PIN_VALIDATE binds without incrementing the VMA pin count. */
 ++		pin_flags = args->address | PIN_OFFSET_FIXED | PIN_USER |
 ++			    PIN_NOEVICT | PIN_VALIDATE;
 ++		ret = i915_vma_pin(vma, args->size, 0, pin_flags);
-++		if (!ret) {
-++			if (i915_vma_offset(vma) != args->address ||
-++			    vma->size != args->size ||
-++			    !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
-++				ret = -EIO;
-++			i915_vma_unpin(vma);
-++		}
+++		if (!ret && (i915_vma_offset(vma) != args->address ||
+++			     vma->size != args->size ||
+++			     !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND)))
+++			ret = -EIO;
 ++put_object:
 ++		i915_gem_object_put(object);
 ++	} else {
@@ -3510,10 +3510,10 @@ index 000000000..51a1704c3
 +			 i915_plugin_resume_devices_late)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 000000000..a68a2f73d
+index 000000000..a145ae9f2
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,264 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -3624,11 +3624,18 @@ index 000000000..a68a2f73d
 +		.flags = I915_EXEC_RENDER,
 +		.rsvd1 = context,
 +	};
-+	struct drm_i915_gem_wait wait = { .bo_handle = handle, .timeout_ns = -1 };
++	struct drm_i915_gem_wait wait = {
++		.bo_handle = handle,
++		.timeout_ns = 5 * INT64_C(1000000000),
++	};
 +
 +	batch[0] = 0x05000000;
 +	batch[1] = 0;
++	fprintf(stderr, "SUBMIT context=%u gpu_address=%#" PRIx64 " exact=%u\n",
++		context, *gpu_address, require_exact_address);
 +	xioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf, "EXECBUFFER2 context");
++	fprintf(stderr, "SUBMITTED context=%u gpu_address=%#" PRIx64 "\n",
++		context, (uint64_t)object.offset);
 +	if (require_exact_address && object.offset != *gpu_address) {
 +		errno = EADDRNOTAVAIL;
 +		die("EXECBUFFER2 changed restored GPU address");
@@ -3636,6 +3643,7 @@ index 000000000..a68a2f73d
 +	*gpu_address = object.offset;
 +	*gpu_address_valid = true;
 +	xioctl(fd, DRM_IOCTL_I915_GEM_WAIT, &wait, "GEM_WAIT context");
++	fprintf(stderr, "QUIESCED context=%u\n", context);
 +	batch[0] = saved[0];
 +	batch[1] = saved[1];
 +}
@@ -3752,8 +3760,12 @@ index 000000000..a68a2f73d
 +		fprintf(stderr, "unsupported mode must be refused before resume\n");
 +		return EXIT_FAILURE;
 +	}
++	fprintf(stderr, "RESUMED pid=%d\n", getpid());
 +	wait_binary(fd, binary.handle);
++	fprintf(stderr, "BINARY-SIGNALED handle=%u\n", binary.handle);
 +	wait_timeline(fd, timeline.handle, TIMELINE_POINT);
++	fprintf(stderr, "TIMELINE-SIGNALED handle=%u point=%" PRIu64 "\n",
++		timeline.handle, (uint64_t)TIMELINE_POINT);
 +	submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
 +	       &gpu_address_valid, gpu_address_valid);
 +	signal_timeline(fd, timeline.handle, POST_RESTORE_POINT);
@@ -4021,10 +4033,10 @@ index 000000000..f770602df
 +}
 diff --git a/test/others/i915-criu/i915-gem-sharing.c b/test/others/i915-criu/i915-gem-sharing.c
 new file mode 100644
-index 000000000..37cc49b1f
+index 000000000..d1668c492
 --- /dev/null
 +++ b/test/others/i915-criu/i915-gem-sharing.c
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,287 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -4209,6 +4221,7 @@ index 000000000..37cc49b1f
 +int main(int argc, char **argv)
 +{
 +	bool external_peer = argc == 2 && !strcmp(argv[1], "--external-peer");
++	bool retained_dmabuf = argc == 2 && !strcmp(argv[1], "--retained-dmabuf");
 +	struct sigaction action = { .sa_handler = on_signal };
 +	struct drm_i915_gem_create create = { .size = OBJECT_SIZE };
 +	struct drm_prime_handle export = { .flags = DRM_CLOEXEC | DRM_RDWR };
@@ -4222,6 +4235,11 @@ index 000000000..37cc49b1f
 +	int fd;
 +	int status;
 +
++	if (argc > 2 || (argc == 2 && !external_peer && !retained_dmabuf)) {
++		fprintf(stderr, "usage: %s [--external-peer|--retained-dmabuf]\n",
++			argv[0]);
++		return EXIT_FAILURE;
++	}
 +	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
 +	if (fd < 0)
 +		die("open render node");
@@ -4251,7 +4269,8 @@ index 000000000..37cc49b1f
 +	}
 +	close(command_pipe[0]);
 +	close(reply_pipe[1]);
-+	close(export.fd);
++	if (!retained_dmabuf)
++		close(export.fd);
 +	xread(reply_pipe[0], &reply, sizeof(reply), "parent ready reply");
 +	if (reply.state != 'R') {
 +		fprintf(stderr, "child did not become ready\n");
@@ -4267,13 +4286,26 @@ index 000000000..37cc49b1f
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
-+	printf("READY parent=%d child=%d external=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
-+	       getpid(), peer, external_peer, create.handle, mapping, mmap_offset);
++	printf("READY parent=%d child=%d external=%d retained_dmabuf=%d handle=%u address=%p mmap_offset=%#" PRIx64 "\n",
++	       getpid(), peer, external_peer, retained_dmabuf, create.handle,
++	       mapping, mmap_offset);
 +	fflush(stdout);
 +	while (!resume_test)
 +		pause();
 +
 +	verify_pattern(mapping);
++	if (retained_dmabuf) {
++		struct drm_prime_handle import = { .fd = export.fd };
++
++		if (fcntl(export.fd, F_GETFD) < 0)
++			die("retained dma-buf fd");
++		xioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &import,
++		       "retained PRIME_FD_TO_HANDLE");
++		if (import.handle != create.handle) {
++			errno = EXDEV;
++			die("retained dma-buf object identity");
++		}
++	}
 +	reply.state = 'G';
 +	xwrite(command_pipe[1], &reply.state, 1, "parent restore command");
 +	xread(reply_pipe[0], &reply, sizeof(reply), "parent pass reply");
@@ -4530,10 +4562,10 @@ index 000000000..21865ca82
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..37eccd838
+index 000000000..7287c19b0
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,130 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -4630,6 +4662,11 @@ index 000000000..37eccd838
 +    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_PEER=1 \
 +    I915_CRIU_TEST_DIR="$suite/external-sharing-refusal" \
 +    "$scripts/run-sharing-criu.sh"
++run_case retained-dmabuf-refusal env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_RETAINED_DMABUF=1 \
++    I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_TEST_DIR="$suite/retained-dmabuf-refusal" \
++    "$scripts/run-sharing-criu.sh"
 +run_case synchronization env "${common[@]}" \
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_SYNC_ONLY=1 I915_CRIU_TEST_DIR="$suite/synchronization" \
@@ -4655,15 +4692,16 @@ index 000000000..37eccd838
 +jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
 +    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
 +      cases:["minimal-gem","shared-gem","external-sharing-refusal",
-+      "synchronization","idle-context-vm","sync-callback-refusal",
++      "retained-dmabuf-refusal","synchronization","idle-context-vm",
++      "sync-callback-refusal",
 +      "context-vm-binding","custom-engine-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
-index 000000000..e10984b16
+index 000000000..6d9b11bd5
 --- /dev/null
 +++ b/test/others/i915-criu/run-sharing-criu.sh
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,133 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -4680,6 +4718,7 @@ index 000000000..e10984b16
 +[[ -n $plugin_dir ]] && plugin_args+=(--libdir "$plugin_dir")
 +expect_unsupported=${I915_CRIU_EXPECT_UNSUPPORTED:-0}
 +external_peer=${I915_CRIU_EXTERNAL_PEER:-0}
++retained_dmabuf=${I915_CRIU_RETAINED_DMABUF:-0}
 +cc=${CC:-gcc}
 +fixture="$work/i915-gem-sharing"
 +fixture_source=${FIXTURE:-/tmp/i915-gem-sharing}
@@ -4709,9 +4748,14 @@ index 000000000..e10984b16
 +fi
 +
 +fixture_args=()
-+if [[ $external_peer == 1 ]]; then
++if (( external_peer + retained_dmabuf > 1 )); then
++    echo 'external-peer and retained-dmabuf modes are mutually exclusive' >&2
++    exit 2
++elif [[ $external_peer == 1 ]]; then
 +    fixture_args+=(--external-peer)
 +    expect_unsupported=1
++elif [[ $retained_dmabuf == 1 ]]; then
++    fixture_args+=(--retained-dmabuf)
 +fi
 +"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
 +fixture_pid=$!
