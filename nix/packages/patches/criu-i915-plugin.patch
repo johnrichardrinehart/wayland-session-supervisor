@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..15884053d
+index 000000000..af4f9069b
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,420 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -405,6 +405,15 @@ index 000000000..15884053d
 +checkpoint. It remains a mandatory refusal case until active logical-context
 +state, engine selection, and object GPU-VA bindings are represented rather than
 +reconstructed.
++
++After booting a matching kernel/plugin generation,
++`run-abi4-physical-suite.sh` executes the minimal corruption suite, shared GEM
++positive and external-peer negative, syncobj positive and callback negative,
++idle context/VM positive, and submitted-context negative in one privileged run.
++It creates a private mode-0700 evidence directory containing per-case logs,
++kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
++verdict. Fixtures are compiled unprivileged beforehand and passed from `/tmp`
++by default, keeping the root run free of ad-hoc toolchain dependencies.
 +
 +## Privileged evidence policy
 +
@@ -3829,6 +3838,123 @@ index 000000000..37cc49b1f
 +	puts("PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution");
 +	return EXIT_SUCCESS;
 +}
+diff --git a/test/others/i915-criu/run-abi4-physical-suite.sh b/test/others/i915-criu/run-abi4-physical-suite.sh
+new file mode 100755
+index 000000000..63f1f29e0
+--- /dev/null
++++ b/test/others/i915-criu/run-abi4-physical-suite.sh
+@@ -0,0 +1,111 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if (( EUID != 0 )); then
++    echo "run as root: sudo $0" >&2
++    exit 2
++fi
++
++repo=$(cd "$(dirname "$0")/../../.." && pwd)
++scripts="$repo/test/others/i915-criu"
++timestamp=$(date -u +%Y%m%dT%H%M%SZ)
++suite=${I915_CRIU_SUITE_DIR:-/var/tmp/i915-criu-abi4-$timestamp}
++criu=${CRIU:-/run/current-system/sw/bin/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-/run/current-system/sw/lib/criu}
++minimal_fixture=${MINIMAL_FIXTURE:-/tmp/i915-gem-minimal}
++sharing_fixture=${SHARING_FIXTURE:-/tmp/i915-gem-sharing}
++context_fixture=${CONTEXT_FIXTURE:-/tmp/i915-context-sync}
++
++umask 077
++mkdir -p "$suite"
++chmod 0700 "$suite"
++
++for required in "$criu" "$plugin_dir/i915_plugin.so" \
++    "$minimal_fixture" "$sharing_fixture" "$context_fixture"; do
++    if [[ ! -e $required ]]; then
++        echo "required ABI-4 suite artifact is missing: $required" >&2
++        exit 2
++    fi
++done
++
++kernel_module=$(modinfo -F filename i915)
++if [[ $kernel_module == *.xz ]]; then
++    xzgrep -a -q 'i915_criu_context_ioctl' "$kernel_module"
++else
++    grep -a -q 'i915_criu_context_ioctl' "$kernel_module"
++fi
++
++read_parameter() {
++    local name=$1
++    cat "/sys/module/i915/parameters/$name" 2>/dev/null || printf '<unavailable>'
++}
++
++jq -n \
++    --arg timestamp "$timestamp" \
++    --arg kernel "$(uname -r)" \
++    --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
++    --arg system "$(readlink -f /run/current-system)" \
++    --arg pci "$(lspci -Dnn -s 0000:00:02.0)" \
++    --arg kernel_module "$kernel_module" \
++    --arg criu "$($criu --version | head -1)" \
++    --arg plugin "$(readlink -f "$plugin_dir/i915_plugin.so")" \
++    --arg niri "$(niri --version 2>/dev/null || printf '<unavailable>')" \
++    --arg enable_guc "$(read_parameter enable_guc)" \
++    --arg enable_hangcheck "$(read_parameter enable_hangcheck)" \
++    --arg modeset "$(read_parameter modeset)" \
++    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
++      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
++      plugin:$plugin,niri:$niri,i915:{enable_guc:$enable_guc,
++      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
++    >"$suite/metadata.json"
++
++run_case() {
++    local name=$1
++    shift
++    local log="$suite/$name.log"
++
++    echo "RUN: $name"
++    if "$@" >"$log" 2>&1; then
++        echo "PASS: $name"
++    else
++        local status=$?
++        echo "FAIL: $name (status=$status); log=$log" >&2
++        tail -80 "$log" >&2
++        exit "$status"
++    fi
++}
++
++common=(CRIU="$criu" CRIU_PLUGIN_DIR="$plugin_dir")
++run_case minimal-gem env "${common[@]}" \
++    FIXTURE="$minimal_fixture" I915_CRIU_TEST_DIR="$suite/minimal-gem" \
++    "$scripts/run-minimal-criu.sh"
++run_case shared-gem env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_TEST_DIR="$suite/shared-gem" \
++    "$scripts/run-sharing-criu.sh"
++run_case external-sharing-refusal env "${common[@]}" \
++    FIXTURE="$sharing_fixture" I915_CRIU_EXTERNAL_PEER=1 \
++    I915_CRIU_TEST_DIR="$suite/external-sharing-refusal" \
++    "$scripts/run-sharing-criu.sh"
++run_case synchronization env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_SYNC_ONLY=1 I915_CRIU_TEST_DIR="$suite/synchronization" \
++    "$scripts/run-context-sync-criu.sh"
++run_case idle-context-vm env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_IDLE_CONTEXT=1 I915_CRIU_TEST_DIR="$suite/idle-context-vm" \
++    "$scripts/run-context-sync-criu.sh"
++run_case sync-callback-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_CALLBACK=1 I915_CRIU_TEST_DIR="$suite/sync-callback-refusal" \
++    "$scripts/run-context-sync-criu.sh"
++run_case submitted-context-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_TEST_DIR="$suite/submitted-context-refusal" \
++    "$scripts/run-context-sync-criu.sh"
++
++jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
++    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
++      cases:["minimal-gem","shared-gem","external-sharing-refusal",
++      "synchronization","idle-context-vm","sync-callback-refusal",
++      "submitted-context-refusal"]}' >"$suite/verdict.json"
++printf 'PASS: ABI-4 physical suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100644
 index 000000000..2f1fd4f25
