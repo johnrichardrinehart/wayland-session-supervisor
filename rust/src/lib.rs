@@ -682,13 +682,20 @@ impl ResourceAdapters {
                         continue;
                     };
                     let display = fs::read_dir(&runtime_dir).ok().and_then(|entries| {
-                        entries.filter_map(Result::ok).find_map(|entry| {
-                            let name = entry.file_name();
-                            let value = name.to_string_lossy();
-                            (value.starts_with("wayland-") && !value.ends_with(".lock"))
-                                .then(|| name.into_string().ok())
-                                .flatten()
-                        })
+                        entries
+                            .filter_map(Result::ok)
+                            .filter_map(|entry| {
+                                let name = entry.file_name();
+                                let value = name.to_string_lossy();
+                                (value.starts_with("wayland-") && !value.ends_with(".lock"))
+                                    .then(|| name.into_string().ok())
+                                    .flatten()
+                            })
+                            .max_by_key(|name| {
+                                name.strip_prefix("wayland-")
+                                    .and_then(|suffix| suffix.parse::<u32>().ok())
+                                    .unwrap_or_default()
+                            })
                     });
                     let Some(display) = display else { continue };
                     let status = Command::new("wtype")
@@ -696,10 +703,23 @@ impl ResourceAdapters {
                         .arg("-k")
                         .arg("Return")
                         .env("XDG_RUNTIME_DIR", &runtime_dir)
-                        .env("WAYLAND_DISPLAY", display)
+                        .env("WAYLAND_DISPLAY", &display)
                         .status();
-                    if let Err(error) = status {
-                        eprintln!("input adapter failed to start wtype: {error}");
+                    let result = match status {
+                        Ok(status) if status.success() => "success".to_owned(),
+                        Ok(status) => format!("exit={status}"),
+                        Err(error) => format!("spawn-error={error}"),
+                    };
+                    if let Ok(mut output) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .mode(0o600)
+                        .open(runtime_dir.join("input-adapter.log"))
+                    {
+                        let _ = writeln!(output, "display={display} result={result}");
+                    }
+                    if result != "success" {
+                        eprintln!("input adapter wtype failure: {result}");
                     }
                 }
             })?;
