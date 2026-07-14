@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..fb7740af8
+index 000000000..615996532
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,494 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -413,8 +413,10 @@ index 000000000..fb7740af8
 +duplicate target descriptors continue to share one CRIU external-file identity.
 +Timeline exports, merged fences, error fences, implicit reservation fences with
 +no captured syncobj source, ambiguous syncobj aliases, and syncobj-file exports
-+remain unsupported. Physical ABI-7 proof requires booting the matching
-+kernel/plugin generation.
++remain unsupported. On 2026-07-14, the ABI/image version 7 physical suite
++restored the retained duplicate descriptors, verified both as signaled and
++importable into new syncobjs, completed a new GPU submission, and refused a
++reparented external `sync_file`-only holder before dump completion.
 +
 +The
 +`i915-context-sync.c --sync-only` mode isolates binary/timeline coverage from
@@ -468,6 +470,14 @@ index 000000000..fb7740af8
 +a reparented process retaining only that dma-buf fd. The exact-address case
 +again reached `SUBMITTED` and `QUIESCED` after restore and passed a new pinned
 +GPU submission.
++
++On 2026-07-14 ABI/image version 7 passed all twelve staged cases. The retained
++mode-0700 evidence is `/var/tmp/i915-criu-physical-20260714T023744Z`, captured
++on boot ID `9278e8b8-8ec4-4bd2-a245-0109c9feda7d` with the matching kernel,
++plugin, and image schema. It adds the retained binary `sync_file` positive and
++external-holder negative while retaining all GEM, dma-buf, context/VM,
++exact-address submission, syncobj/timeline, corruption, callback, and custom
++engine results.
 +
 +`run-physical-suite.sh` reproduces these cases in one privileged run and, for
 +ABI 7, adds retained duplicate-`sync_file` restoration plus an external
