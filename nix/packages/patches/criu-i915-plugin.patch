@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..a5851f636
+index 000000000..fb7740af8
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,484 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -375,13 +375,16 @@ index 000000000..a5851f636
 +`i915-gem-sharing --retained-dmabuf` keeps two duplicate descriptors live and
 +validates their restored object identity. `--external-dmabuf-peer` reparents a
 +process that holds only the exported fd and requires finalization refusal.
-+Physical ABI-6 proof remains pending; handle equality alone is not treated as
-+sufficient evidence.
++On 2026-07-14, the ABI/image version 6 physical suite restored the retained
++file description with duplicate descriptors and refused the reparented
++external dma-buf-only holder before dump completion. The retained mode-0700
++evidence is `/var/tmp/i915-criu-physical-20260714T000559Z`; handle equality
++alone is not treated as sufficient evidence.
 +
 +### Synchronization expansion
 +
 +ABI and private image version 6 (building on version 3 synchronization,
-+version 4 idle-context support, and version 5 GPU bindings) enumerates each DRM
++version 4 idle-context support, and version 5 GPU bindings) enumerate each DRM
 +file's syncobj handle table
 +inside the authorized dump transaction. The supported subset is deliberately
 +limited to empty syncobjs, signaled binary syncobjs, and timeline syncobjs whose
@@ -390,12 +393,30 @@ index 000000000..a5851f636
 +re-signals the recorded timeline point before commit. Abort removes both GEM
 +and syncobj handles created by the transaction.
 +
-+Dump refuses unsignaled fences, registered callbacks/eventfds, and syncobjs
-+exported as independent fds. GEM reservation fences receive a bounded five-second
++Dump refuses unsignaled fences, registered callbacks/eventfds, and syncobj
++file-description exports. GEM reservation fences receive a bounded five-second
 +quiescence wait; a request that cannot finish is refused instead of hanging the
 +checkpoint indefinitely. This treats any remaining in-flight or externally
 +referenced fence graph as unsupported rather than converting it to a completed
-+fence. The
++fence.
++
++ABI and private image version 7 add the narrower `sync_file` relationship that
++can be proved exactly: a successful signaled binary fence exported from one
++unambiguous captured i915 syncobj. A driver query accepts the candidate
++`sync_file` fd only inside an authorized dump transaction, verifies successful
++signaled state, matches the exact fence to one syncobj handle, and reports the
++complete file refcount excluding its own temporary lookup. CRIU counts every
++captured duplicate fd and retains one private plugin reference through final
++graph validation, so an external process or other uncaptured file holder causes
++explicit refusal. Restore recreates the syncobj first, then asks the same active
++restore transaction to export a new `sync_file` backed by that restored fence;
++duplicate target descriptors continue to share one CRIU external-file identity.
++Timeline exports, merged fences, error fences, implicit reservation fences with
++no captured syncobj source, ambiguous syncobj aliases, and syncobj-file exports
++remain unsupported. Physical ABI-7 proof requires booting the matching
++kernel/plugin generation.
++
++The
 +`i915-context-sync.c --sync-only` mode isolates binary/timeline coverage from
 +custom-context and explicit-VM state and performs its first GPU submission only
 +after resume. Its uncheckpointed control passes; physical CRIU proof requires
@@ -438,7 +459,19 @@ index 000000000..a5851f636
 +capture, restored GPU address zero as a valid exact binding, then completed a
 +new pinned-address submission and bounded GEM wait after restore.
 +
-+`run-physical-suite.sh` reproduces these cases in one privileged run.
++On 2026-07-14 ABI/image version 6 passed all ten staged cases on the same
++Framework target and boot generation
++`/nix/store/xkqqckmcagzi7m4ps9sx1p4fyd2xp9xs-nixos-system-framie-26.05.20260709.5fe3335`.
++The retained evidence is `/var/tmp/i915-criu-physical-20260714T000559Z`.
++In addition to the version-5 coverage, it proves restoration of one retained
++exported dma-buf file description with duplicate fds and fail-closed refusal of
++a reparented process retaining only that dma-buf fd. The exact-address case
++again reached `SUBMITTED` and `QUIESCED` after restore and passed a new pinned
++GPU submission.
++
++`run-physical-suite.sh` reproduces these cases in one privileged run and, for
++ABI 7, adds retained duplicate-`sync_file` restoration plus an external
++`sync_file`-only holder refusal.
 +It creates a private mode-0700 evidence directory containing per-case logs,
 +kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
 +verdict. When invoked through sudo, an exit trap returns that directory to the
@@ -522,10 +555,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..4ada1a004
+index 000000000..4807e6258
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,142 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -534,7 +567,7 @@ index 000000000..4ada1a004
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 6
++#define I915_CRIU_ABI_VERSION 7
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -551,6 +584,9 @@ index 000000000..4ada1a004
 +#define I915_CRIU_SYNCOBJ_EMPTY (1u << 0)
 +#define I915_CRIU_SYNCOBJ_BINARY_SIGNALED (1u << 1)
 +#define I915_CRIU_SYNCOBJ_TIMELINE (1u << 2)
++#define I915_CRIU_SYNC_FILE_QUERY 1
++#define I915_CRIU_SYNC_FILE_CREATE 2
++#define I915_CRIU_SYNC_FILE_BINARY_SIGNALED (1u << 0)
 +#define I915_CRIU_CONTEXT_QUERY_VM 1
 +#define I915_CRIU_CONTEXT_QUERY_CONTEXT 2
 +#define I915_CRIU_CONTEXT_CREATE_VM 3
@@ -613,6 +649,18 @@ index 000000000..4ada1a004
 +	uint64_t reserved[4];
 +};
 +
++struct drm_i915_criu_sync_file {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	int32_t fd;
++	uint32_t handle;
++	uint32_t flags;
++	uint32_t fd_refcount;
++	uint64_t point;
++	uint64_t reserved[4];
++};
++
 +struct drm_i915_criu_context {
 +	uint32_t version;
 +	uint32_t op;
@@ -649,14 +697,16 @@ index 000000000..4ada1a004
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x41, struct drm_i915_criu_context)
 +#define DRM_IOCTL_I915_CRIU_BINDING \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x42, struct drm_i915_criu_binding)
++#define DRM_IOCTL_I915_CRIU_SYNC_FILE \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x43, struct drm_i915_criu_sync_file)
 +
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..19adab78e
+index 000000000..62c51c541
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,1425 @@
+@@ -0,0 +1,1595 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -718,20 +768,22 @@ index 000000000..19adab78e
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..d4eba8d
++index 0000000..f63f34c
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1059 @@
++@@ -0,0 +1,1201 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 6. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 7. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-buf.h>
 ++#include <linux/dma-fence-chain.h>
+++#include <linux/file.h>
 ++#include <linux/pid.h>
 ++#include <linux/ptrace.h>
 ++#include <linux/random.h>
 ++#include <linux/sched/task.h>
+++#include <linux/sync_file.h>
 ++
 ++#include <drm/drm_file.h>
 ++#include <drm/drm_gem.h>
@@ -1489,6 +1541,146 @@ index 000000000..19adab78e
 ++	return ret;
 ++}
 ++
+++static int query_sync_file(struct drm_file *file,
+++			   struct drm_i915_criu_sync_file *args)
+++{
+++	struct file *sync_file_file;
+++	struct dma_fence *fence;
+++	struct drm_syncobj *syncobj;
+++	unsigned long index;
+++	long refcount;
+++	u32 matched_handle = 0;
+++	int ret = 0;
+++
+++	if (args->fd < 0 || args->handle || args->flags || args->fd_refcount ||
+++	    args->point)
+++		return -EINVAL;
+++
+++	/* fget() supplies one known temporary reference, excluded from the ABI. */
+++	sync_file_file = fget(args->fd);
+++	if (!sync_file_file)
+++		return -EBADF;
+++	fence = sync_file_get_fence(args->fd);
+++	if (!fence) {
+++		ret = -EINVAL;
+++		goto out_file;
+++	}
+++	if (dma_fence_get_status(fence) != 1 || to_dma_fence_chain(fence)) {
+++		ret = -EOPNOTSUPP;
+++		goto out_fence;
+++	}
+++
+++	xa_for_each(&file->syncobj_xa, index, syncobj) {
+++		struct dma_fence *candidate = drm_syncobj_fence_get(syncobj);
+++
+++		if (candidate == fence) {
+++			u32 flags;
+++			u64 point;
+++
+++			ret = describe_syncobj(syncobj, &flags, &point);
+++			if (!ret &&
+++			    (flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED || point))
+++				ret = -EOPNOTSUPP;
+++			if (!ret && matched_handle)
+++				ret = -EXDEV;
+++			if (!ret)
+++				matched_handle = index;
+++		}
+++		dma_fence_put(candidate);
+++		if (ret)
+++			goto out_fence;
+++	}
+++	if (!matched_handle) {
+++		ret = -EXDEV;
+++		goto out_fence;
+++	}
+++	refcount = file_count(sync_file_file) - 1;
+++	if (refcount <= 0 || refcount > U32_MAX) {
+++		ret = -EOVERFLOW;
+++		goto out_fence;
+++	}
+++	args->handle = matched_handle;
+++	args->flags = I915_CRIU_SYNC_FILE_BINARY_SIGNALED;
+++	args->fd_refcount = refcount;
+++
+++out_fence:
+++	dma_fence_put(fence);
+++out_file:
+++	fput(sync_file_file);
+++	return ret;
+++}
+++
+++static int create_sync_file(struct drm_file *file,
+++			    struct drm_i915_criu_sync_file *args)
+++{
+++	struct drm_syncobj *syncobj;
+++	struct dma_fence *fence;
+++	struct sync_file *sync_file;
+++	int fd;
+++	int ret = 0;
+++
+++	if (args->fd != -1 || !args->handle ||
+++	    args->flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
+++	    args->fd_refcount || args->point)
+++		return -EINVAL;
+++	syncobj = drm_syncobj_find(file, args->handle);
+++	if (!syncobj)
+++		return -ENOENT;
+++	fence = drm_syncobj_fence_get(syncobj);
+++	drm_syncobj_put(syncobj);
+++	if (!fence)
+++		return -EINVAL;
+++	if (dma_fence_get_status(fence) != 1 || to_dma_fence_chain(fence)) {
+++		ret = -EOPNOTSUPP;
+++		goto out_fence;
+++	}
+++	fd = get_unused_fd_flags(O_CLOEXEC);
+++	if (fd < 0) {
+++		ret = fd;
+++		goto out_fence;
+++	}
+++	sync_file = sync_file_create(fence);
+++	if (!sync_file) {
+++		put_unused_fd(fd);
+++		ret = -ENOMEM;
+++		goto out_fence;
+++	}
+++	fd_install(fd, sync_file->file);
+++	args->fd = fd;
+++
+++out_fence:
+++	dma_fence_put(fence);
+++	return ret;
+++}
+++
+++int i915_criu_sync_file_ioctl(struct drm_device *dev, void *data,
+++			      struct drm_file *file)
+++{
+++	struct drm_i915_criu_sync_file *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	int ret;
+++
+++	(void)dev;
+++	if (args->version != I915_CRIU_ABI_VERSION ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_SYNC_FILE_QUERY) {
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (!ret)
+++			ret = query_sync_file(file, args);
+++	} else if (args->op == I915_CRIU_SYNC_FILE_CREATE) {
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		if (!ret)
+++			ret = create_sync_file(file, args);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
+++
 ++static int restore_context_param(struct drm_device *dev, struct drm_file *file,
 ++				 u32 context_id, u64 param, u64 value)
 ++{
@@ -1783,10 +1975,10 @@ index 000000000..19adab78e
 ++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..3ba39b2
++index 0000000..0bd5d93
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
-+@@ -0,0 +1,24 @@
++@@ -0,0 +1,26 @@
 ++/* SPDX-License-Identifier: MIT */
 ++#ifndef __I915_CRIU_H__
 ++#define __I915_CRIU_H__
@@ -1805,6 +1997,8 @@ index 000000000..19adab78e
 ++			 struct drm_file *file);
 ++int i915_criu_syncobj_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file);
+++int i915_criu_sync_file_ioctl(struct drm_device *dev, void *data,
+++			      struct drm_file *file);
 ++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file);
 ++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
@@ -1812,7 +2006,7 @@ index 000000000..19adab78e
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..570ddae 100644
++index d9be7a5..7d7a225 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -1831,7 +2025,7 @@ index 000000000..19adab78e
 + 	i915_drm_client_put(file_priv->client);
 + 
 + 	kfree_rcu(file_priv, rcu);
-+@@ -1849,6 +1851,12 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++@@ -1849,6 +1851,13 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
 + 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
@@ -1841,6 +2035,7 @@ index 000000000..19adab78e
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNCOBJ, i915_criu_syncobj_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_CONTEXT, i915_criu_context_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_BINDING, i915_criu_binding_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNC_FILE, i915_criu_sync_file_ioctl, DRM_RENDER_ALLOW),
 + };
 + 
 + /*
@@ -1894,10 +2089,10 @@ index 000000000..19adab78e
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..3478013 100644
++index 535cb68..15f404b 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -485,6 +485,12 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,13 @@ typedef struct _drm_i915_sarea {
 + #define DRM_I915_GEM_VM_CREATE		0x3a
 + #define DRM_I915_GEM_VM_DESTROY		0x3b
 + #define DRM_I915_GEM_CREATE_EXT		0x3c
@@ -1907,10 +2102,11 @@ index 000000000..19adab78e
 ++#define DRM_I915_CRIU_SYNCOBJ		0x40
 ++#define DRM_I915_CRIU_CONTEXT		0x41
 ++#define DRM_I915_CRIU_BINDING		0x42
+++#define DRM_I915_CRIU_SYNC_FILE		0x43
 + /* Must be kept compact -- no holes */
 + 
 + #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
-+@@ -518,6 +524,12 @@ typedef struct _drm_i915_sarea {
++@@ -518,6 +525,13 @@ typedef struct _drm_i915_sarea {
 + #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
 + #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
 + #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
@@ -1920,10 +2116,11 @@ index 000000000..19adab78e
 ++#define DRM_IOCTL_I915_CRIU_SYNCOBJ	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNCOBJ, struct drm_i915_criu_syncobj)
 ++#define DRM_IOCTL_I915_CRIU_CONTEXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_CONTEXT, struct drm_i915_criu_context)
 ++#define DRM_IOCTL_I915_CRIU_BINDING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BINDING, struct drm_i915_criu_binding)
+++#define DRM_IOCTL_I915_CRIU_SYNC_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNC_FILE, struct drm_i915_criu_sync_file)
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3918,146 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3920,169 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -1939,12 +2136,14 @@ index 000000000..19adab78e
 ++ * explicit GPU VMs. Version 5 preserves idle materialized contexts using the
 ++ * default engine map and ordinary local object bindings at exact GPU virtual
 ++ * addresses. Version 6 accounts for retained i915-exported dma-buf descriptor
-++ * references while refusing attachments and imported non-i915 objects. It
+++ * references while refusing attachments and imported non-i915 objects.
+++ * Version 7 preserves complete retained descriptor references for successful
+++ * signaled binary sync_file exports whose source syncobj is unambiguous. It
 ++ * still refuses userptr, protected content, custom engine maps, active
-++ * requests, special VMA views, exported syncobjs, in-flight fences, and KMS
-++ * state.
+++ * requests, special VMA views, syncobj file exports, unsupported sync_file
+++ * fence graphs, in-flight fences, and KMS state.
 ++ */
-++#define I915_CRIU_ABI_VERSION 6
+++#define I915_CRIU_ABI_VERSION 7
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -2020,6 +2219,27 @@ index 000000000..19adab78e
 ++	__u32 handle;
 ++	__u32 flags;
 ++	/* Last fully signaled point for a timeline syncobj. */
+++	__u64 point;
+++	__u64 reserved[4];
+++};
+++
+++#define I915_CRIU_SYNC_FILE_QUERY  1
+++#define I915_CRIU_SYNC_FILE_CREATE 2
+++
+++#define I915_CRIU_SYNC_FILE_BINARY_SIGNALED (1u << 0)
+++
+++struct drm_i915_criu_sync_file {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	/* QUERY input or CREATE output. */
+++	__s32 fd;
+++	/* Exact source syncobj handle in this drm_file. */
+++	__u32 handle;
+++	__u32 flags;
+++	/* QUERY output, excluding the ioctl's temporary reference. */
+++	__u32 fd_refcount;
+++	/* Reserved for a supported timeline point in a later version. */
 ++	__u64 point;
 ++	__u64 reserved[4];
 ++};
@@ -2399,16 +2619,17 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..de28c61ec
+index 000000000..073deec74
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,1697 @@
+@@ -0,0 +1,1972 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <inttypes.h>
 +#include <linux/magic.h>
++#include <linux/sync_file.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
@@ -2430,9 +2651,10 @@ index 000000000..de28c61ec
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 6
++#define I915_IMAGE_VERSION 7
 +#define I915_IMAGE_KIND_DRM_FILE 1
 +#define I915_IMAGE_KIND_DMABUF 2
++#define I915_IMAGE_KIND_SYNC_FILE 3
 +#define I915_MAX_RESTORE_OBJECTS 256
 +#define I915_MAX_RESTORE_SYNCOBJS 256
 +#define I915_MAX_RESTORE_VMS 64
@@ -2492,6 +2714,15 @@ index 000000000..de28c61ec
 +	uint32_t reserved;
 +};
 +
++struct i915_image_sync_file {
++	uint32_t source_file_id;
++	uint32_t handle;
++	uint32_t flags;
++	uint32_t fd_count;
++	uint64_t point;
++	uint64_t reserved[2];
++};
++
 +struct dump_object {
 +	struct i915_image_object image;
 +	void *data;
@@ -2514,6 +2745,22 @@ index 000000000..de28c61ec
 +	uint32_t fd_count;
 +};
 +
++struct dump_sync_file {
++	int file_id;
++	int retained_fd;
++	uint32_t fd_count;
++	uint32_t source_file_id;
++	uint32_t handle;
++	uint32_t flags;
++	uint32_t expected_refcount;
++	uint64_t point;
++};
++
++struct dump_drm_file {
++	int file_id;
++	int retained_fd;
++};
++
 +struct restore_object {
 +	uint64_t object_id;
 +	uint64_t old_mmap_offset;
@@ -2531,6 +2778,7 @@ index 000000000..de28c61ec
 +};
 +
 +struct restore_file {
++	int file_id;
 +	int fdstore_id;
 +	uint64_t cookie;
 +	bool active;
@@ -2547,6 +2795,10 @@ index 000000000..de28c61ec
 +static size_t dump_relationship_count;
 +static struct dump_dmabuf_file dump_dmabuf_files[I915_MAX_RESTORE_FILES];
 +static size_t dump_dmabuf_file_count;
++static struct dump_sync_file dump_sync_files[I915_MAX_RESTORE_FILES];
++static size_t dump_sync_file_count;
++static struct dump_drm_file dump_drm_files[I915_MAX_RESTORE_FILES];
++static size_t dump_drm_file_count;
 +static struct restore_object restore_objects[I915_MAX_RESTORE_OBJECTS];
 +static size_t restore_object_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
@@ -2577,6 +2829,13 @@ index 000000000..de28c61ec
 +
 +	return !fstatfs(fd, &statfs) &&
 +		(uint64_t)statfs.f_type == (uint64_t)DMA_BUF_MAGIC;
++}
++
++static bool is_sync_file_fd(int fd)
++{
++	struct sync_file_info info = { 0 };
++
++	return ioctl(fd, SYNC_IOC_FILE_INFO, &info) == 0;
 +}
 +
 +static int image_fd(int file_id, int flags)
@@ -2719,6 +2978,34 @@ index 000000000..de28c61ec
 +		.fd_count = fd_count,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
++	int ret;
++
++	if (fd < 0)
++		return fd;
++	ret = write_all(fd, &header, sizeof(header));
++	if (!ret)
++		ret = write_all(fd, &image, sizeof(image));
++	if (close(fd) && !ret)
++		ret = -errno;
++	return ret;
++}
++
++static int write_sync_file_image(const struct dump_sync_file *file)
++{
++	struct i915_image_header header = {
++		.magic = I915_IMAGE_MAGIC,
++		.version = I915_IMAGE_VERSION,
++		.file_id = file->file_id,
++		.kind = I915_IMAGE_KIND_SYNC_FILE,
++	};
++	struct i915_image_sync_file image = {
++		.source_file_id = file->source_file_id,
++		.handle = file->handle,
++		.flags = file->flags,
++		.fd_count = file->fd_count,
++		.point = file->point,
++	};
++	int fd = image_fd(file->file_id, O_WRONLY | O_CREAT | O_EXCL);
 +	int ret;
 +
 +	if (fd < 0)
@@ -3083,6 +3370,8 @@ index 000000000..de28c61ec
 +	inventory_added = false;
 +	dump_relationship_count = 0;
 +	dump_dmabuf_file_count = 0;
++	dump_sync_file_count = 0;
++	dump_drm_file_count = 0;
 +	restore_object_count = 0;
 +	restore_file_count = 0;
 +	prepared_file_count = 0;
@@ -3112,6 +3401,16 @@ index 000000000..de28c61ec
 +		if (dump_relationships[i].verification_fd >= 0)
 +			close(dump_relationships[i].verification_fd);
 +		dump_relationships[i].verification_fd = -1;
++	}
++	for (size_t i = 0; i < dump_sync_file_count; i++) {
++		if (dump_sync_files[i].retained_fd >= 0)
++			close(dump_sync_files[i].retained_fd);
++		dump_sync_files[i].retained_fd = -1;
++	}
++	for (size_t i = 0; i < dump_drm_file_count; i++) {
++		if (dump_drm_files[i].retained_fd >= 0)
++			close(dump_drm_files[i].retained_fd);
++		dump_drm_files[i].retained_fd = -1;
 +	}
 +	if (stage == CR_PLUGIN_STAGE__RESTORE && ret)
 +		abort_restore_sessions();
@@ -3189,11 +3488,57 @@ index 000000000..de28c61ec
 +	return 0;
 +}
 +
++static int record_dump_sync_file(int file_id, int fd)
++{
++	struct dump_sync_file *file;
++
++	for (size_t i = 0; i < dump_sync_file_count; i++) {
++		file = &dump_sync_files[i];
++		if (file->file_id != file_id)
++			continue;
++		if (file->fd_count == UINT32_MAX)
++			return -EOVERFLOW;
++		file->fd_count++;
++		return 0;
++	}
++	if (dump_sync_file_count == I915_MAX_RESTORE_FILES)
++		return -E2BIG;
++	file = &dump_sync_files[dump_sync_file_count++];
++	*file = (struct dump_sync_file) {
++		.file_id = file_id,
++		.retained_fd = dup(fd),
++		.fd_count = 1,
++	};
++	if (file->retained_fd < 0)
++		return -errno;
++	return 0;
++}
++
++static int record_dump_drm_file(int file_id, int fd)
++{
++	for (size_t i = 0; i < dump_drm_file_count; i++) {
++		if (dump_drm_files[i].file_id == file_id)
++			return -EEXIST;
++	}
++	if (dump_drm_file_count == I915_MAX_RESTORE_FILES)
++		return -E2BIG;
++	dump_drm_files[dump_drm_file_count] = (struct dump_drm_file) {
++		.file_id = file_id,
++		.retained_fd = dup(fd),
++	};
++	if (dump_drm_files[dump_drm_file_count].retained_fd < 0)
++		return -errno;
++	dump_drm_file_count++;
++	return 0;
++}
++
 +int i915_plugin_handle_ext_file_reference(int fd, int id)
 +{
 +	uint64_t object_id;
 +	int ret;
 +
++	if (is_sync_file_fd(fd))
++		return record_dump_sync_file(id, fd);
 +	if (!is_dmabuf_fd(fd))
 +		return -ENOTSUP;
 +	ret = resolve_dmabuf_object(fd, &object_id);
@@ -3225,6 +3570,13 @@ index 000000000..de28c61ec
 +	if (!is_i915_fd(fd)) {
 +		uint64_t object_id;
 +
++		if (is_sync_file_fd(fd)) {
++			for (size_t i = 0; i < dump_sync_file_count; i++) {
++				if (dump_sync_files[i].file_id == id)
++					return 0;
++			}
++			return -EINVAL;
++		}
 +		if (!is_dmabuf_fd(fd))
 +			return -ENOTSUP;
 +		ret = resolve_dmabuf_object(fd, &object_id);
@@ -3274,6 +3626,8 @@ index 000000000..de28c61ec
 +	xfree(vms);
 +	xfree(contexts);
 +	xfree(bindings);
++	if (!ret)
++		ret = record_dump_drm_file(id, fd);
 +	return ret;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
@@ -3390,6 +3744,54 @@ index 000000000..de28c61ec
 +	return ret;
 +}
 +
++static int query_dump_sync_file(struct dump_sync_file *file)
++{
++	bool matched = false;
++
++	for (size_t i = 0; i < dump_drm_file_count; i++) {
++		struct dump_drm_file *drm = &dump_drm_files[i];
++		struct drm_i915_criu_sync_file query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_SYNC_FILE_QUERY,
++			.fd = file->retained_fd,
++		};
++		uint64_t cookie = 0;
++		int ret;
++
++		ret = session_ioctl(drm->retained_fd,
++				    I915_CRIU_SESSION_DUMP_BEGIN,
++				    checkpoint_pid, &cookie);
++		if (ret)
++			return ret;
++		query.cookie = cookie;
++		if (ioctl(drm->retained_fd, DRM_IOCTL_I915_CRIU_SYNC_FILE,
++			  &query) < 0)
++			ret = -errno;
++		if (session_ioctl(drm->retained_fd,
++				  ret ? I915_CRIU_SESSION_ABORT :
++					I915_CRIU_SESSION_COMMIT,
++				  0, &cookie) && !ret)
++			ret = -EIO;
++		if (ret == -EXDEV)
++			continue;
++		if (ret)
++			return ret;
++		if (matched)
++			return -EXDEV;
++		matched = true;
++		file->source_file_id = drm->file_id;
++		file->handle = query.handle;
++		file->flags = query.flags;
++		file->expected_refcount = query.fd_refcount;
++		file->point = query.point;
++	}
++	if (!matched)
++		return -EXDEV;
++	if (file->expected_refcount != 1 + (uint64_t)file->fd_count)
++		return -EXDEV;
++	return 0;
++}
++
 +int i915_plugin_finalize_devices(void)
 +{
 +	for (size_t i = 0; i < dump_relationship_count; i++) {
@@ -3442,6 +3844,19 @@ index 000000000..de28c61ec
 +		int ret = write_dmabuf_image(file->file_id, file->object_id,
 +					     file->fd_count);
 +
++		if (ret)
++			return ret;
++	}
++	for (size_t i = 0; i < dump_sync_file_count; i++) {
++		struct dump_sync_file *file = &dump_sync_files[i];
++		int ret = query_dump_sync_file(file);
++
++		if (ret) {
++			pr_err("i915 sync_file id %d has an incomplete or unsupported fence relationship\n",
++			       file->file_id);
++			return ret;
++		}
++		ret = write_sync_file_image(file);
 +		if (ret)
 +			return ret;
 +	}
@@ -3862,6 +4277,7 @@ index 000000000..de28c61ec
 +	}
 +	restore_file = &restore_files[restore_file_count++];
 +	*restore_file = (struct restore_file) {
++		.file_id = id,
 +		.fdstore_id = ret,
 +		.cookie = cookie,
 +		.active = true,
@@ -3926,6 +4342,71 @@ index 000000000..de28c61ec
 +	return -ENOENT;
 +}
 +
++static int restore_sync_file_image(int id)
++{
++	struct i915_image_header header;
++	struct i915_image_sync_file image;
++	int image_fd_value;
++	int ret;
++
++	image_fd_value = image_fd(id, O_RDONLY);
++	if (image_fd_value < 0)
++		return -ENOTSUP;
++	ret = read_all(image_fd_value, &header, sizeof(header));
++	if (!ret)
++		ret = read_all(image_fd_value, &image, sizeof(image));
++	if (!ret && (header.magic != I915_IMAGE_MAGIC ||
++		     header.version != I915_IMAGE_VERSION ||
++		     header.file_id != (uint32_t)id ||
++		     header.kind != I915_IMAGE_KIND_SYNC_FILE ||
++		     header.object_count || header.syncobj_count ||
++		     header.vm_count || header.context_count ||
++		     header.binding_count || !image.source_file_id ||
++		     !image.handle ||
++		     image.flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
++		     !image.fd_count || image.point || image.reserved[0] ||
++		     image.reserved[1]))
++		ret = -EINVAL;
++	if (!ret) {
++		char trailing;
++		ssize_t got;
++
++		do {
++			got = read(image_fd_value, &trailing, sizeof(trailing));
++		} while (got < 0 && errno == EINTR);
++		if (got != 0)
++			ret = got < 0 ? -errno : -EINVAL;
++	}
++	close(image_fd_value);
++	if (ret)
++		return ret;
++
++	for (size_t i = 0; i < restore_file_count; i++) {
++		struct restore_file *file = &restore_files[i];
++		struct drm_i915_criu_sync_file create = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_SYNC_FILE_CREATE,
++			.cookie = file->cookie,
++			.fd = -1,
++			.handle = image.handle,
++			.flags = image.flags,
++			.point = image.point,
++		};
++		int fd;
++
++		if (file->file_id != (int)image.source_file_id || !file->active)
++			continue;
++		fd = criu_plugin_fdstore_get(file->fdstore_id);
++		if (fd < 0)
++			return -EIO;
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_SYNC_FILE, &create) < 0)
++			ret = -errno;
++		close(fd);
++		return ret ? ret : create.fd;
++	}
++	return -ENOENT;
++}
++
 +struct restore_image {
 +	int id;
 +	uint32_t kind;
@@ -3947,7 +4428,8 @@ index 000000000..de28c61ec
 +	    header.version != I915_IMAGE_VERSION ||
 +	    header.file_id != (uint32_t)id ||
 +	    (header.kind != I915_IMAGE_KIND_DRM_FILE &&
-+	     header.kind != I915_IMAGE_KIND_DMABUF))
++	     header.kind != I915_IMAGE_KIND_DMABUF &&
++	     header.kind != I915_IMAGE_KIND_SYNC_FILE))
 +		return -EINVAL;
 +	*kind = header.kind;
 +	return 0;
@@ -4001,10 +4483,23 @@ index 000000000..de28c61ec
 +	qsort(images, image_count, sizeof(images[0]), compare_restore_images);
 +
 +	for (size_t i = 0; i < image_count; i++) {
-+		int fd = images[i].kind == I915_IMAGE_KIND_DRM_FILE ?
-+			restore_file_image(images[i].id) :
-+			restore_dmabuf_image(images[i].id);
++		int fd;
 +		int fdstore_id;
++
++		switch (images[i].kind) {
++		case I915_IMAGE_KIND_DRM_FILE:
++			fd = restore_file_image(images[i].id);
++			break;
++		case I915_IMAGE_KIND_DMABUF:
++			fd = restore_dmabuf_image(images[i].id);
++			break;
++		case I915_IMAGE_KIND_SYNC_FILE:
++			fd = restore_sync_file_image(images[i].id);
++			break;
++		default:
++			fd = -EINVAL;
++			break;
++		}
 +
 +		if (fd < 0) {
 +			pr_err("failed to prepare i915 image %d: %d\n",
@@ -4102,10 +4597,10 @@ index 000000000..de28c61ec
 +			 i915_plugin_resume_devices_late)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 000000000..a145ae9f2
+index 000000000..a6a02e0f6
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,376 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -4120,7 +4615,11 @@ index 000000000..a145ae9f2
 +#include <sys/eventfd.h>
 +#include <sys/ioctl.h>
 +#include <sys/mman.h>
++#include <sys/poll.h>
++#include <sys/wait.h>
 +#include <unistd.h>
++
++#include <linux/sync_file.h>
 +
 +#include <drm/drm.h>
 +#include <drm/i915_drm.h>
@@ -4169,6 +4668,47 @@ index 000000000..a145ae9f2
 +	};
 +
 +	xioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &wait, "SYNCOBJ_WAIT");
++}
++
++static int export_sync_file(int fd, uint32_t handle)
++{
++	struct drm_syncobj_handle export = {
++		.handle = handle,
++		.flags = DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE,
++		.fd = -1,
++	};
++
++	xioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &export,
++	       "SYNCOBJ_HANDLE_TO_FD sync_file");
++	return export.fd;
++}
++
++static void verify_sync_file(int fd, int sync_fd)
++{
++	struct sync_file_info info = { 0 };
++	struct pollfd pollfd = { .fd = sync_fd, .events = POLLIN };
++	struct drm_syncobj_create imported = { 0 };
++	struct drm_syncobj_handle import;
++
++	if (poll(&pollfd, 1, 0) != 1 || !(pollfd.revents & POLLIN)) {
++		errno = ETIME;
++		die("restored sync_file is not signaled");
++	}
++	xioctl(sync_fd, SYNC_IOC_FILE_INFO, &info, "SYNC_IOC_FILE_INFO");
++	if (info.status != 1 || !info.num_fences) {
++		errno = EILSEQ;
++		die("restored sync_file status");
++	}
++	xioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &imported,
++	       "imported SYNCOBJ_CREATE");
++	import = (struct drm_syncobj_handle) {
++		.handle = imported.handle,
++		.flags = DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE,
++		.fd = sync_fd,
++	};
++	xioctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &import,
++	       "SYNCOBJ_FD_TO_HANDLE sync_file");
++	wait_binary(fd, imported.handle);
 +}
 +
 +static void signal_timeline(int fd, uint32_t handle, uint64_t point)
@@ -4243,7 +4783,11 @@ index 000000000..a145ae9f2
 +int main(int argc, char **argv)
 +{
 +	struct sigaction action = { .sa_handler = on_signal };
-+	bool sync_only = argc == 2 && !strcmp(argv[1], "--sync-only");
++	bool explicit_sync_only = argc == 2 && !strcmp(argv[1], "--sync-only");
++	bool sync_file_mode = argc == 2 && !strcmp(argv[1], "--sync-file");
++	bool external_sync_file = argc == 2 &&
++		!strcmp(argv[1], "--external-sync-file-peer");
++	bool sync_only = explicit_sync_only || sync_file_mode || external_sync_file;
 +	bool idle_context = argc == 2 && !strcmp(argv[1], "--idle-context");
 +	bool callback = argc == 2 && !strcmp(argv[1], "--callback");
 +	bool custom_engine = argc == 2 && !strcmp(argv[1], "--custom-engine");
@@ -4258,11 +4802,14 @@ index 000000000..a145ae9f2
 +	uint64_t gpu_address = 0;
 +	bool gpu_address_valid = false;
 +	int callback_fd = -1;
++	int sync_file_fd = -1;
++	int sync_file_dup = -1;
++	pid_t external_sync_file_pid = 0;
 +	int fd;
 +
 +	if (argc > 2 || (argc == 2 && !sync_only && !idle_context &&
 +				 !callback && !custom_engine)) {
-+		fprintf(stderr, "usage: %s [--sync-only|--idle-context|--callback|--custom-engine]\n",
++		fprintf(stderr, "usage: %s [--sync-only|--sync-file|--external-sync-file-peer|--idle-context|--callback|--custom-engine]\n",
 +			argv[0]);
 +		return EXIT_FAILURE;
 +	}
@@ -4333,6 +4880,58 @@ index 000000000..a145ae9f2
 +	} else {
 +		signal_binary(fd, binary.handle);
 +	}
++	if (sync_file_mode || external_sync_file) {
++		sync_file_fd = export_sync_file(fd, binary.handle);
++		if (sync_file_mode) {
++			sync_file_dup = dup(sync_file_fd);
++			if (sync_file_dup < 0)
++				die("dup sync_file");
++		}
++	}
++	if (external_sync_file) {
++		int ready_pipe[2];
++		pid_t intermediary;
++		int status;
++
++		if (pipe2(ready_pipe, O_CLOEXEC))
++			die("external sync_file pipe2");
++		intermediary = fork();
++		if (intermediary < 0)
++			die("external sync_file fork");
++		if (!intermediary) {
++			pid_t grandchild;
++
++			close(ready_pipe[0]);
++			grandchild = fork();
++			if (grandchild < 0)
++				die("external sync_file grandchild fork");
++			if (grandchild)
++				_exit(EXIT_SUCCESS);
++			if (munmap(mapping, OBJECT_SIZE))
++				die("external sync_file munmap");
++			close(fd);
++			close(callback_fd);
++			external_sync_file_pid = getpid();
++			if (write(ready_pipe[1], &external_sync_file_pid,
++				  sizeof(external_sync_file_pid)) !=
++			    sizeof(external_sync_file_pid))
++				die("external sync_file ready");
++			close(ready_pipe[1]);
++			for (;;)
++				pause();
++		}
++		close(ready_pipe[1]);
++		if (read(ready_pipe[0], &external_sync_file_pid,
++			 sizeof(external_sync_file_pid)) !=
++		    sizeof(external_sync_file_pid))
++			die("external sync_file pid");
++		close(ready_pipe[0]);
++		if (waitpid(intermediary, &status, 0) != intermediary ||
++		    !WIFEXITED(status) || WEXITSTATUS(status)) {
++			fprintf(stderr, "external sync_file intermediary failed\n");
++			return EXIT_FAILURE;
++		}
++	}
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
 +	if (!idle_context && !sync_only && !callback && !custom_engine)
 +		submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
@@ -4340,21 +4939,27 @@ index 000000000..a145ae9f2
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
-+	printf("READY pid=%d context=%u vm=%u binary=%u timeline=%u address=%p mmap_offset=%#" PRIx64 " gpu_address=%#" PRIx64 " gpu_address_valid=%u\n",
++	printf("READY pid=%d context=%u vm=%u binary=%u timeline=%u sync_file=%d external_sync_file=%d address=%p mmap_offset=%#" PRIx64 " gpu_address=%#" PRIx64 " gpu_address_valid=%u\n",
 +	       getpid(), context.ctx_id, vm.vm_id, binary.handle,
-+	       timeline.handle, mapping, (uint64_t)mmap_offset.offset,
-+	       gpu_address, gpu_address_valid);
++	       timeline.handle, sync_file_fd, external_sync_file_pid, mapping,
++	       (uint64_t)mmap_offset.offset, gpu_address, gpu_address_valid);
 +	fflush(stdout);
 +	while (!resume_test)
 +		pause();
 +
-+	if (callback || custom_engine) {
++	if (callback || custom_engine || external_sync_file) {
 +		fprintf(stderr, "unsupported mode must be refused before resume\n");
 +		return EXIT_FAILURE;
 +	}
 +	fprintf(stderr, "RESUMED pid=%d\n", getpid());
 +	wait_binary(fd, binary.handle);
 +	fprintf(stderr, "BINARY-SIGNALED handle=%u\n", binary.handle);
++	if (sync_file_mode) {
++		verify_sync_file(fd, sync_file_fd);
++		verify_sync_file(fd, sync_file_dup);
++		fprintf(stderr, "SYNC-FILE-SIGNALED fds=%d,%d\n",
++			sync_file_fd, sync_file_dup);
++	}
 +	wait_timeline(fd, timeline.handle, TIMELINE_POINT);
 +	fprintf(stderr, "TIMELINE-SIGNALED handle=%u point=%" PRIu64 "\n",
 +		timeline.handle, (uint64_t)TIMELINE_POINT);
@@ -4362,7 +4967,9 @@ index 000000000..a145ae9f2
 +	       &gpu_address_valid, gpu_address_valid);
 +	signal_timeline(fd, timeline.handle, POST_RESTORE_POINT);
 +	wait_timeline(fd, timeline.handle, POST_RESTORE_POINT);
-+	if (sync_only)
++	if (sync_file_mode)
++		puts("PASS: binary syncobj, retained sync_file identity, timeline, and GPU submission");
++	else if (sync_only)
 +		puts("PASS: binary syncobj, timeline, and GPU submission");
 +	else if (idle_context)
 +		puts("PASS: idle context, explicit VM, binary syncobj, timeline, and GPU submission");
@@ -4971,10 +5578,10 @@ index 000000000..dfd0160de
 +}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100755
-index 000000000..8c3d6902f
+index 000000000..03b6b362e
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,115 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -4994,6 +5601,8 @@ index 000000000..8c3d6902f
 +idle_context=${I915_CRIU_IDLE_CONTEXT:-0}
 +callback=${I915_CRIU_CALLBACK:-0}
 +custom_engine=${I915_CRIU_CUSTOM_ENGINE:-0}
++sync_file=${I915_CRIU_SYNC_FILE:-0}
++external_sync_file=${I915_CRIU_EXTERNAL_SYNC_FILE:-0}
 +cc=${CC:-gcc}
 +fixture="$work/i915-context-sync"
 +fixture_source=${FIXTURE:-/tmp/i915-context-sync}
@@ -5003,6 +5612,9 @@ index 000000000..8c3d6902f
 +cleanup() {
 +    if [[ -n ${fixture_pid:-} ]]; then
 +        kill -KILL "$fixture_pid" 2>/dev/null || true
++    fi
++    if [[ -n ${external_sync_file_pid:-} && $external_sync_file_pid != 0 ]]; then
++        kill -KILL "$external_sync_file_pid" 2>/dev/null || true
 +    fi
 +}
 +trap cleanup EXIT
@@ -5021,13 +5633,18 @@ index 000000000..8c3d6902f
 +
 +fixture_args=()
 +expected_pass='PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission'
-+if (( sync_only + idle_context + callback + custom_engine > 1 )); then
-+    echo 'sync-only, idle-context, callback, and custom-engine modes are mutually exclusive' >&2
++if (( sync_only + idle_context + callback + custom_engine + sync_file + external_sync_file > 1 )); then
++    echo 'sync-only, sync-file, external-sync-file, idle-context, callback, and custom-engine modes are mutually exclusive' >&2
 +    exit 2
 +elif [[ $callback == 1 ]]; then
 +    fixture_args+=(--callback)
 +elif [[ $custom_engine == 1 ]]; then
 +    fixture_args+=(--custom-engine)
++elif [[ $sync_file == 1 ]]; then
++    fixture_args+=(--sync-file)
++    expected_pass='PASS: binary syncobj, retained sync_file identity, timeline, and GPU submission'
++elif [[ $external_sync_file == 1 ]]; then
++    fixture_args+=(--external-sync-file-peer)
 +elif [[ $sync_only == 1 ]]; then
 +    fixture_args+=(--sync-only)
 +    expected_pass='PASS: binary syncobj, timeline, and GPU submission'
@@ -5045,6 +5662,7 @@ index 000000000..8c3d6902f
 +grep -q '^READY ' "$log"
 +original_pid=$fixture_pid
 +original_address=$(sed -n 's/^READY .* address=\([^ ]*\).*/\1/p' "$log")
++external_sync_file_pid=$(sed -n 's/^READY .* external_sync_file=\([0-9]*\).*/\1/p' "$log")
 +
 +if [[ $expect_unsupported == 1 ]]; then
 +    set +e
@@ -5207,10 +5825,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..67a23ea22
+index 000000000..c75aba44f
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,144 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -5251,9 +5869,9 @@ index 000000000..67a23ea22
 +
 +kernel_module=$(modinfo -F filename i915)
 +if [[ $kernel_module == *.xz ]]; then
-+    xzgrep -a -q 'i915_criu_binding_ioctl' "$kernel_module"
++    xzgrep -a -q 'i915_criu_sync_file_ioctl' "$kernel_module"
 +else
-+    grep -a -q 'i915_criu_binding_ioctl' "$kernel_module"
++    grep -a -q 'i915_criu_sync_file_ioctl' "$kernel_module"
 +fi
 +
 +read_parameter() {
@@ -5276,7 +5894,7 @@ index 000000000..67a23ea22
 +    --arg modeset "$(read_parameter modeset)" \
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,abi:6,image_schema:6,niri:$niri,i915:{enable_guc:$enable_guc,
++      plugin:$plugin,abi:7,image_schema:7,niri:$niri,i915:{enable_guc:$enable_guc,
 +      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
 +    >"$suite/metadata.json"
 +
@@ -5320,6 +5938,15 @@ index 000000000..67a23ea22
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_SYNC_ONLY=1 I915_CRIU_TEST_DIR="$suite/synchronization" \
 +    "$scripts/run-context-sync-criu.sh"
++run_case retained-sync-file env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_SYNC_FILE=1 I915_CRIU_TEST_DIR="$suite/retained-sync-file" \
++    "$scripts/run-context-sync-criu.sh"
++run_case external-sync-file-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_EXTERNAL_SYNC_FILE=1 \
++    I915_CRIU_TEST_DIR="$suite/external-sync-file-refusal" \
++    "$scripts/run-context-sync-criu.sh"
 +run_case idle-context-vm env "${common[@]}" \
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_IDLE_CONTEXT=1 I915_CRIU_TEST_DIR="$suite/idle-context-vm" \
@@ -5342,6 +5969,7 @@ index 000000000..67a23ea22
 +    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
 +      cases:["minimal-gem","shared-gem","external-sharing-refusal",
 +      "retained-dmabuf","external-dmabuf-refusal","synchronization",
++      "retained-sync-file","external-sync-file-refusal",
 +      "idle-context-vm","sync-callback-refusal",
 +      "context-vm-binding","custom-engine-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
