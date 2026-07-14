@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..fbaf50d92
+index 000000000..3c058e422
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,564 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -481,7 +481,7 @@ index 000000000..fbaf50d92
 +
 +### Physical KMS expansion
 +
-+ABI and private image version 8 add an explicitly bounded first physical-KMS
++ABI and private image version 8 added an explicitly bounded first physical-KMS
 +stage. `DRM_IOCTL_I915_CRIU_FILE` records the primary/render node role, client
 +capabilities, authentication state, and current DRM-master ownership. Dump and
 +restore refuse pending or unread DRM events and DRM leases rather than dropping
@@ -509,6 +509,21 @@ index 000000000..fbaf50d92
 +framebuffers, imported objects, leases, pending flips/events, and inaccessible
 +blob graphs remain unsupported.
 +
++ABI and private image version 9 make CPU mapping provenance explicit. The
++physical ABI-8 run at
++`/var/tmp/i915-criu-physical-20260714T154548Z` successfully recreated the KMS
++objects and reached process restoration, but the first dumb-buffer VMA failed
++with `EACCES`: `MODE_MAP_DUMB` had created a WC mmap-offset node while object
++inventory had recorded a separate WB node. Reusing the captured WC offset or a
++newly opened DRM fd is neither exact nor authorized.
++`DRM_IOCTL_I915_CRIU_MAPPING` now resolves every captured `i915.gem` VMA offset
++inside the authorized dump transaction to its opaque object, mmap type, node
++base, and bounded size. The image records each distinct node. Restore recreates
++the same type through the object-owning DRM file and translates base plus
++subrange delta; an unresolved, overlapping, unauthorized, fixed/special, or
++corrupt mapping refuses the transaction. CRIU no longer falls back to reopening
++a DRM path when an i915 mapping record is absent.
++
 +The plugin records mutable atomic properties only for the active connector,
 +CRTC, and planes, excluding immutable, legacy DPMS, and transient fence-pointer
 +properties. It verifies every restored object/property ID, submits a full
@@ -526,16 +541,15 @@ index 000000000..fbaf50d92
 +scanout properties, and bit-identical mappings, then switches to the second
 +restored framebuffer and consumes a real page-flip event. The matching
 +`run-kms-criu.sh` must run from a text console with the graphical session
-+stopped. ABI-8 implementation and warning-clean kernel/plugin/fixture builds are
-+complete; physical pass evidence is intentionally not claimed until the
-+matching kernel and plugin are booted and the suite runs successfully. The KMS
-+harness also corrupts captured PCI identity to prove incompatible-device
++stopped. ABI-9 implementation and warning-clean kernel/plugin/fixture builds
++must complete before physical pass evidence is claimed. The KMS harness also corrupts captured PCI identity to prove incompatible-device
 +refusal and uses i915's privileged debugfs reset injector during a deliberately
 +paused test transaction to prove reset detection without admitting a partial
 +image.
 +
 +`run-physical-suite.sh` reproduces all prior cases in one privileged run and,
-+for ABI 8, adds the physical atomic-KMS case after the retained duplicate
++for ABI 9, adds the physical atomic-KMS case and mapping-count corruption
++refusal after the retained duplicate
 +`sync_file` and external-holder cases. It must be launched from a text console
 +with the graphical session stopped so the KMS fixture can acquire DRM master.
 +It creates a private mode-0700 evidence directory containing per-case logs,
@@ -621,10 +635,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..eb39a4151
+index 000000000..f2a0dcf63
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,221 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -633,7 +647,7 @@ index 000000000..eb39a4151
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 8
++#define I915_CRIU_ABI_VERSION 9
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -643,6 +657,8 @@ index 000000000..eb39a4151
 +#define I915_CRIU_OBJECT_IMPORT 3
 +#define I915_CRIU_OBJECT_SHMEM (1u << 0)
 +#define I915_CRIU_OBJECT_SHARED (1u << 0)
++#define I915_CRIU_MAPPING_QUERY 1
++#define I915_CRIU_MAPPING_CREATE 2
 +#define I915_CRIU_DATA_READ 1
 +#define I915_CRIU_DATA_WRITE 2
 +#define I915_CRIU_SYNCOBJ_QUERY 1
@@ -708,6 +724,18 @@ index 000000000..eb39a4151
 +	uint32_t dma_buf_refcount;
 +	uint32_t dma_buf_attachment_count;
 +	uint64_t reserved[2];
++};
++
++struct drm_i915_criu_mapping {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint64_t object_id;
++	uint64_t offset;
++	uint64_t size;
++	uint32_t mmap_type;
++	uint32_t pad;
++	uint64_t reserved[3];
 +};
 +
 +struct drm_i915_criu_data {
@@ -828,14 +856,16 @@ index 000000000..eb39a4151
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x45, struct drm_i915_criu_framebuffer)
 +#define DRM_IOCTL_I915_CRIU_BLOB \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x46, struct drm_i915_criu_blob)
++#define DRM_IOCTL_I915_CRIU_MAPPING \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x47, struct drm_i915_criu_mapping)
 +
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..8405db29f
+index 000000000..809bc7d6c
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2214 @@
+@@ -0,0 +1,2360 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -897,12 +927,12 @@ index 000000000..8405db29f
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..292d7e0
++index 0000000..8750b1b
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1735 @@
++@@ -0,0 +1,1852 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 8. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 9. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-buf.h>
@@ -925,6 +955,7 @@ index 000000000..8405db29f
 ++#include <drm/drm_mode_config.h>
 ++#include <drm/drm_property.h>
 ++#include <drm/drm_syncobj.h>
+++#include <drm/drm_vma_manager.h>
 ++
 ++#include "i915_criu.h"
 ++#include "i915_drv.h"
@@ -1621,6 +1652,122 @@ index 000000000..8405db29f
 ++		i915_gem_object_put(obj);
 ++delete_handle:
 ++		drm_gem_handle_delete(file, handle);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
+++
+++static bool file_has_gem_object(struct drm_file *file,
+++				struct drm_i915_gem_object *target)
+++{
+++	struct drm_i915_gem_object *obj;
+++	int handle;
+++	bool found = false;
+++
+++	spin_lock(&file->table_lock);
+++	idr_for_each_entry(&file->object_idr, obj, handle) {
+++		if (obj == target) {
+++			found = true;
+++			break;
+++		}
+++	}
+++	spin_unlock(&file->table_lock);
+++	return found;
+++}
+++
+++int i915_criu_mapping_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file)
+++{
+++	struct drm_i915_criu_mapping *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_MAPPING_QUERY) {
+++		struct drm_vma_offset_node *node;
+++		struct drm_i915_gem_object *obj = NULL;
+++		struct i915_mmap_offset *mmo = NULL;
+++		bool node_found;
+++
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		if (!args->offset || !IS_ALIGNED(args->offset, PAGE_SIZE) ||
+++		    args->object_id || args->size || args->mmap_type) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++
+++		rcu_read_lock();
+++		drm_vma_offset_lock_lookup(dev->vma_offset_manager);
+++		node = drm_vma_offset_lookup_locked(dev->vma_offset_manager,
+++						    args->offset >> PAGE_SHIFT, 1);
+++		node_found = node != NULL;
+++		if (node && !node->driver_private &&
+++		    drm_vma_node_is_allowed(node, file)) {
+++			mmo = container_of(node, struct i915_mmap_offset, vma_node);
+++			obj = i915_gem_object_get_rcu(mmo->obj);
+++		}
+++		drm_vma_offset_unlock_lookup(dev->vma_offset_manager);
+++		rcu_read_unlock();
+++		if (!obj) {
+++			ret = node_found ? -EACCES : -ENOENT;
+++			goto out;
+++		}
+++		if (!file_has_gem_object(file, obj) ||
+++		    !i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
+++		    i915_gem_object_is_userptr(obj)) {
+++			ret = -EXDEV;
+++			goto put_obj;
+++		}
+++		args->object_id = checkpoint_object_id(obj);
+++		args->offset = drm_vma_node_offset_addr(&mmo->vma_node);
+++		args->size = drm_vma_node_size(&mmo->vma_node) << PAGE_SHIFT;
+++		args->mmap_type = mmo->mmap_type;
+++		ret = 0;
+++put_obj:
+++		i915_gem_object_put(obj);
+++	} else if (args->op == I915_CRIU_MAPPING_CREATE) {
+++		struct drm_i915_gem_mmap_offset create = {
+++			.flags = args->mmap_type,
+++		};
+++		void *entry;
+++
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		if (!args->object_id || args->offset || !args->size ||
+++		    args->mmap_type > I915_MMAP_OFFSET_FIXED) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
+++		if (!entry) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		create.handle = xa_to_value(entry);
+++		ret = i915_gem_mmap_offset_ioctl(dev, &create, file);
+++		if (!ret) {
+++			struct drm_i915_gem_object *obj =
+++				i915_gem_object_lookup(file, create.handle);
+++
+++			if (!obj)
+++				ret = -ENOENT;
+++			else if (obj->base.size != args->size)
+++				ret = -EXDEV;
+++			else
+++				args->offset = create.offset;
+++			if (obj)
+++				i915_gem_object_put(obj);
+++		}
 ++	} else {
 ++		ret = -EINVAL;
 ++	}
@@ -2638,10 +2785,10 @@ index 000000000..8405db29f
 ++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..4329002
++index 0000000..aacf12f
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
-+@@ -0,0 +1,32 @@
++@@ -0,0 +1,34 @@
 ++/* SPDX-License-Identifier: MIT */
 ++#ifndef __I915_CRIU_H__
 ++#define __I915_CRIU_H__
@@ -2656,6 +2803,8 @@ index 000000000..8405db29f
 ++			    struct drm_file *file);
 ++int i915_criu_object_ioctl(struct drm_device *dev, void *data,
 ++			   struct drm_file *file);
+++int i915_criu_mapping_ioctl(struct drm_device *dev, void *data,
+++			    struct drm_file *file);
 ++int i915_criu_data_ioctl(struct drm_device *dev, void *data,
 ++			 struct drm_file *file);
 ++int i915_criu_syncobj_ioctl(struct drm_device *dev, void *data,
@@ -2675,7 +2824,7 @@ index 000000000..8405db29f
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..9e8a9e2 100644
++index d9be7a5..636cd79 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -2694,7 +2843,7 @@ index 000000000..8405db29f
 + 	i915_drm_client_put(file_priv->client);
 + 
 + 	kfree_rcu(file_priv, rcu);
-+@@ -1849,6 +1851,16 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++@@ -1849,6 +1851,17 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
 + 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
@@ -2708,6 +2857,7 @@ index 000000000..8405db29f
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_FILE, i915_criu_file_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_FRAMEBUFFER, i915_criu_framebuffer_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_BLOB, i915_criu_blob_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_MAPPING, i915_criu_mapping_ioctl, DRM_RENDER_ALLOW),
 + };
 + 
 + /*
@@ -2764,10 +2914,10 @@ index 000000000..8405db29f
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..45dfd70 100644
++index 535cb68..7c00ac6 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -485,6 +485,16 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
 + #define DRM_I915_GEM_VM_CREATE		0x3a
 + #define DRM_I915_GEM_VM_DESTROY		0x3b
 + #define DRM_I915_GEM_CREATE_EXT		0x3c
@@ -2781,10 +2931,11 @@ index 000000000..8405db29f
 ++#define DRM_I915_CRIU_FILE		0x44
 ++#define DRM_I915_CRIU_FRAMEBUFFER	0x45
 ++#define DRM_I915_CRIU_BLOB		0x46
+++#define DRM_I915_CRIU_MAPPING		0x47
 + /* Must be kept compact -- no holes */
 + 
 + #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
-+@@ -518,6 +528,16 @@ typedef struct _drm_i915_sarea {
++@@ -518,6 +529,17 @@ typedef struct _drm_i915_sarea {
 + #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
 + #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
 + #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
@@ -2798,10 +2949,11 @@ index 000000000..8405db29f
 ++#define DRM_IOCTL_I915_CRIU_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FILE, struct drm_i915_criu_file)
 ++#define DRM_IOCTL_I915_CRIU_FRAMEBUFFER	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FRAMEBUFFER, struct drm_i915_criu_framebuffer)
 ++#define DRM_IOCTL_I915_CRIU_BLOB	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BLOB, struct drm_i915_criu_blob)
+++#define DRM_IOCTL_I915_CRIU_MAPPING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_MAPPING, struct drm_i915_criu_mapping)
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3926,237 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3928,260 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -2828,7 +2980,7 @@ index 000000000..8405db29f
 ++ * requests, special VMA views, leases, pending events, unsupported sync_file
 ++ * fence graphs, and unsupported KMS resources.
 ++ */
-++#define I915_CRIU_ABI_VERSION 8
+++#define I915_CRIU_ABI_VERSION 9
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -2876,6 +3028,29 @@ index 000000000..8405db29f
 ++
 ++#define I915_CRIU_DATA_READ  1
 ++#define I915_CRIU_DATA_WRITE 2
+++
+++#define I915_CRIU_MAPPING_QUERY 1
+++#define I915_CRIU_MAPPING_CREATE 2
+++
+++/**
+++ * struct drm_i915_criu_mapping - checkpoint one GEM mmap-offset node
+++ *
+++ * QUERY accepts an offset from a captured i915.gem VMA and returns the
+++ * containing node's object identity, base, size and mmap type. CREATE accepts
+++ * an already restored object identity and mmap type and returns the new node
+++ * base. The transaction rejects offsets not authorized to this drm_file.
+++ */
+++struct drm_i915_criu_mapping {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	__u64 object_id;
+++	__u64 offset;
+++	__u64 size;
+++	__u32 mmap_type;
+++	__u32 pad;
+++	__u64 reserved[3];
+++};
 ++
 ++struct drm_i915_criu_data {
 ++	__u32 version;
@@ -3040,9 +3215,10 @@ index 000000000..8405db29f
 + #define I915_PROTECTED_CONTENT_DEFAULT_SESSION 0xf
 + 
 +diff --git a/kernel/ptrace.c b/kernel/ptrace.c
++index 130043b..0e0e1ff 100644
 +--- a/kernel/ptrace.c
 ++++ b/kernel/ptrace.c
-+@@ -364,6 +364,7 @@
++@@ -364,6 +364,7 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
 + 	task_unlock(task);
 + 	return !err;
 + }
@@ -3367,10 +3543,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..e070f181e
+index 000000000..ff230da2d
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,2709 @@
+@@ -0,0 +1,2907 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -3401,11 +3577,12 @@ index 000000000..e070f181e
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC		UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION		8
++#define I915_IMAGE_VERSION		9
 +#define I915_IMAGE_KIND_DRM_FILE	1
 +#define I915_IMAGE_KIND_DMABUF		2
 +#define I915_IMAGE_KIND_SYNC_FILE	3
 +#define I915_MAX_RESTORE_OBJECTS	256
++#define I915_MAX_RESTORE_MAPPINGS	4096
 +#define I915_MAX_RESTORE_SYNCOBJS	256
 +#define I915_MAX_RESTORE_VMS		64
 +#define I915_MAX_RESTORE_CONTEXTS	64
@@ -3433,7 +3610,7 @@ index 000000000..e070f181e
 +	uint32_t device_identity;
 +	uint32_t subsystem_identity;
 +	uint32_t revision;
-+	uint32_t header_reserved;
++	uint32_t mapping_count;
 +	uint32_t kind;
 +};
 +
@@ -3443,6 +3620,8 @@ index 000000000..e070f181e
 +	       "i915 file flags offset changed");
 +_Static_assert(offsetof(struct i915_image_header, device_identity) == 52,
 +	       "i915 device identity offset changed");
++_Static_assert(offsetof(struct i915_image_header, mapping_count) == 64,
++	       "i915 mapping count offset changed");
 +
 +struct i915_image_object {
 +	uint64_t object_id;
@@ -3454,6 +3633,22 @@ index 000000000..e070f181e
 +	uint32_t sharing_flags;
 +	uint32_t dma_buf_refcount;
 +	uint32_t dma_buf_attachment_count;
++};
++
++struct i915_image_mapping {
++	uint64_t object_id;
++	uint64_t offset;
++	uint64_t size;
++	uint32_t mmap_type;
++	uint32_t pad;
++};
++
++_Static_assert(sizeof(struct i915_image_mapping) == 32,
++	       "i915 mapping image layout changed");
++
++struct dump_vma {
++	uint64_t pgoff;
++	bool resolved;
 +};
 +
 +struct i915_image_syncobj {
@@ -3585,6 +3780,15 @@ index 000000000..e070f181e
 +	int prime_fdstore_id;
 +};
 +
++struct restore_mapping {
++	uint64_t object_id;
++	uint64_t old_offset;
++	uint64_t new_offset;
++	uint64_t size;
++	uint32_t mmap_type;
++	int file_id;
++};
++
 +struct restore_file {
 +	int file_id;
 +	int fdstore_id;
@@ -3607,6 +3811,8 @@ index 000000000..e070f181e
 +static bool inventory_added;
 +static struct object_relationship dump_relationships[I915_MAX_RESTORE_OBJECTS];
 +static size_t dump_relationship_count;
++static struct dump_vma dump_vmas[I915_MAX_RESTORE_MAPPINGS];
++static size_t dump_vma_count;
 +static struct dump_dmabuf_file dump_dmabuf_files[I915_MAX_RESTORE_FILES];
 +static size_t dump_dmabuf_file_count;
 +static struct dump_sync_file dump_sync_files[I915_MAX_RESTORE_FILES];
@@ -3615,6 +3821,8 @@ index 000000000..e070f181e
 +static size_t dump_drm_file_count;
 +static struct restore_object restore_objects[I915_MAX_RESTORE_OBJECTS];
 +static size_t restore_object_count;
++static struct restore_mapping restore_mappings[I915_MAX_RESTORE_MAPPINGS];
++static size_t restore_mapping_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
 +static size_t restore_file_count;
 +static struct restore_kms_property
@@ -4471,7 +4679,72 @@ index 000000000..e070f181e
 +	return 0;
 +}
 +
++static int collect_dump_mappings(int fd, uint64_t cookie,
++				 const struct dump_object *objects,
++				 size_t object_count,
++				 struct i915_image_mapping **result,
++				 size_t *result_count)
++{
++	struct i915_image_mapping *mappings;
++	size_t count = 0;
++
++	mappings = xmalloc(dump_vma_count * sizeof(*mappings));
++	if (dump_vma_count && !mappings)
++		return -ENOMEM;
++	for (size_t i = 0; i < dump_vma_count; i++) {
++		struct drm_i915_criu_mapping query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_MAPPING_QUERY,
++			.cookie = cookie,
++			.offset = dump_vmas[i].pgoff,
++		};
++		bool object_found = false;
++		bool duplicate = false;
++
++		if (dump_vmas[i].resolved)
++			continue;
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_MAPPING, &query) < 0) {
++			if (errno == ENOENT || errno == EACCES || errno == EXDEV)
++				continue;
++			xfree(mappings);
++			return -errno;
++		}
++		for (size_t j = 0; j < object_count; j++)
++			if (objects[j].image.object_id == query.object_id &&
++			    objects[j].image.size == query.size) {
++				object_found = true;
++				break;
++			}
++		if (!object_found || !query.offset || !query.size || query.pad ||
++		    query.mmap_type > I915_MMAP_OFFSET_UC) {
++			xfree(mappings);
++			return -EXDEV;
++		}
++		for (size_t j = 0; j < count; j++)
++			if (mappings[j].object_id == query.object_id &&
++			    mappings[j].offset == query.offset &&
++			    mappings[j].size == query.size &&
++			    mappings[j].mmap_type == query.mmap_type) {
++				duplicate = true;
++				break;
++			}
++		if (!duplicate)
++			mappings[count++] = (struct i915_image_mapping){
++				.object_id = query.object_id,
++				.offset = query.offset,
++				.size = query.size,
++				.mmap_type = query.mmap_type,
++			};
++		dump_vmas[i].resolved = true;
++	}
++	*result = mappings;
++	*result_count = count;
++	return 0;
++}
++
 +static int write_image(int file_id, struct dump_object *objects, size_t count,
++		       const struct i915_image_mapping *mappings,
++		       size_t mapping_count,
 +		       const struct i915_image_syncobj *syncobjs,
 +		       size_t syncobj_count,
 +		       const struct i915_image_context *vms, size_t vm_count,
@@ -4504,6 +4777,7 @@ index 000000000..e070f181e
 +		.subsystem_identity = identity->subsystem_vendor_id |
 +				      (uint32_t)identity->subsystem_device_id << 16,
 +		.revision = identity->revision,
++		.mapping_count = mapping_count,
 +		.kind = I915_IMAGE_KIND_DRM_FILE,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
@@ -4517,6 +4791,9 @@ index 000000000..e070f181e
 +		if (!ret)
 +			ret = write_all(fd, objects[i].data, objects[i].image.size);
 +	}
++	if (!ret && mapping_count)
++		ret = write_all(fd, mappings,
++				mapping_count * sizeof(*mappings));
 +	if (!ret && syncobj_count)
 +		ret = write_all(fd, syncobjs,
 +				syncobj_count * sizeof(*syncobjs));
@@ -4555,10 +4832,12 @@ index 000000000..e070f181e
 +	checkpoint_pid = -1;
 +	inventory_added = false;
 +	dump_relationship_count = 0;
++	dump_vma_count = 0;
 +	dump_dmabuf_file_count = 0;
 +	dump_sync_file_count = 0;
 +	dump_drm_file_count = 0;
 +	restore_object_count = 0;
++	restore_mapping_count = 0;
 +	restore_file_count = 0;
 +	restore_kms_property_count = 0;
 +	prepared_file_count = 0;
@@ -4616,13 +4895,22 @@ index 000000000..e070f181e
 +				       uint64_t start, uint64_t pgoff,
 +				       int *surrogate_fd)
 +{
++	long page_size = sysconf(_SC_PAGESIZE);
 +	int fd;
 +
 +	(void)pid;
 +	(void)start;
-+	(void)pgoff;
 +	if (strcmp(name, "anon_inode:i915.gem"))
 +		return 0;
++	if (page_size <= 0 || !pgoff || pgoff % (uint64_t)page_size)
++		return -EINVAL;
++	for (size_t i = 0; i < dump_vma_count; i++)
++		if (dump_vmas[i].pgoff == pgoff)
++			goto open_surrogate;
++	if (dump_vma_count == I915_MAX_RESTORE_MAPPINGS)
++		return -E2BIG;
++	dump_vmas[dump_vma_count++].pgoff = pgoff;
++open_surrogate:
 +	fd = open(render_node(), O_RDWR | O_CLOEXEC);
 +	if (fd < 0)
 +		return -errno;
@@ -4742,6 +5030,7 @@ index 000000000..e070f181e
 +int i915_plugin_dump_file(int fd, int id)
 +{
 +	struct dump_object *objects = NULL;
++	struct i915_image_mapping *mappings = NULL;
 +	struct i915_image_syncobj *syncobjs = NULL;
 +	struct i915_image_context *vms = NULL;
 +	struct i915_image_context *contexts = NULL;
@@ -4750,6 +5039,7 @@ index 000000000..e070f181e
 +	struct dump_blob *blobs = NULL;
 +	struct i915_image_kms_property *kms_properties = NULL;
 +	size_t count = 0;
++	size_t mapping_count = 0;
 +	size_t syncobj_count = 0;
 +	size_t vm_count = 0;
 +	size_t context_count = 0;
@@ -4795,6 +5085,9 @@ index 000000000..e070f181e
 +	if (!ret)
 +		ret = collect_dump_objects(fd, cookie, &objects, &count);
 +	if (!ret)
++		ret = collect_dump_mappings(fd, cookie, objects, count,
++					    &mappings, &mapping_count);
++	if (!ret)
 +		ret = collect_dump_syncobjs(fd, cookie, &syncobjs,
 +					    &syncobj_count);
 +	if (!ret)
@@ -4820,8 +5113,9 @@ index 000000000..e070f181e
 +						  &kms_properties,
 +						  &kms_property_count);
 +	if (!ret)
-+		ret = write_image(id, objects, count, syncobjs, syncobj_count,
-+				  vms, vm_count, contexts, context_count,
++		ret = write_image(id, objects, count, mappings, mapping_count,
++				  syncobjs, syncobj_count, vms, vm_count,
++				  contexts, context_count,
 +				  bindings, binding_count, framebuffers,
 +				  framebuffer_count, blobs, blob_count,
 +				  kms_properties, kms_property_count, file_flags,
@@ -4831,6 +5125,7 @@ index 000000000..e070f181e
 +	    !ret)
 +		ret = -EIO;
 +	free_dump_objects(objects, count);
++	xfree(mappings);
 +	xfree(syncobjs);
 +	xfree(vms);
 +	xfree(contexts);
@@ -5051,6 +5346,14 @@ index 000000000..e070f181e
 +			       relationship->expected_dma_buf_refcount);
 +			return -EXDEV;
 +		}
++	}
++	for (size_t i = 0; i < dump_vma_count; i++) {
++		if (dump_vmas[i].resolved)
++			continue;
++		pr_err("i915 VMA offset %#" PRIx64
++		       " is not authorized by any captured DRM file\n",
++		       dump_vmas[i].pgoff);
++		return -EXDEV;
 +	}
 +	if (patch_dump_images())
 +		return -EIO;
@@ -5398,6 +5701,55 @@ index 000000000..e070f181e
 +	return 0;
 +}
 +
++static int restore_mapping(int fd, uint64_t cookie, int file_id,
++			   const struct i915_image_mapping *image)
++{
++	struct drm_i915_criu_mapping create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_MAPPING_CREATE,
++		.cookie = cookie,
++		.object_id = image->object_id,
++		.size = image->size,
++		.mmap_type = image->mmap_type,
++	};
++	bool object_found = false;
++
++	if (!image->object_id || !image->offset || !image->size || image->pad ||
++	    image->offset > UINT64_MAX - image->size ||
++	    image->mmap_type > I915_MMAP_OFFSET_UC ||
++	    restore_mapping_count == I915_MAX_RESTORE_MAPPINGS)
++		return -EINVAL;
++	for (size_t i = 0; i < restore_object_count; i++)
++		if (restore_objects[i].object_id == image->object_id &&
++		    restore_objects[i].size == image->size) {
++			object_found = true;
++			break;
++		}
++	if (!object_found)
++		return -ENOENT;
++	for (size_t i = 0; i < restore_mapping_count; i++) {
++		const struct restore_mapping *existing = &restore_mappings[i];
++
++		if (image->offset < existing->old_offset + existing->size &&
++		    existing->old_offset < image->offset + image->size)
++			return -EEXIST;
++	}
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_MAPPING, &create) < 0)
++		return -errno;
++	if (!create.offset || create.offset > UINT64_MAX - create.size ||
++	    create.size != image->size || create.mmap_type != image->mmap_type)
++		return -EXDEV;
++	restore_mappings[restore_mapping_count++] = (struct restore_mapping){
++		.object_id = image->object_id,
++		.old_offset = image->offset,
++		.new_offset = create.offset,
++		.size = image->size,
++		.mmap_type = image->mmap_type,
++		.file_id = file_id,
++	};
++	return 0;
++}
++
 +static int remember_kms_property(int file_id,
 +				 const struct i915_image_kms_property *image)
 +{
@@ -5419,6 +5771,7 @@ index 000000000..e070f181e
 +{
 +	struct i915_image_header header;
 +	struct restore_file *restore_file;
++	size_t mapping_base = restore_mapping_count;
 +	size_t kms_property_base = restore_kms_property_count;
 +	uint64_t cookie = 0;
 +	int image;
@@ -5432,6 +5785,7 @@ index 000000000..e070f181e
 +	if (ret || header.magic != I915_IMAGE_MAGIC ||
 +	    header.version != I915_IMAGE_VERSION || header.file_id != (uint32_t)id ||
 +	    header.object_count > I915_MAX_RESTORE_OBJECTS ||
++	    header.mapping_count > I915_MAX_RESTORE_MAPPINGS ||
 +	    header.syncobj_count > I915_MAX_RESTORE_SYNCOBJS ||
 +	    header.vm_count > I915_MAX_RESTORE_VMS ||
 +	    header.context_count > I915_MAX_RESTORE_CONTEXTS ||
@@ -5443,7 +5797,7 @@ index 000000000..e070f181e
 +				   I915_CRIU_FILE_RENDER)) ||
 +	    !(header.device_identity & UINT32_C(0xffff)) ||
 +	    !(header.device_identity >> 16) || header.revision > UINT8_MAX ||
-+	    header.header_reserved || header.kind != I915_IMAGE_KIND_DRM_FILE) {
++	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
@@ -5512,6 +5866,13 @@ index 000000000..e070f181e
 +		xfree(contents);
 +		if (ret)
 +			break;
++	}
++	for (uint32_t i = 0; !ret && i < header.mapping_count; i++) {
++		struct i915_image_mapping mapping;
++
++		ret = read_all(image, &mapping, sizeof(mapping));
++		if (!ret)
++			ret = restore_mapping(fd, cookie, id, &mapping);
 +	}
 +	for (uint32_t i = 0, previous = 0;
 +	     !ret && i < header.syncobj_count; i++) {
@@ -5620,6 +5981,7 @@ index 000000000..e070f181e
 +	}
 +	close(image);
 +	if (ret) {
++		restore_mapping_count = mapping_base;
 +		restore_kms_property_count = kms_property_base;
 +		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
 +		abort_restore_sessions();
@@ -5676,7 +6038,7 @@ index 000000000..e070f181e
 +		     header.blob_count || header.kms_property_count ||
 +		     header.file_flags || header.device_identity ||
 +		     header.subsystem_identity || header.revision ||
-+		     header.header_reserved || !image.object_id || !image.fd_count ||
++		     header.mapping_count || !image.object_id || !image.fd_count ||
 +		     image.reserved))
 +		ret = -EINVAL;
 +	if (!ret) {
@@ -5730,7 +6092,7 @@ index 000000000..e070f181e
 +		     header.blob_count || header.kms_property_count ||
 +		     header.file_flags || header.device_identity ||
 +		     header.subsystem_identity || header.revision ||
-+		     header.header_reserved || !image.source_file_id ||
++		     header.mapping_count || !image.source_file_id ||
 +		     !image.handle ||
 +		     image.flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
 +		     !image.fd_count || image.point || image.reserved[0] ||
@@ -5928,14 +6290,26 @@ index 000000000..e070f181e
 +{
 +	(void)path;
 +	(void)addr;
-+	for (size_t i = 0; i < restore_object_count; i++) {
-+		if (restore_objects[i].old_mmap_offset != old_pgoff)
++	for (size_t i = 0; i < restore_mapping_count; i++) {
++		const struct restore_mapping *mapping = &restore_mappings[i];
++
++		if (old_pgoff < mapping->old_offset ||
++		    old_pgoff >= mapping->old_offset + mapping->size)
 +			continue;
-+		*new_pgoff = restore_objects[i].new_mmap_offset;
-+		*plugin_fd = criu_plugin_fdstore_get(restore_objects[i].fdstore_id);
-+		return *plugin_fd < 0 ? -EIO : 1;
++		for (size_t j = 0; j < restore_file_count; j++) {
++			if (restore_files[j].file_id != mapping->file_id)
++				continue;
++			*new_pgoff = mapping->new_offset +
++				     (old_pgoff - mapping->old_offset);
++			*plugin_fd = criu_plugin_fdstore_get(
++				restore_files[j].fdstore_id);
++			return *plugin_fd < 0 ? -EIO : 1;
++		}
++		return -ENOENT;
 +	}
-+	return 0;
++	pr_err("i915 VMA at %#" PRIx64 " has no restored mapping record\n",
++	       old_pgoff);
++	return -EXDEV;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__UPDATE_VMA_MAP,
 +			i915_plugin_update_vma_map)
@@ -7655,10 +8029,10 @@ index 000000000..03b6b362e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 000000000..dc61f2e07
+index 000000000..7617dc35d
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,165 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -7770,6 +8144,10 @@ index 000000000..dc61f2e07
 +        framebuffer-count)
 +            printf '\377\377\377\377' | dd of="${i915_images[0]}" \
 +                bs=1 seek=36 conv=notrunc status=none
++            ;;
++        mapping-count)
++            printf '\377\377\377\377' | dd of="${i915_images[0]}" \
++                bs=1 seek=64 conv=notrunc status=none
 +            ;;
 +        device)
 +            printf '\206\200\377\377' | dd of="${i915_images[0]}" \
@@ -7948,10 +8326,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..d17ab38da
+index 000000000..c4bb69246
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,171 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -8018,7 +8396,7 @@ index 000000000..d17ab38da
 +    --arg modeset "$(read_parameter modeset)" \
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,abi:8,image_schema:8,niri:$niri,i915:{enable_guc:$enable_guc,
++      plugin:$plugin,abi:9,image_schema:9,niri:$niri,i915:{enable_guc:$enable_guc,
 +      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
 +    >"$suite/metadata.json"
 +
@@ -8099,6 +8477,10 @@ index 000000000..d17ab38da
 +    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=framebuffer-count \
 +    I915_CRIU_TEST_DIR="$suite/kms-count-corruption-refusal" \
 +    "$scripts/run-kms-criu.sh"
++run_case kms-mapping-corruption-refusal env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=mapping-count \
++    I915_CRIU_TEST_DIR="$suite/kms-mapping-corruption-refusal" \
++    "$scripts/run-kms-criu.sh"
 +run_case kms-device-mismatch-refusal env "${common[@]}" \
 +    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=device \
 +    I915_CRIU_TEST_DIR="$suite/kms-device-mismatch-refusal" \
@@ -8116,7 +8498,8 @@ index 000000000..d17ab38da
 +      "idle-context-vm","sync-callback-refusal",
 +      "context-vm-binding","custom-engine-refusal","physical-kms",
 +      "kms-role-corruption-refusal","kms-count-corruption-refusal",
-+      "kms-device-mismatch-refusal","kms-reset-refusal"]}' >"$suite/verdict.json"
++      "kms-mapping-corruption-refusal","kms-device-mismatch-refusal",
++      "kms-reset-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
