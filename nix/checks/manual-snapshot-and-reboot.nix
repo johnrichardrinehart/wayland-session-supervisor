@@ -321,7 +321,7 @@ pkgs.testers.runNixOSTest {
       f"--cgroup-dir /sys/fs/cgroup/wss-apps -- {command}")
     machine.sleep(30)
     machine.succeed("systemctl is-active wss-apps.service || { cat /var/lib/wayland-session-supervisor/sessions/apps/sway.log; exit 1; }")
-    machine.succeed("swaymsg -s $(cat /var/lib/wayland-session-supervisor/sessions/apps/swaysock) -t get_tree | jq -e '.. | objects | select(.app_id? == \"restored-input-target\")' || { cat /var/lib/wayland-session-supervisor/sessions/apps/input-target.log; exit 1; }")
+    machine.wait_until_succeeds("swaymsg -s $(cat /var/lib/wayland-session-supervisor/sessions/apps/swaysock) -t get_tree | jq -e '.. | objects | select(.app_id? == \"restored-input-target\")'")
     machine.sleep(30)
     machine.succeed("test -S /run/wayland-session-supervisor/apps/mpv.sock && test -s /var/lib/wayland-session-supervisor/sessions/apps/audio.json || { cat /var/lib/wayland-session-supervisor/sessions/apps/{application,chromium,sway}.log; exit 1; }")
     machine.wait_until_succeeds("test $(curl -s http://127.0.0.1:9222/json/list | jq '[.[]|select(.title|startswith(\"wss-\"))]|length') -eq 3")
