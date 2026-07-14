@@ -8761,3 +8761,34 @@ index 000000000..003da7b61
 +    "module parameter -1 means automatic policy; effective GuC state was taken from the kernel initialization log"
 +  ]
 +}
+diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
+index c4bb69246..4eeac1783 100755
+--- a/test/others/i915-criu/run-physical-suite.sh
++++ b/test/others/i915-criu/run-physical-suite.sh
+@@ -38,11 +38,21 @@ for required in "$criu" "$plugin_dir/i915_plugin.so" \
+ done
+ 
+ kernel_module=$(modinfo -F filename i915)
+-if [[ $kernel_module == *.xz ]]; then
+-    xzgrep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
+-else
+-    grep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
+-fi
++require_kernel_symbol() {
++    local symbol=$1
++
++    if [[ $kernel_module == *.xz ]]; then
++        xzgrep -a -q "$symbol" "$kernel_module"
++    else
++        grep -a -q "$symbol" "$kernel_module"
++    fi
++}
++for symbol in i915_criu_framebuffer_ioctl i915_criu_mapping_ioctl; do
++    if ! require_kernel_symbol "$symbol"; then
++        echo "booted i915 module lacks required ABI-9 symbol: $symbol" >&2
++        exit 2
++    fi
++done
+ 
+ read_parameter() {
+     local name=$1
