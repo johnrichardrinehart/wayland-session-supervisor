@@ -8920,3 +8920,51 @@ index 000000000..003da7b61
 +    "module parameter -1 means automatic policy; effective GuC state was taken from the kernel initialization log"
 +  ]
 +}
+diff --git a/criu/proc_parse.c b/criu/proc_parse.c
+index 04f1cf126..e703e2350 100644
+--- a/criu/proc_parse.c
++++ b/criu/proc_parse.c
+@@ -434,14 +434,6 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
+ 	if (prev_vfi->vma && vfi_equal(vfi, prev_vfi)) {
+ 		struct vma_area *prev = prev_vfi->vma;
+ 
+-		/*
+-		 * If vfi is equal (!) and negative @vm_file_fd --
+-		 * we have nothing to borrow for sure.
+-		 */
+-		if (*vm_file_fd < 0)
+-			return 0;
+-
+-		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
+ 		if (vfi->dev_maj == 0) {
+ 			int surrogate_fd = -1;
+ 			int ret;
+@@ -449,8 +441,10 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
+ 			/*
+ 			 * Equal device/inode metadata permits CRIU to reuse file
+ 			 * identity, but not device-private mmap-offset provenance.
+-			 * Notify the plugin for every anonymous-device VMA so two
+-			 * adjacent i915 mappings cannot collapse into one record.
++			 * Notify the plugin for every anonymous-device VMA before
++			 * testing vm_file_fd: the first surrogate is closed after
++			 * collection, so later adjacent VMAs reach this branch with
++			 * no borrowable descriptor but still need distinct offsets.
+ 			 */
+ 			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
+ 					  vma->e->start, vma->e->pgoff,
+@@ -463,6 +457,15 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
+ 				close(surrogate_fd);
+ 			}
+ 		}
++
++		/*
++		 * If vfi is equal (!) and negative @vm_file_fd --
++		 * we have nothing to borrow for sure.
++		 */
++		if (*vm_file_fd < 0)
++			return 0;
++
++		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
+ 		if (prev->e->status & VMA_AREA_SOCKET)
+ 			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
+ 
