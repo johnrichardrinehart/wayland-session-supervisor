@@ -34,6 +34,16 @@ pkgs.testers.runNixOSTest {
       sessionName = "authenticated";
       compositorCommand = [ "${fixture}" ];
     };
+    systemd.user.services.graphical-session-probe = {
+      description = "Prove supervised sessions activate graphical user services";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        RemainAfterExit = true;
+      };
+    };
     security.sudo.wheelNeedsPassword = false;
     environment.systemPackages = [ pkgs.jq ];
     virtualisation.memorySize = 2048;
@@ -49,6 +59,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("install -d -o test -g users -m 0700 /run/user/1000/pulse")
     machine.succeed(launch)
     machine.wait_until_succeeds(f"test -s {state}/ready", timeout=30)
+    machine.wait_until_succeeds("systemctl --user --machine=test@.host is-active --quiet graphical-session.target", timeout=30)
+    machine.wait_until_succeeds("systemctl --user --machine=test@.host is-active --quiet graphical-session-probe.service", timeout=30)
     original_pid = machine.succeed(f"cat {state}/fixture.pid").strip()
     root_pid = machine.succeed(f"cat {state}/session.pid").strip()
     machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{root_pid}/status) -eq 1000")
@@ -67,6 +79,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed(launch)
     machine.wait_until_succeeds("systemctl is-active --quiet wayland-session-supervisor-restore.service", timeout=30)
     machine.wait_until_succeeds(f"test -s {state}/outer-supervisor.json", timeout=30)
+    machine.wait_until_succeeds("systemctl --user --machine=test@.host is-active --quiet graphical-session.target", timeout=30)
+    machine.wait_until_succeeds("systemctl --user --machine=test@.host is-active --quiet graphical-session-probe.service", timeout=30)
     restored_pid = machine.succeed(f"cat {state}/fixture.pid").strip()
     assert restored_pid == original_pid
   '';

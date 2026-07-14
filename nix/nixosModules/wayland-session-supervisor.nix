@@ -142,6 +142,12 @@ let
       exec systemd-run --user --scope --collect \
         --unit=wayland-session-supervisor-${cfg.sessionName} \
         --property=Delegate=yes \
+        --property=BindsTo=graphical-session.target \
+        --property=Before=graphical-session.target \
+        --property=Wants=graphical-session-pre.target \
+        --property=After=graphical-session-pre.target \
+        --property=Wants=xdg-desktop-autostart.target \
+        --property=Before=xdg-desktop-autostart.target \
         ${lib.getExe authenticatedInner}
     '';
   };
