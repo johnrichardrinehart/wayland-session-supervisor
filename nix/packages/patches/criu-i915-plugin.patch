@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..615996532
+index 000000000..ae83e60e0
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,532 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -479,9 +479,47 @@ index 000000000..615996532
 +exact-address submission, syncobj/timeline, corruption, callback, and custom
 +engine results.
 +
-+`run-physical-suite.sh` reproduces these cases in one privileged run and, for
-+ABI 7, adds retained duplicate-`sync_file` restoration plus an external
-+`sync_file`-only holder refusal.
++### Physical KMS expansion
++
++ABI and private image version 8 add an explicitly bounded first physical-KMS
++stage. `DRM_IOCTL_I915_CRIU_FILE` records the primary/render node role, client
++capabilities, authentication state, and current DRM-master ownership. Dump and
++restore refuse pending or unread DRM events and DRM leases rather than dropping
++them. Restore opens the matching node, reacquires master only after the
++privileged restore phase has begun, reapplies the recorded client capabilities,
++and requires the resulting file state to match exactly.
++
++The same transaction enumerates file-owned framebuffer IDs and property-blob
++IDs. This first admission subset is one-plane linear XRGB8888 framebuffers
++backed by already captured local i915 shmem objects and bounded user property
++blobs. Restore recreates both through validated DRM/i915 constructors and
++atomically assigns their exact userspace-visible mode-object IDs; conflicts or
++incompatible display capabilities fail before resume. Multi-planar or tiled
++framebuffers, imported objects, leases, pending flips/events, and inaccessible
++blob graphs remain unsupported.
++
++The plugin records mutable atomic properties only for the active connector,
++CRTC, and planes, excluding immutable, legacy DPMS, and transient fence-pointer
++properties. It verifies every restored object/property ID, submits a full
++`DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET` transaction before
++i915 commit, commits the i915 restore transaction, and then issues the real
++atomic modeset before processes resume. An atomic failure is a restore failure;
++there is no partial-success path.
++
++`i915-kms-atomic.c` creates two deterministic dumb-buffer framebuffers, an exact
++mode blob, and an active atomic eDP pipeline while holding DRM master. After
++restore it requires the same master file description, blob/framebuffer IDs,
++scanout properties, and bit-identical mappings, then switches to the second
++restored framebuffer and consumes a real page-flip event. The matching
++`run-kms-criu.sh` must run from a text console with the graphical session
++stopped. ABI-8 implementation and warning-clean kernel/plugin/fixture builds are
++complete; physical pass evidence is intentionally not claimed until the
++matching kernel and plugin are booted and the suite runs successfully.
++
++`run-physical-suite.sh` reproduces all prior cases in one privileged run and,
++for ABI 8, adds the physical atomic-KMS case after the retained duplicate
++`sync_file` and external-holder cases. It must be launched from a text console
++with the graphical session stopped so the KMS fixture can acquire DRM master.
 +It creates a private mode-0700 evidence directory containing per-case logs,
 +kernel/boot/system/PCI/i915/CRIU/plugin/Niri metadata, and a machine-readable
 +verdict. When invoked through sudo, an exit trap returns that directory to the
@@ -565,10 +603,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..4807e6258
+index 000000000..f3850cf8d
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,201 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -577,7 +615,7 @@ index 000000000..4807e6258
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 7
++#define I915_CRIU_ABI_VERSION 8
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -597,6 +635,23 @@ index 000000000..4807e6258
 +#define I915_CRIU_SYNC_FILE_QUERY 1
 +#define I915_CRIU_SYNC_FILE_CREATE 2
 +#define I915_CRIU_SYNC_FILE_BINARY_SIGNALED (1u << 0)
++#define I915_CRIU_FILE_QUERY 1
++#define I915_CRIU_FILE_RESTORE 2
++#define I915_CRIU_FILE_PRIMARY (1u << 0)
++#define I915_CRIU_FILE_RENDER (1u << 1)
++#define I915_CRIU_FILE_AUTHENTICATED (1u << 2)
++#define I915_CRIU_FILE_MASTER (1u << 3)
++#define I915_CRIU_FILE_ATOMIC (1u << 4)
++#define I915_CRIU_FILE_UNIVERSAL_PLANES (1u << 5)
++#define I915_CRIU_FILE_ASPECT_RATIO (1u << 6)
++#define I915_CRIU_FILE_STEREO (1u << 7)
++#define I915_CRIU_FILE_WRITEBACK_CONNECTORS (1u << 8)
++#define I915_CRIU_FRAMEBUFFER_QUERY 1
++#define I915_CRIU_FRAMEBUFFER_CREATE 2
++#define I915_CRIU_FRAMEBUFFER_LINEAR (1u << 0)
++#define I915_CRIU_BLOB_QUERY 1
++#define I915_CRIU_BLOB_CREATE 2
++#define I915_CRIU_BLOB_READ 3
 +#define I915_CRIU_CONTEXT_QUERY_VM 1
 +#define I915_CRIU_CONTEXT_QUERY_CONTEXT 2
 +#define I915_CRIU_CONTEXT_CREATE_VM 3
@@ -671,6 +726,42 @@ index 000000000..4807e6258
 +	uint64_t reserved[4];
 +};
 +
++struct drm_i915_criu_file {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t flags;
++	uint32_t pad;
++	uint64_t reserved[4];
++};
++
++struct drm_i915_criu_framebuffer {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t id;
++	uint32_t flags;
++	uint64_t object_id;
++	uint32_t width;
++	uint32_t height;
++	uint32_t pixel_format;
++	uint32_t pitch;
++	uint32_t offset;
++	uint32_t pad;
++	uint64_t modifier;
++	uint64_t reserved[3];
++};
++
++struct drm_i915_criu_blob {
++	uint32_t version;
++	uint32_t op;
++	uint64_t cookie;
++	uint32_t id;
++	uint32_t length;
++	uint64_t data_ptr;
++	uint64_t reserved[4];
++};
++
 +struct drm_i915_criu_context {
 +	uint32_t version;
 +	uint32_t op;
@@ -709,14 +800,20 @@ index 000000000..4807e6258
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x42, struct drm_i915_criu_binding)
 +#define DRM_IOCTL_I915_CRIU_SYNC_FILE \
 +	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x43, struct drm_i915_criu_sync_file)
++#define DRM_IOCTL_I915_CRIU_FILE \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x44, struct drm_i915_criu_file)
++#define DRM_IOCTL_I915_CRIU_FRAMEBUFFER \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x45, struct drm_i915_criu_framebuffer)
++#define DRM_IOCTL_I915_CRIU_BLOB \
++	_IOWR(DRM_IOCTL_BASE, DRM_COMMAND_BASE + 0x46, struct drm_i915_criu_blob)
 +
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..62c51c541
+index 000000000..5cbcca291
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,1595 @@
+@@ -0,0 +1,2150 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -778,12 +875,12 @@ index 000000000..62c51c541
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..f63f34c
++index 0000000..0fd7f18
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1201 @@
++@@ -0,0 +1,1676 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 7. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 8. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-buf.h>
@@ -793,10 +890,17 @@ index 000000000..62c51c541
 ++#include <linux/ptrace.h>
 ++#include <linux/random.h>
 ++#include <linux/sched/task.h>
+++#include <linux/sizes.h>
 ++#include <linux/sync_file.h>
+++#include <linux/uaccess.h>
 ++
+++#include <drm/drm_auth.h>
 ++#include <drm/drm_file.h>
+++#include <drm/drm_framebuffer.h>
+++#include <drm/drm_fourcc.h>
 ++#include <drm/drm_gem.h>
+++#include <drm/drm_mode_config.h>
+++#include <drm/drm_property.h>
 ++#include <drm/drm_syncobj.h>
 ++
 ++#include "i915_criu.h"
@@ -805,11 +909,12 @@ index 000000000..62c51c541
 ++#include "gem/i915_gem_context.h"
 ++#include "gem/i915_gem_ioctls.h"
 ++#include "gem/i915_gem_object.h"
+++#include "display/intel_fb.h"
 ++#include "i915_request.h"
 ++#include "i915_vma.h"
 ++
-++#define I915_CRIU_MODE_NONE    0
-++#define I915_CRIU_MODE_DUMP    1
+++#define I915_CRIU_MODE_NONE 0
+++#define I915_CRIU_MODE_DUMP 1
 ++#define I915_CRIU_MODE_RESTORE 2
 ++
 ++static DEFINE_MUTEX(i915_criu_object_id_lock);
@@ -863,6 +968,26 @@ index 000000000..62c51c541
 ++	unsigned long index;
 ++	void *entry;
 ++
+++	xa_for_each(&fpriv->criu_restore_fbs, index, entry) {
+++		struct drm_framebuffer *fb = entry;
+++
+++		xa_erase(&fpriv->criu_restore_fbs, index);
+++		mutex_lock(&file->fbs_lock);
+++		if (!list_empty(&fb->filp_head))
+++			list_del_init(&fb->filp_head);
+++		mutex_unlock(&file->fbs_lock);
+++		drm_framebuffer_remove(fb);
+++	}
+++	xa_for_each(&fpriv->criu_restore_blobs, index, entry) {
+++		struct drm_property_blob *blob = entry;
+++
+++		xa_erase(&fpriv->criu_restore_blobs, index);
+++		mutex_lock(&file->minor->dev->mode_config.blob_lock);
+++		if (!list_empty(&blob->head_file))
+++			list_del_init(&blob->head_file);
+++		mutex_unlock(&file->minor->dev->mode_config.blob_lock);
+++		drm_property_blob_put(blob);
+++	}
 ++	xa_for_each(&fpriv->criu_restore_handles, index, entry) {
 ++		u32 handle = xa_to_value(entry);
 ++
@@ -884,7 +1009,8 @@ index 000000000..62c51c541
 ++		};
 ++
 ++		xa_erase(&fpriv->criu_restore_contexts, index);
-++		i915_gem_context_destroy_ioctl(file->minor->dev, &destroy, file);
+++		i915_gem_context_destroy_ioctl(file->minor->dev, &destroy,
+++					       file);
 ++	}
 ++	xa_for_each(&fpriv->criu_restore_vms, index, entry) {
 ++		struct drm_i915_gem_vm_control destroy = {
@@ -905,6 +1031,8 @@ index 000000000..62c51c541
 ++	xa_init(&fpriv->criu_restore_syncobjs);
 ++	xa_init(&fpriv->criu_restore_contexts);
 ++	xa_init(&fpriv->criu_restore_vms);
+++	xa_init(&fpriv->criu_restore_fbs);
+++	xa_init(&fpriv->criu_restore_blobs);
 ++}
 ++
 ++void i915_criu_file_fini(struct drm_file *file)
@@ -921,6 +1049,8 @@ index 000000000..62c51c541
 ++	xa_destroy(&fpriv->criu_restore_syncobjs);
 ++	xa_destroy(&fpriv->criu_restore_contexts);
 ++	xa_destroy(&fpriv->criu_restore_vms);
+++	xa_destroy(&fpriv->criu_restore_fbs);
+++	xa_destroy(&fpriv->criu_restore_blobs);
 ++}
 ++
 ++static u32 context_vm_id(struct drm_i915_file_private *fpriv,
@@ -955,7 +1085,8 @@ index 000000000..62c51c541
 ++	return flags;
 ++}
 ++
-++static u32 checkpoint_proto_context_flags(const struct i915_gem_proto_context *pc)
+++static u32
+++checkpoint_proto_context_flags(const struct i915_gem_proto_context *pc)
 ++{
 ++	return checkpoint_user_context_flags(pc->user_flags,
 ++					     pc->single_timeline);
@@ -1003,7 +1134,8 @@ index 000000000..62c51c541
 ++		return -EOPNOTSUPP;
 ++
 ++	engines = i915_gem_context_lock_engines(ctx);
-++	for_each_gem_engine(ce, engines, it) {
+++	for_each_gem_engine(ce, engines, it)
+++	{
 ++		if (!intel_context_pin_if_active(ce))
 ++			continue;
 ++		intel_context_unpin(ce);
@@ -1085,7 +1217,8 @@ index 000000000..62c51c541
 ++			    vma->size != vma->obj->base.size ||
 ++			    vma->gtt_view.type != I915_GTT_VIEW_NORMAL ||
 ++			    i915_vma_is_active(vma) ||
-++			    (flags & I915_VMA_BIND_MASK) != I915_VMA_LOCAL_BIND ||
+++			    (flags & I915_VMA_BIND_MASK) !=
+++				    I915_VMA_LOCAL_BIND ||
 ++			    flags & (I915_VMA_GLOBAL_BIND | I915_VMA_ERROR |
 ++				     I915_VMA_GGTT | I915_VMA_CAN_FENCE |
 ++				     I915_VMA_USERFAULT | I915_VMA_SCANOUT) ||
@@ -1234,7 +1367,8 @@ index 000000000..62c51c541
 ++			ret = -EPERM;
 ++			break;
 ++		}
-++		if (args->target_pid || fpriv->criu_mode != I915_CRIU_MODE_NONE) {
+++		if (args->target_pid ||
+++		    fpriv->criu_mode != I915_CRIU_MODE_NONE) {
 ++			ret = -EINVAL;
 ++			break;
 ++		}
@@ -1258,6 +1392,10 @@ index 000000000..62c51c541
 ++		xa_init(&fpriv->criu_restore_contexts);
 ++		xa_destroy(&fpriv->criu_restore_vms);
 ++		xa_init(&fpriv->criu_restore_vms);
+++		xa_destroy(&fpriv->criu_restore_fbs);
+++		xa_init(&fpriv->criu_restore_fbs);
+++		xa_destroy(&fpriv->criu_restore_blobs);
+++		xa_init(&fpriv->criu_restore_blobs);
 ++		fpriv->criu_mode = I915_CRIU_MODE_NONE;
 ++		fpriv->criu_cookie = 0;
 ++		break;
@@ -1314,7 +1452,8 @@ index 000000000..62c51c541
 ++		}
 ++
 ++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
-++		    !obj->base.handle_count || obj->base.handle_count > U32_MAX ||
+++		    !obj->base.handle_count ||
+++		    obj->base.handle_count > U32_MAX ||
 ++		    i915_gem_object_is_userptr(obj)) {
 ++			ret = -EOPNOTSUPP;
 ++			goto put_obj;
@@ -1340,8 +1479,10 @@ index 000000000..62c51c541
 ++		args->mmap_offset = mmap.offset;
 ++		args->mmap_type = I915_MMAP_OFFSET_WB;
 ++		args->handle_count = obj->base.handle_count;
-++		args->sharing_flags = obj->base.dma_buf ||
-++			obj->base.handle_count > 1 ? I915_CRIU_OBJECT_SHARED : 0;
+++		args->sharing_flags =
+++			obj->base.dma_buf || obj->base.handle_count > 1 ?
+++				I915_CRIU_OBJECT_SHARED :
+++				0;
 ++put_obj:
 ++		i915_gem_object_put(obj);
 ++	} else if (args->op == I915_CRIU_OBJECT_CREATE ||
@@ -1377,7 +1518,8 @@ index 000000000..62c51c541
 ++			goto delete_handle;
 ++		}
 ++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
-++		    i915_gem_object_is_userptr(obj) || obj->base.size != args->size) {
+++		    i915_gem_object_is_userptr(obj) ||
+++		    obj->base.size != args->size) {
 ++			ret = -EINVAL;
 ++			goto put_restore_obj;
 ++		}
@@ -1387,7 +1529,8 @@ index 000000000..62c51c541
 ++			ret = -EEXIST;
 ++		else {
 ++			obj->criu_id = args->object_id;
-++			if (atomic64_read(&i915_criu_next_object_id) < args->object_id)
+++			if (atomic64_read(&i915_criu_next_object_id) <
+++			    args->object_id)
 ++				atomic64_set(&i915_criu_next_object_id,
 ++					     args->object_id);
 ++		}
@@ -1504,7 +1647,8 @@ index 000000000..62c51c541
 ++		u32 handle;
 ++		void *old;
 ++
-++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
 ++		if (ret)
 ++			goto out;
 ++		if (!args->handle || !args->flags ||
@@ -1512,8 +1656,10 @@ index 000000000..62c51c541
 ++		    (args->flags != I915_CRIU_SYNCOBJ_EMPTY &&
 ++		     args->flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED &&
 ++		     args->flags != I915_CRIU_SYNCOBJ_TIMELINE) ||
-++		    (args->flags != I915_CRIU_SYNCOBJ_TIMELINE && args->point) ||
-++		    (args->flags == I915_CRIU_SYNCOBJ_TIMELINE && !args->point)) {
+++		    (args->flags != I915_CRIU_SYNCOBJ_TIMELINE &&
+++		     args->point) ||
+++		    (args->flags == I915_CRIU_SYNCOBJ_TIMELINE &&
+++		     !args->point)) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -1589,7 +1735,8 @@ index 000000000..62c51c541
 ++
 ++			ret = describe_syncobj(syncobj, &flags, &point);
 ++			if (!ret &&
-++			    (flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED || point))
+++			    (flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED ||
+++			     point))
 ++				ret = -EOPNOTSUPP;
 ++			if (!ret && matched_handle)
 ++				ret = -EXDEV;
@@ -1681,12 +1828,427 @@ index 000000000..62c51c541
 ++		if (!ret)
 ++			ret = query_sync_file(file, args);
 ++	} else if (args->op == I915_CRIU_SYNC_FILE_CREATE) {
-++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
 ++		if (!ret)
 ++			ret = create_sync_file(file, args);
 ++	} else {
 ++		ret = -EINVAL;
 ++	}
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
+++
+++static u32 checkpoint_file_flags(struct drm_file *file)
+++{
+++	u32 flags = 0;
+++
+++	if (drm_is_primary_client(file))
+++		flags |= I915_CRIU_FILE_PRIMARY;
+++	else if (drm_is_render_client(file))
+++		flags |= I915_CRIU_FILE_RENDER;
+++	if (file->authenticated)
+++		flags |= I915_CRIU_FILE_AUTHENTICATED;
+++	if (drm_is_current_master(file))
+++		flags |= I915_CRIU_FILE_MASTER;
+++	if (file->atomic)
+++		flags |= I915_CRIU_FILE_ATOMIC;
+++	if (file->universal_planes)
+++		flags |= I915_CRIU_FILE_UNIVERSAL_PLANES;
+++	if (file->aspect_ratio_allowed)
+++		flags |= I915_CRIU_FILE_ASPECT_RATIO;
+++	if (file->stereo_allowed)
+++		flags |= I915_CRIU_FILE_STEREO;
+++	if (file->writeback_connectors)
+++		flags |= I915_CRIU_FILE_WRITEBACK_CONNECTORS;
+++	return flags;
+++}
+++
+++static int validate_kms_file_state(struct drm_device *dev,
+++				   struct drm_file *file)
+++{
+++	unsigned long irqflags;
+++	bool has_events;
+++	bool has_leases = false;
+++
+++	spin_lock_irqsave(&dev->event_lock, irqflags);
+++	has_events = !list_empty(&file->pending_event_list) ||
+++		     !list_empty(&file->event_list);
+++	spin_unlock_irqrestore(&dev->event_lock, irqflags);
+++	if (has_events)
+++		return -EBUSY;
+++
+++	mutex_lock(&dev->mode_config.idr_mutex);
+++	if (file->master)
+++		has_leases = file->master->lessor ||
+++			     !list_empty(&file->master->lessees);
+++	mutex_unlock(&dev->mode_config.idr_mutex);
+++	return has_leases ? -EOPNOTSUPP : 0;
+++}
+++
+++int i915_criu_file_ioctl(struct drm_device *dev, void *data,
+++			 struct drm_file *file)
+++{
+++	const u32 supported =
+++		I915_CRIU_FILE_PRIMARY | I915_CRIU_FILE_RENDER |
+++		I915_CRIU_FILE_AUTHENTICATED | I915_CRIU_FILE_MASTER |
+++		I915_CRIU_FILE_ATOMIC | I915_CRIU_FILE_UNIVERSAL_PLANES |
+++		I915_CRIU_FILE_ASPECT_RATIO | I915_CRIU_FILE_STEREO |
+++		I915_CRIU_FILE_WRITEBACK_CONNECTORS;
+++	struct drm_i915_criu_file *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	u32 actual;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
+++	    args->flags & ~supported ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	actual = checkpoint_file_flags(file);
+++	if (args->op == I915_CRIU_FILE_QUERY) {
+++		if (args->flags) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (!ret)
+++			ret = validate_kms_file_state(dev, file);
+++		if (!ret)
+++			args->flags = actual;
+++	} else if (args->op == I915_CRIU_FILE_RESTORE) {
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
+++		if (!ret && args->flags != actual)
+++			ret = -EXDEV;
+++		if (!ret)
+++			ret = validate_kms_file_state(dev, file);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
+++
+++static int reassign_mode_object_id(struct drm_device *dev,
+++				   struct drm_mode_object *object, u32 target)
+++{
+++	int ret;
+++
+++	if (!target || target == U32_MAX)
+++		return -EINVAL;
+++	mutex_lock(&dev->mode_config.idr_mutex);
+++	if (object->id == target) {
+++		ret = 0;
+++		goto out;
+++	}
+++	if (idr_find(&dev->mode_config.object_idr, target)) {
+++		ret = -EEXIST;
+++		goto out;
+++	}
+++	ret = idr_alloc(&dev->mode_config.object_idr, object, target,
+++			target + 1, GFP_KERNEL);
+++	if (ret == target) {
+++		idr_remove(&dev->mode_config.object_idr, object->id);
+++		object->id = target;
+++		ret = 0;
+++	} else if (ret >= 0) {
+++		idr_remove(&dev->mode_config.object_idr, ret);
+++		ret = -ERANGE;
+++	}
+++out:
+++	mutex_unlock(&dev->mode_config.idr_mutex);
+++	return ret;
+++}
+++
+++static struct drm_framebuffer *next_file_framebuffer(struct drm_file *file,
+++						     u32 cursor)
+++{
+++	struct drm_framebuffer *fb;
+++	struct drm_framebuffer *found = NULL;
+++
+++	mutex_lock(&file->fbs_lock);
+++	list_for_each_entry(fb, &file->fbs, filp_head) {
+++		if (fb->base.id <= cursor ||
+++		    (found && found->base.id < fb->base.id))
+++			continue;
+++		found = fb;
+++	}
+++	if (found)
+++		drm_framebuffer_get(found);
+++	mutex_unlock(&file->fbs_lock);
+++	return found;
+++}
+++
+++int i915_criu_framebuffer_ioctl(struct drm_device *dev, void *data,
+++				struct drm_file *file)
+++{
+++	struct drm_i915_criu_framebuffer *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	struct drm_framebuffer *fb;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_FRAMEBUFFER_QUERY) {
+++		struct drm_i915_gem_object *obj;
+++
+++		if (args->flags || args->object_id || args->width ||
+++		    args->height || args->pixel_format || args->pitch ||
+++		    args->offset || args->modifier) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		fb = next_file_framebuffer(file, args->id);
+++		if (!fb) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		if (!fb->format || fb->format->num_planes != 1 || !fb->obj[0] ||
+++		    fb->modifier != DRM_FORMAT_MOD_LINEAR || fb->offsets[0]) {
+++			ret = -EOPNOTSUPP;
+++			goto put_fb;
+++		}
+++		obj = to_intel_bo(fb->obj[0]);
+++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
+++		    i915_gem_object_is_userptr(obj)) {
+++			ret = -EOPNOTSUPP;
+++			goto put_fb;
+++		}
+++		args->id = fb->base.id;
+++		args->flags = I915_CRIU_FRAMEBUFFER_LINEAR;
+++		args->object_id = checkpoint_object_id(obj);
+++		args->width = fb->width;
+++		args->height = fb->height;
+++		args->pixel_format = fb->format->format;
+++		args->pitch = fb->pitches[0];
+++		args->offset = fb->offsets[0];
+++		args->modifier = fb->modifier;
+++		ret = 0;
+++put_fb:
+++		drm_framebuffer_put(fb);
+++	} else if (args->op == I915_CRIU_FRAMEBUFFER_CREATE) {
+++		const struct drm_format_info *info;
+++		struct drm_mode_fb_cmd2 command = {
+++			.fb_id = 0,
+++			.width = args->width,
+++			.height = args->height,
+++			.pixel_format = args->pixel_format,
+++			.pitches = { args->pitch },
+++			.offsets = { args->offset },
+++			.modifier = { args->modifier },
+++		};
+++		void *entry;
+++		u32 handle;
+++
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		if (!drm_is_primary_client(file)) {
+++			ret = -EOPNOTSUPP;
+++			goto out;
+++		}
+++		if (!args->id || args->flags != I915_CRIU_FRAMEBUFFER_LINEAR ||
+++		    !args->object_id || !args->width || !args->height ||
+++		    args->pixel_format != DRM_FORMAT_XRGB8888 || !args->pitch ||
+++		    args->offset || args->modifier != DRM_FORMAT_MOD_LINEAR) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
+++		if (!entry) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		handle = xa_to_value(entry);
+++		command.handles[0] = handle;
+++		if (command.width < dev->mode_config.min_width ||
+++		    command.width > dev->mode_config.max_width ||
+++		    command.height < dev->mode_config.min_height ||
+++		    command.height > dev->mode_config.max_height ||
+++		    command.pitches[0] < command.width * 4) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		info = drm_get_format_info(dev, command.pixel_format,
+++					   command.modifier[0]);
+++		fb = intel_user_framebuffer_create(dev, file, info, &command);
+++		if (IS_ERR(fb)) {
+++			ret = PTR_ERR(fb);
+++			goto out;
+++		}
+++		ret = reassign_mode_object_id(dev, &fb->base, args->id);
+++		if (ret)
+++			goto put_created_fb;
+++		mutex_lock(&file->fbs_lock);
+++		list_add_tail(&fb->filp_head, &file->fbs);
+++		mutex_unlock(&file->fbs_lock);
+++		entry = xa_store(&fpriv->criu_restore_fbs, args->id, fb,
+++				 GFP_KERNEL);
+++		if (xa_is_err(entry) || entry) {
+++			mutex_lock(&file->fbs_lock);
+++			list_del_init(&fb->filp_head);
+++			mutex_unlock(&file->fbs_lock);
+++			ret = entry ? -EEXIST : xa_err(entry);
+++			goto put_created_fb;
+++		}
+++		ret = 0;
+++		goto out;
+++put_created_fb:
+++		drm_framebuffer_put(fb);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
+++	mutex_unlock(&fpriv->criu_lock);
+++	return ret;
+++}
+++
+++static struct drm_property_blob *
+++next_file_blob(struct drm_device *dev, struct drm_file *file, u32 cursor)
+++{
+++	struct drm_property_blob *blob;
+++	struct drm_property_blob *found = NULL;
+++
+++	mutex_lock(&dev->mode_config.blob_lock);
+++	list_for_each_entry(blob, &file->blobs, head_file) {
+++		if (blob->base.id <= cursor ||
+++		    (found && found->base.id < blob->base.id))
+++			continue;
+++		found = blob;
+++	}
+++	if (found)
+++		drm_property_blob_get(found);
+++	mutex_unlock(&dev->mode_config.blob_lock);
+++	return found;
+++}
+++
+++static struct drm_property_blob *file_blob_by_id(struct drm_device *dev,
+++						 struct drm_file *file, u32 id)
+++{
+++	struct drm_property_blob *blob;
+++	struct drm_property_blob *found = NULL;
+++
+++	mutex_lock(&dev->mode_config.blob_lock);
+++	list_for_each_entry(blob, &file->blobs, head_file) {
+++		if (blob->base.id != id)
+++			continue;
+++		found = drm_property_blob_get(blob);
+++		break;
+++	}
+++	mutex_unlock(&dev->mode_config.blob_lock);
+++	return found;
+++}
+++
+++int i915_criu_blob_ioctl(struct drm_device *dev, void *data,
+++			 struct drm_file *file)
+++{
+++	struct drm_i915_criu_blob *args = data;
+++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	struct drm_property_blob *blob;
+++	int ret;
+++
+++	if (args->version != I915_CRIU_ABI_VERSION ||
+++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++		return -EINVAL;
+++
+++	mutex_lock(&fpriv->criu_lock);
+++	if (args->op == I915_CRIU_BLOB_QUERY) {
+++		if (args->length || args->data_ptr) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		blob = next_file_blob(dev, file, args->id);
+++		if (!blob) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		args->id = blob->base.id;
+++		args->length = blob->length;
+++		drm_property_blob_put(blob);
+++		ret = 0;
+++	} else if (args->op == I915_CRIU_BLOB_READ) {
+++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
+++		if (ret)
+++			goto out;
+++		if (!args->id || !args->length || !args->data_ptr) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		blob = file_blob_by_id(dev, file, args->id);
+++		if (!blob) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		if (blob->length != args->length)
+++			ret = -EINVAL;
+++		else if (copy_to_user(u64_to_user_ptr(args->data_ptr),
+++				      blob->data, blob->length))
+++			ret = -EFAULT;
+++		else
+++			ret = 0;
+++		drm_property_blob_put(blob);
+++	} else if (args->op == I915_CRIU_BLOB_CREATE) {
+++		void *entry;
+++
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
+++		if (ret)
+++			goto out;
+++		if (!drm_is_primary_client(file)) {
+++			ret = -EOPNOTSUPP;
+++			goto out;
+++		}
+++		if (!args->id || !args->length || args->length > SZ_1M ||
+++		    !args->data_ptr) {
+++			ret = -EINVAL;
+++			goto out;
+++		}
+++		blob = drm_property_create_blob(dev, args->length, NULL);
+++		if (IS_ERR(blob)) {
+++			ret = PTR_ERR(blob);
+++			goto out;
+++		}
+++		if (copy_from_user(blob->data, u64_to_user_ptr(args->data_ptr),
+++				   args->length)) {
+++			ret = -EFAULT;
+++			goto put_created_blob;
+++		}
+++		ret = reassign_mode_object_id(dev, &blob->base, args->id);
+++		if (ret)
+++			goto put_created_blob;
+++		mutex_lock(&dev->mode_config.blob_lock);
+++		list_add_tail(&blob->head_file, &file->blobs);
+++		mutex_unlock(&dev->mode_config.blob_lock);
+++		entry = xa_store(&fpriv->criu_restore_blobs, args->id, blob,
+++				 GFP_KERNEL);
+++		if (xa_is_err(entry) || entry) {
+++			mutex_lock(&dev->mode_config.blob_lock);
+++			list_del_init(&blob->head_file);
+++			mutex_unlock(&dev->mode_config.blob_lock);
+++			ret = entry ? -EEXIST : xa_err(entry);
+++			goto put_created_blob;
+++		}
+++		ret = 0;
+++		goto out;
+++put_created_blob:
+++		drm_property_blob_put(blob);
+++	} else {
+++		ret = -EINVAL;
+++	}
+++out:
 ++	mutex_unlock(&fpriv->criu_lock);
 ++	return ret;
 ++}
@@ -1707,9 +2269,10 @@ index 000000000..62c51c541
 ++			    struct drm_file *file)
 ++{
 ++	const u32 supported_flags = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
-++		I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
-++		I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
-++		I915_CRIU_CONTEXT_PERSISTENCE;
+++				    I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
+++				    I915_CRIU_CONTEXT_BANNABLE |
+++				    I915_CRIU_CONTEXT_RECOVERABLE |
+++				    I915_CRIU_CONTEXT_PERSISTENCE;
 ++	struct drm_i915_criu_context *args = data;
 ++	struct drm_i915_file_private *fpriv = file->driver_priv;
 ++	unsigned long id;
@@ -1775,7 +2338,8 @@ index 000000000..62c51c541
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
-++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
 ++		if (ret)
 ++			goto out;
 ++		ret = i915_gem_vm_create_ioctl(dev, &create, file);
@@ -1796,8 +2360,10 @@ index 000000000..62c51c541
 ++		ret = 0;
 ++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_CONTEXT) {
 ++		struct drm_i915_gem_context_create_ext create = {
-++			.flags = args->flags & I915_CRIU_CONTEXT_SINGLE_TIMELINE ?
-++				 I915_CONTEXT_CREATE_FLAGS_SINGLE_TIMELINE : 0,
+++			.flags =
+++				args->flags & I915_CRIU_CONTEXT_SINGLE_TIMELINE ?
+++					I915_CONTEXT_CREATE_FLAGS_SINGLE_TIMELINE :
+++					0,
 ++		};
 ++		struct drm_i915_gem_context_destroy destroy;
 ++
@@ -1806,10 +2372,12 @@ index 000000000..62c51c541
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
-++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
 ++		if (ret)
 ++			goto out;
-++		if (args->vm_id && !xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
+++		if (args->vm_id &&
+++		    !xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
 ++			ret = -ENOENT;
 ++			goto out;
 ++		}
@@ -1821,28 +2389,31 @@ index 000000000..62c51c541
 ++			goto destroy_context;
 ++		}
 ++		if (!(args->flags & I915_CRIU_CONTEXT_RECOVERABLE)) {
-++			ret = restore_context_param(dev, file, args->id,
-++					    I915_CONTEXT_PARAM_RECOVERABLE, 0);
+++			ret = restore_context_param(
+++				dev, file, args->id,
+++				I915_CONTEXT_PARAM_RECOVERABLE, 0);
 ++			if (ret)
 ++				goto destroy_context;
 ++		}
-++		ret = restore_context_param(dev, file, args->id,
-++					    I915_CONTEXT_PARAM_BANNABLE,
-++					    !!(args->flags & I915_CRIU_CONTEXT_BANNABLE));
+++		ret = restore_context_param(
+++			dev, file, args->id, I915_CONTEXT_PARAM_BANNABLE,
+++			!!(args->flags & I915_CRIU_CONTEXT_BANNABLE));
+++		if (ret)
+++			goto destroy_context;
+++		ret = restore_context_param(
+++			dev, file, args->id, I915_CONTEXT_PARAM_PERSISTENCE,
+++			!!(args->flags & I915_CRIU_CONTEXT_PERSISTENCE));
+++		if (ret)
+++			goto destroy_context;
+++		ret = restore_context_param(
+++			dev, file, args->id,
+++			I915_CONTEXT_PARAM_NO_ERROR_CAPTURE,
+++			!!(args->flags & I915_CRIU_CONTEXT_NO_ERROR_CAPTURE));
 ++		if (ret)
 ++			goto destroy_context;
 ++		ret = restore_context_param(dev, file, args->id,
-++					    I915_CONTEXT_PARAM_PERSISTENCE,
-++					    !!(args->flags & I915_CRIU_CONTEXT_PERSISTENCE));
-++		if (ret)
-++			goto destroy_context;
-++		ret = restore_context_param(dev, file, args->id,
-++					    I915_CONTEXT_PARAM_NO_ERROR_CAPTURE,
-++					    !!(args->flags & I915_CRIU_CONTEXT_NO_ERROR_CAPTURE));
-++		if (ret)
-++			goto destroy_context;
-++		ret = restore_context_param(dev, file, args->id,
-++					    I915_CONTEXT_PARAM_PRIORITY, args->priority);
+++					    I915_CONTEXT_PARAM_PRIORITY,
+++					    args->priority);
 ++		if (ret)
 ++			goto destroy_context;
 ++		if (args->vm_id) {
@@ -1862,7 +2433,7 @@ index 000000000..62c51c541
 ++		goto out;
 ++
 ++destroy_context:
-++		destroy = (struct drm_i915_gem_context_destroy) {
+++		destroy = (struct drm_i915_gem_context_destroy){
 ++			.ctx_id = create.ctx_id,
 ++		};
 ++		i915_gem_context_destroy_ioctl(dev, &destroy, file);
@@ -1938,7 +2509,8 @@ index 000000000..62c51c541
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
-++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
+++		ret = check_session(fpriv, args->cookie,
+++				    I915_CRIU_MODE_RESTORE);
 ++		if (ret)
 ++			goto out;
 ++		if (!xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
@@ -1985,10 +2557,10 @@ index 000000000..62c51c541
 ++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..0bd5d93
++index 0000000..4329002
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
-+@@ -0,0 +1,26 @@
++@@ -0,0 +1,32 @@
 ++/* SPDX-License-Identifier: MIT */
 ++#ifndef __I915_CRIU_H__
 ++#define __I915_CRIU_H__
@@ -2009,6 +2581,12 @@ index 000000000..62c51c541
 ++			    struct drm_file *file);
 ++int i915_criu_sync_file_ioctl(struct drm_device *dev, void *data,
 ++			      struct drm_file *file);
+++int i915_criu_file_ioctl(struct drm_device *dev, void *data,
+++			 struct drm_file *file);
+++int i915_criu_framebuffer_ioctl(struct drm_device *dev, void *data,
+++				struct drm_file *file);
+++int i915_criu_blob_ioctl(struct drm_device *dev, void *data,
+++			 struct drm_file *file);
 ++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file);
 ++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
@@ -2016,7 +2594,7 @@ index 000000000..62c51c541
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..7d7a225 100644
++index d9be7a5..9e8a9e2 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -2035,7 +2613,7 @@ index 000000000..62c51c541
 + 	i915_drm_client_put(file_priv->client);
 + 
 + 	kfree_rcu(file_priv, rcu);
-+@@ -1849,6 +1851,13 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
++@@ -1849,6 +1851,16 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
 + 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
 + 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
@@ -2046,14 +2624,17 @@ index 000000000..62c51c541
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_CONTEXT, i915_criu_context_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_BINDING, i915_criu_binding_ioctl, DRM_RENDER_ALLOW),
 ++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNC_FILE, i915_criu_sync_file_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_FILE, i915_criu_file_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_FRAMEBUFFER, i915_criu_framebuffer_ioctl, DRM_RENDER_ALLOW),
+++	DRM_IOCTL_DEF_DRV(I915_CRIU_BLOB, i915_criu_blob_ioctl, DRM_RENDER_ALLOW),
 + };
 + 
 + /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
-+index c9cb8ee..5a69eaa 100644
++index c9cb8ee..7c48282 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
-+@@ -106,6 +106,16 @@ struct drm_i915_file_private {
++@@ -106,6 +106,18 @@ struct drm_i915_file_private {
 + 	unsigned long hang_timestamp;
 + 
 + 	struct i915_drm_client *client;
@@ -2064,6 +2645,8 @@ index 000000000..62c51c541
 ++	struct xarray criu_restore_syncobjs;
 ++	struct xarray criu_restore_contexts;
 ++	struct xarray criu_restore_vms;
+++	struct xarray criu_restore_fbs;
+++	struct xarray criu_restore_blobs;
 ++	u64 criu_cookie;
 ++	u32 criu_mode;
 ++	bool criu_context_touched;
@@ -2099,10 +2682,10 @@ index 000000000..62c51c541
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..15f404b 100644
++index 535cb68..3dd9860 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
-+@@ -485,6 +485,13 @@ typedef struct _drm_i915_sarea {
++@@ -485,6 +485,16 @@ typedef struct _drm_i915_sarea {
 + #define DRM_I915_GEM_VM_CREATE		0x3a
 + #define DRM_I915_GEM_VM_DESTROY		0x3b
 + #define DRM_I915_GEM_CREATE_EXT		0x3c
@@ -2113,10 +2696,13 @@ index 000000000..62c51c541
 ++#define DRM_I915_CRIU_CONTEXT		0x41
 ++#define DRM_I915_CRIU_BINDING		0x42
 ++#define DRM_I915_CRIU_SYNC_FILE		0x43
+++#define DRM_I915_CRIU_FILE		0x44
+++#define DRM_I915_CRIU_FRAMEBUFFER	0x45
+++#define DRM_I915_CRIU_BLOB		0x46
 + /* Must be kept compact -- no holes */
 + 
 + #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
-+@@ -518,6 +525,13 @@ typedef struct _drm_i915_sarea {
++@@ -518,6 +528,16 @@ typedef struct _drm_i915_sarea {
 + #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
 + #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
 + #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
@@ -2127,10 +2713,13 @@ index 000000000..62c51c541
 ++#define DRM_IOCTL_I915_CRIU_CONTEXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_CONTEXT, struct drm_i915_criu_context)
 ++#define DRM_IOCTL_I915_CRIU_BINDING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BINDING, struct drm_i915_criu_binding)
 ++#define DRM_IOCTL_I915_CRIU_SYNC_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNC_FILE, struct drm_i915_criu_sync_file)
+++#define DRM_IOCTL_I915_CRIU_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FILE, struct drm_i915_criu_file)
+++#define DRM_IOCTL_I915_CRIU_FRAMEBUFFER	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FRAMEBUFFER, struct drm_i915_criu_framebuffer)
+++#define DRM_IOCTL_I915_CRIU_BLOB	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BLOB, struct drm_i915_criu_blob)
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3920,169 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3926,233 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -2148,12 +2737,16 @@ index 000000000..62c51c541
 ++ * addresses. Version 6 accounts for retained i915-exported dma-buf descriptor
 ++ * references while refusing attachments and imported non-i915 objects.
 ++ * Version 7 preserves complete retained descriptor references for successful
-++ * signaled binary sync_file exports whose source syncobj is unambiguous. It
+++ * signaled binary sync_file exports whose source syncobj is unambiguous.
+++ * Version 8 preserves primary/render node role, client capabilities, current
+++ * DRM master ownership, single-plane linear framebuffers at exact IDs, and
+++ * user-created KMS property blobs at exact IDs. Atomic property state remains
+++ * a validated userspace image applied through generic DRM atomic ioctls. It
 ++ * still refuses userptr, protected content, custom engine maps, active
-++ * requests, special VMA views, syncobj file exports, unsupported sync_file
-++ * fence graphs, in-flight fences, and KMS state.
+++ * requests, special VMA views, leases, pending events, unsupported sync_file
+++ * fence graphs, and unsupported KMS resources.
 ++ */
-++#define I915_CRIU_ABI_VERSION 7
+++#define I915_CRIU_ABI_VERSION 8
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -2254,6 +2847,66 @@ index 000000000..62c51c541
 ++	__u64 reserved[4];
 ++};
 ++
+++#define I915_CRIU_FILE_QUERY   1
+++#define I915_CRIU_FILE_RESTORE 2
+++
+++#define I915_CRIU_FILE_PRIMARY (1u << 0)
+++#define I915_CRIU_FILE_RENDER  (1u << 1)
+++#define I915_CRIU_FILE_AUTHENTICATED        (1u << 2)
+++#define I915_CRIU_FILE_MASTER               (1u << 3)
+++#define I915_CRIU_FILE_ATOMIC               (1u << 4)
+++#define I915_CRIU_FILE_UNIVERSAL_PLANES     (1u << 5)
+++#define I915_CRIU_FILE_ASPECT_RATIO         (1u << 6)
+++#define I915_CRIU_FILE_STEREO               (1u << 7)
+++#define I915_CRIU_FILE_WRITEBACK_CONNECTORS (1u << 8)
+++
+++struct drm_i915_criu_file {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	__u32 flags;
+++	__u32 pad;
+++	__u64 reserved[4];
+++};
+++
+++#define I915_CRIU_FRAMEBUFFER_QUERY  1
+++#define I915_CRIU_FRAMEBUFFER_CREATE 2
+++
+++#define I915_CRIU_FRAMEBUFFER_LINEAR (1u << 0)
+++
+++struct drm_i915_criu_framebuffer {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	/* QUERY cursor/exact CREATE ID. Zero starts enumeration. */
+++	__u32 id;
+++	__u32 flags;
+++	__u64 object_id;
+++	__u32 width;
+++	__u32 height;
+++	__u32 pixel_format;
+++	__u32 pitch;
+++	__u32 offset;
+++	__u32 pad;
+++	__u64 modifier;
+++	__u64 reserved[3];
+++};
+++
+++#define I915_CRIU_BLOB_QUERY  1
+++#define I915_CRIU_BLOB_CREATE 2
+++#define I915_CRIU_BLOB_READ   3
+++
+++struct drm_i915_criu_blob {
+++	__u32 version;
+++	__u32 op;
+++	__u64 cookie;
+++	/* QUERY cursor/exact CREATE ID. Zero starts enumeration. */
+++	__u32 id;
+++	__u32 length;
+++	__u64 data_ptr;
+++	__u64 reserved[4];
+++};
+++
 ++#define I915_CRIU_CONTEXT_QUERY_VM       1
 ++#define I915_CRIU_CONTEXT_QUERY_CONTEXT  2
 ++#define I915_CRIU_CONTEXT_CREATE_VM      3
@@ -2301,10 +2954,9 @@ index 000000000..62c51c541
 + #define I915_PROTECTED_CONTENT_DEFAULT_SESSION 0xf
 + 
 +diff --git a/kernel/ptrace.c b/kernel/ptrace.c
-+index 130043b..0e0e1ff 100644
 +--- a/kernel/ptrace.c
 ++++ b/kernel/ptrace.c
-+@@ -364,6 +364,7 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
++@@ -364,6 +364,7 @@
 + 	task_unlock(task);
 + 	return !err;
 + }
@@ -2629,10 +3281,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..073deec74
+index 000000000..4791a50ca
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,1972 @@
+@@ -0,0 +1,2642 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -2651,7 +3303,9 @@ index 000000000..073deec74
 +#include <sys/sysmacros.h>
 +#include <unistd.h>
 +
++#include <drm_fourcc.h>
 +#include <xf86drm.h>
++#include <xf86drmMode.h>
 +
 +#include "criu-plugin.h"
 +#include "criu-log.h"
@@ -2660,18 +3314,22 @@ index 000000000..073deec74
 +#include "xmalloc.h"
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
-+#define I915_IMAGE_MAGIC UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION 7
-+#define I915_IMAGE_KIND_DRM_FILE 1
-+#define I915_IMAGE_KIND_DMABUF 2
-+#define I915_IMAGE_KIND_SYNC_FILE 3
-+#define I915_MAX_RESTORE_OBJECTS 256
-+#define I915_MAX_RESTORE_SYNCOBJS 256
-+#define I915_MAX_RESTORE_VMS 64
-+#define I915_MAX_RESTORE_CONTEXTS 64
-+#define I915_MAX_RESTORE_BINDINGS 1024
-+#define I915_MAX_RESTORE_FILES 32
-+#define I915_MAX_OBJECT_SIZE (UINT64_C(1) << 30)
++#define I915_IMAGE_MAGIC		UINT64_C(0x4939313543524955)
++#define I915_IMAGE_VERSION		8
++#define I915_IMAGE_KIND_DRM_FILE	1
++#define I915_IMAGE_KIND_DMABUF		2
++#define I915_IMAGE_KIND_SYNC_FILE	3
++#define I915_MAX_RESTORE_OBJECTS	256
++#define I915_MAX_RESTORE_SYNCOBJS	256
++#define I915_MAX_RESTORE_VMS		64
++#define I915_MAX_RESTORE_CONTEXTS	64
++#define I915_MAX_RESTORE_BINDINGS	1024
++#define I915_MAX_RESTORE_FRAMEBUFFERS	128
++#define I915_MAX_RESTORE_BLOBS		128
++#define I915_MAX_RESTORE_KMS_PROPERTIES 2048
++#define I915_MAX_RESTORE_FILES		32
++#define I915_MAX_OBJECT_SIZE		(UINT64_C(1) << 30)
++#define I915_MAX_BLOB_SIZE		(UINT32_C(1) << 20)
 +
 +struct i915_image_header {
 +	uint64_t magic;
@@ -2682,6 +3340,10 @@ index 000000000..073deec74
 +	uint32_t vm_count;
 +	uint32_t context_count;
 +	uint32_t binding_count;
++	uint32_t framebuffer_count;
++	uint32_t blob_count;
++	uint32_t kms_property_count;
++	uint32_t file_flags;
 +	uint32_t kind;
 +};
 +
@@ -2716,6 +3378,37 @@ index 000000000..073deec74
 +	uint64_t object_id;
 +	uint64_t address;
 +	uint64_t size;
++};
++
++struct i915_image_framebuffer {
++	uint32_t id;
++	uint32_t flags;
++	uint64_t object_id;
++	uint32_t width;
++	uint32_t height;
++	uint32_t pixel_format;
++	uint32_t pitch;
++	uint32_t offset;
++	uint32_t pad;
++	uint64_t modifier;
++};
++
++struct i915_image_blob {
++	uint32_t id;
++	uint32_t length;
++};
++
++struct dump_blob {
++	struct i915_image_blob image;
++	void *data;
++};
++
++struct i915_image_kms_property {
++	uint32_t object_id;
++	uint32_t object_type;
++	uint32_t property_id;
++	uint32_t reserved;
++	uint64_t value;
 +};
 +
 +struct i915_image_dmabuf {
@@ -2791,7 +3484,13 @@ index 000000000..073deec74
 +	int file_id;
 +	int fdstore_id;
 +	uint64_t cookie;
++	uint32_t file_flags;
 +	bool active;
++};
++
++struct restore_kms_property {
++	int file_id;
++	struct i915_image_kms_property image;
 +};
 +
 +struct prepared_file {
@@ -2813,6 +3512,9 @@ index 000000000..073deec74
 +static size_t restore_object_count;
 +static struct restore_file restore_files[I915_MAX_RESTORE_FILES];
 +static size_t restore_file_count;
++static struct restore_kms_property
++	restore_kms_properties[I915_MAX_RESTORE_KMS_PROPERTIES];
++static size_t restore_kms_property_count;
 +static struct prepared_file prepared_files[I915_MAX_RESTORE_FILES];
 +static size_t prepared_file_count;
 +
@@ -2833,12 +3535,67 @@ index 000000000..073deec74
 +	return match;
 +}
 +
++static int open_i915_primary(void)
++{
++	char path[64];
++
++	for (unsigned int index = 0; index < 64; index++) {
++		int fd;
++
++		snprintf(path, sizeof(path), "/dev/dri/card%u", index);
++		fd = open(path, O_RDWR | O_CLOEXEC);
++		if (fd < 0)
++			continue;
++		if (is_i915_fd(fd) && drmGetNodeTypeFromFd(fd) == DRM_NODE_PRIMARY)
++			return fd;
++		close(fd);
++	}
++	return -ENODEV;
++}
++
++static int configure_restore_file(int fd, uint32_t flags)
++{
++	const uint32_t node_flags = I915_CRIU_FILE_PRIMARY |
++				    I915_CRIU_FILE_RENDER;
++	int node_type = drmGetNodeTypeFromFd(fd);
++
++	if ((flags & node_flags) != I915_CRIU_FILE_PRIMARY &&
++	    (flags & node_flags) != I915_CRIU_FILE_RENDER)
++		return -EINVAL;
++	if ((flags & I915_CRIU_FILE_PRIMARY && node_type != DRM_NODE_PRIMARY) ||
++	    (flags & I915_CRIU_FILE_RENDER && node_type != DRM_NODE_RENDER))
++		return -EXDEV;
++	if (flags & I915_CRIU_FILE_PRIMARY) {
++		if (flags & I915_CRIU_FILE_MASTER && !drmIsMaster(fd) &&
++		    drmSetMaster(fd))
++			return -errno;
++		if (!(flags & I915_CRIU_FILE_MASTER) && drmIsMaster(fd))
++			return -EXDEV;
++	}
++	if (flags & I915_CRIU_FILE_STEREO &&
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_STEREO_3D, 1))
++		return -errno;
++	if (flags & I915_CRIU_FILE_UNIVERSAL_PLANES &&
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1))
++		return -errno;
++	if (flags & I915_CRIU_FILE_ATOMIC &&
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
++		return -errno;
++	if (flags & I915_CRIU_FILE_ASPECT_RATIO &&
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_ASPECT_RATIO, 1))
++		return -errno;
++	if (flags & I915_CRIU_FILE_WRITEBACK_CONNECTORS &&
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_WRITEBACK_CONNECTORS, 1))
++		return -errno;
++	return 0;
++}
++
 +static bool is_dmabuf_fd(int fd)
 +{
 +	struct statfs statfs;
 +
 +	return !fstatfs(fd, &statfs) &&
-+		(uint64_t)statfs.f_type == (uint64_t)DMA_BUF_MAGIC;
++	       (uint64_t)statfs.f_type == (uint64_t)DMA_BUF_MAGIC;
 +}
 +
 +static bool is_sync_file_fd(int fd)
@@ -2949,7 +3706,7 @@ index 000000000..073deec74
 +	ret = drmPrimeFDToHandle(fd, dmabuf_fd, &handle);
 +	if (ret)
 +		goto out;
-+	close_handle = (struct drm_gem_close) { .handle = handle };
++	close_handle = (struct drm_gem_close){ .handle = handle };
 +	ret = session_ioctl(fd, I915_CRIU_SESSION_DUMP_BEGIN,
 +			    checkpoint_pid, &cookie);
 +	if (ret)
@@ -2963,9 +3720,9 @@ index 000000000..073deec74
 +		ret = -EXDEV;
 +	else
 +		*object_id = query.object_id;
-+	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
-+				       I915_CRIU_SESSION_COMMIT,
-+			  0, &cookie) && !ret)
++	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT : I915_CRIU_SESSION_COMMIT,
++			  0, &cookie) &&
++	    !ret)
 +		ret = -EIO;
 +close_handle:
 +	ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
@@ -3044,7 +3801,7 @@ index 000000000..073deec74
 +	if (dump_relationship_count == I915_MAX_RESTORE_OBJECTS)
 +		return NULL;
 +	dump_relationships[dump_relationship_count] =
-+		(struct object_relationship) {
++		(struct object_relationship){
 +			.object_id = object_id,
 +			.verification_fd = -1,
 +		};
@@ -3148,7 +3905,7 @@ index 000000000..073deec74
 +			goto err;
 +		}
 +
-+		read_data = (struct drm_i915_criu_data) {
++		read_data = (struct drm_i915_criu_data){
 +			.version = I915_CRIU_ABI_VERSION,
 +			.op = I915_CRIU_DATA_READ,
 +			.cookie = cookie,
@@ -3205,7 +3962,7 @@ index 000000000..073deec74
 +			return -ENOMEM;
 +		}
 +		syncobjs = grown;
-+		syncobjs[count++] = (struct i915_image_syncobj) {
++		syncobjs[count++] = (struct i915_image_syncobj){
 +			.handle = query.handle,
 +			.flags = query.flags,
 +			.point = query.point,
@@ -3250,7 +4007,7 @@ index 000000000..073deec74
 +			return -ENOMEM;
 +		}
 +		states = grown;
-+		states[count++] = (struct i915_image_context) {
++		states[count++] = (struct i915_image_context){
 +			.id = query.id,
 +			.flags = query.flags,
 +			.vm_id = query.vm_id,
@@ -3306,7 +4063,7 @@ index 000000000..073deec74
 +				return -ENOMEM;
 +			}
 +			bindings = grown;
-+			bindings[count++] = (struct i915_image_binding) {
++			bindings[count++] = (struct i915_image_binding){
 +				.vm_id = query.vm_id,
 +				.flags = query.flags,
 +				.object_id = query.object_id,
@@ -3322,6 +4079,271 @@ index 000000000..073deec74
 +	return 0;
 +}
 +
++static int collect_dump_file_state(int fd, uint64_t cookie,
++				   uint32_t *file_flags)
++{
++	struct drm_i915_criu_file query = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_FILE_QUERY,
++		.cookie = cookie,
++	};
++
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &query) < 0)
++		return -errno;
++	*file_flags = query.flags;
++	return 0;
++}
++
++static int collect_dump_framebuffers(int fd, uint64_t cookie,
++				     struct i915_image_framebuffer **result,
++				     size_t *result_count)
++{
++	struct i915_image_framebuffer *framebuffers = NULL;
++	size_t count = 0;
++	u32 cursor = 0;
++
++	for (;;) {
++		struct drm_i915_criu_framebuffer query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_FRAMEBUFFER_QUERY,
++			.cookie = cookie,
++			.id = cursor,
++		};
++		struct i915_image_framebuffer *grown;
++
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FRAMEBUFFER, &query) < 0) {
++			if (errno == ENOENT)
++				break;
++			xfree(framebuffers);
++			return -errno;
++		}
++		if (count == I915_MAX_RESTORE_FRAMEBUFFERS || query.id <= cursor) {
++			xfree(framebuffers);
++			return -E2BIG;
++		}
++		grown = xrealloc(framebuffers,
++				 (count + 1) * sizeof(*framebuffers));
++		if (!grown) {
++			xfree(framebuffers);
++			return -ENOMEM;
++		}
++		framebuffers = grown;
++		framebuffers[count++] = (struct i915_image_framebuffer){
++			.id = query.id,
++			.flags = query.flags,
++			.object_id = query.object_id,
++			.width = query.width,
++			.height = query.height,
++			.pixel_format = query.pixel_format,
++			.pitch = query.pitch,
++			.offset = query.offset,
++			.modifier = query.modifier,
++		};
++		cursor = query.id;
++	}
++	*result = framebuffers;
++	*result_count = count;
++	return 0;
++}
++
++static void free_dump_blobs(struct dump_blob *blobs, size_t count)
++{
++	for (size_t i = 0; i < count; i++)
++		xfree(blobs[i].data);
++	xfree(blobs);
++}
++
++static int collect_dump_blobs(int fd, uint64_t cookie,
++			      struct dump_blob **result, size_t *result_count)
++{
++	struct dump_blob *blobs = NULL;
++	size_t count = 0;
++	u32 cursor = 0;
++
++	for (;;) {
++		struct drm_i915_criu_blob query = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_BLOB_QUERY,
++			.cookie = cookie,
++			.id = cursor,
++		};
++		struct dump_blob *grown;
++		void *contents;
++
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_BLOB, &query) < 0) {
++			if (errno == ENOENT)
++				break;
++			free_dump_blobs(blobs, count);
++			return -errno;
++		}
++		if (count == I915_MAX_RESTORE_BLOBS || query.id <= cursor ||
++		    !query.length || query.length > I915_MAX_BLOB_SIZE) {
++			free_dump_blobs(blobs, count);
++			return -E2BIG;
++		}
++		contents = xmalloc(query.length);
++		if (!contents) {
++			free_dump_blobs(blobs, count);
++			return -ENOMEM;
++		}
++		query.op = I915_CRIU_BLOB_READ;
++		query.data_ptr = (uintptr_t)contents;
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_BLOB, &query) < 0) {
++			int ret = -errno;
++
++			xfree(contents);
++			free_dump_blobs(blobs, count);
++			return ret;
++		}
++		grown = xrealloc(blobs, (count + 1) * sizeof(*blobs));
++		if (!grown) {
++			xfree(contents);
++			free_dump_blobs(blobs, count);
++			return -ENOMEM;
++		}
++		blobs = grown;
++		blobs[count++] = (struct dump_blob){
++			.image = {
++				.id = query.id,
++				.length = query.length,
++			},
++			.data = contents,
++		};
++		cursor = query.id;
++	}
++	*result = blobs;
++	*result_count = count;
++	return 0;
++}
++
++static bool ephemeral_atomic_property(const char *name)
++{
++	return !strcmp(name, "DPMS") || !strcmp(name, "FB_DAMAGE_CLIPS") ||
++	       !strcmp(name, "IN_FENCE_FD") || !strcmp(name, "OUT_FENCE_PTR") ||
++	       !strcmp(name, "WRITEBACK_OUT_FENCE_PTR");
++}
++
++static bool property_marks_active(const char *name, uint64_t value)
++{
++	return value && (!strcmp(name, "CRTC_ID") || !strcmp(name, "FB_ID") ||
++			 !strcmp(name, "ACTIVE") || !strcmp(name, "MODE_ID"));
++}
++
++static int collect_active_object_properties(
++	int fd, uint32_t object_id, uint32_t object_type,
++	struct i915_image_kms_property **properties, size_t *count)
++{
++	drmModeObjectPropertiesPtr object;
++	bool active = false;
++	int ret = 0;
++
++	object = drmModeObjectGetProperties(fd, object_id, object_type);
++	if (!object)
++		return -errno;
++	for (uint32_t i = 0; i < object->count_props; i++) {
++		drmModePropertyPtr property = drmModeGetProperty(fd,
++								 object->props[i]);
++
++		if (!property) {
++			ret = -errno;
++			goto out;
++		}
++		if (property_marks_active(property->name,
++					  object->prop_values[i]))
++			active = true;
++		drmModeFreeProperty(property);
++	}
++	if (!active)
++		goto out;
++	for (uint32_t i = 0; i < object->count_props; i++) {
++		drmModePropertyPtr property = drmModeGetProperty(fd,
++								 object->props[i]);
++		struct i915_image_kms_property *grown;
++
++		if (!property) {
++			ret = -errno;
++			goto out;
++		}
++		if (property->flags & DRM_MODE_PROP_IMMUTABLE ||
++		    ephemeral_atomic_property(property->name)) {
++			drmModeFreeProperty(property);
++			continue;
++		}
++		if (*count == I915_MAX_RESTORE_KMS_PROPERTIES) {
++			drmModeFreeProperty(property);
++			ret = -E2BIG;
++			goto out;
++		}
++		grown = xrealloc(*properties,
++				 (*count + 1) * sizeof(**properties));
++		if (!grown) {
++			drmModeFreeProperty(property);
++			ret = -ENOMEM;
++			goto out;
++		}
++		*properties = grown;
++		(*properties)[(*count)++] =
++			(struct i915_image_kms_property){
++				.object_id = object_id,
++				.object_type = object_type,
++				.property_id = object->props[i],
++				.value = object->prop_values[i],
++			};
++		drmModeFreeProperty(property);
++	}
++out:
++	drmModeFreeObjectProperties(object);
++	return ret;
++}
++
++static int collect_dump_kms_properties(
++	int fd, uint32_t file_flags,
++	struct i915_image_kms_property **result, size_t *result_count)
++{
++	struct i915_image_kms_property *properties = NULL;
++	drmModePlaneResPtr planes = NULL;
++	drmModeResPtr resources = NULL;
++	size_t count = 0;
++	int ret = 0;
++
++	if (!(file_flags & I915_CRIU_FILE_PRIMARY))
++		goto out;
++	if (!(file_flags & I915_CRIU_FILE_MASTER))
++		goto out;
++	if (!(file_flags & I915_CRIU_FILE_ATOMIC))
++		return -EOPNOTSUPP;
++	resources = drmModeGetResources(fd);
++	planes = drmModeGetPlaneResources(fd);
++	if (!resources || !planes) {
++		ret = -errno;
++		goto out;
++	}
++	for (int i = 0; !ret && i < resources->count_connectors; i++)
++		ret = collect_active_object_properties(
++			fd, resources->connectors[i], DRM_MODE_OBJECT_CONNECTOR,
++			&properties, &count);
++	for (int i = 0; !ret && i < resources->count_crtcs; i++)
++		ret = collect_active_object_properties(
++			fd, resources->crtcs[i], DRM_MODE_OBJECT_CRTC,
++			&properties, &count);
++	for (uint32_t i = 0; !ret && i < planes->count_planes; i++)
++		ret = collect_active_object_properties(
++			fd, planes->planes[i], DRM_MODE_OBJECT_PLANE,
++			&properties, &count);
++out:
++	if (resources)
++		drmModeFreeResources(resources);
++	if (planes)
++		drmModeFreePlaneResources(planes);
++	if (ret) {
++		xfree(properties);
++		return ret;
++	}
++	*result = properties;
++	*result_count = count;
++	return 0;
++}
++
 +static int write_image(int file_id, struct dump_object *objects, size_t count,
 +		       const struct i915_image_syncobj *syncobjs,
 +		       size_t syncobj_count,
@@ -3329,7 +4351,12 @@ index 000000000..073deec74
 +		       const struct i915_image_context *contexts,
 +		       size_t context_count,
 +		       const struct i915_image_binding *bindings,
-+		       size_t binding_count)
++		       size_t binding_count,
++		       const struct i915_image_framebuffer *framebuffers,
++		       size_t framebuffer_count,
++		       const struct dump_blob *blobs, size_t blob_count,
++		       const struct i915_image_kms_property *kms_properties,
++		       size_t kms_property_count, uint32_t file_flags)
 +{
 +	struct i915_image_header header = {
 +		.magic = I915_IMAGE_MAGIC,
@@ -3340,6 +4367,10 @@ index 000000000..073deec74
 +		.vm_count = vm_count,
 +		.context_count = context_count,
 +		.binding_count = binding_count,
++		.framebuffer_count = framebuffer_count,
++		.blob_count = blob_count,
++		.kms_property_count = kms_property_count,
++		.file_flags = file_flags,
 +		.kind = I915_IMAGE_KIND_DRM_FILE,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
@@ -3364,6 +4395,18 @@ index 000000000..073deec74
 +	if (!ret && binding_count)
 +		ret = write_all(fd, bindings,
 +				binding_count * sizeof(*bindings));
++	if (!ret && framebuffer_count)
++		ret = write_all(fd, framebuffers,
++				framebuffer_count * sizeof(*framebuffers));
++	for (size_t i = 0; !ret && i < blob_count; i++) {
++		ret = write_all(fd, &blobs[i].image, sizeof(blobs[i].image));
++		if (!ret)
++			ret = write_all(fd, blobs[i].data,
++					blobs[i].image.length);
++	}
++	if (!ret && kms_property_count)
++		ret = write_all(fd, kms_properties,
++				kms_property_count * sizeof(*kms_properties));
 +	if (close(fd) && !ret)
 +		ret = -errno;
 +	return ret;
@@ -3373,7 +4416,7 @@ index 000000000..073deec74
 +{
 +	if (stage == CR_PLUGIN_STAGE__RESTORE &&
 +	    !check_and_remove_inventory_plugin(CR_PLUGIN_DESC.name,
-+				       strlen(CR_PLUGIN_DESC.name)))
++					       strlen(CR_PLUGIN_DESC.name)))
 +		return 0;
 +
 +	checkpoint_pid = -1;
@@ -3384,6 +4427,7 @@ index 000000000..073deec74
 +	dump_drm_file_count = 0;
 +	restore_object_count = 0;
 +	restore_file_count = 0;
++	restore_kms_property_count = 0;
 +	prepared_file_count = 0;
 +	return 0;
 +}
@@ -3457,7 +4501,7 @@ index 000000000..073deec74
 +	return 1;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_ANON_DEVICE_VMA,
-+			 i915_plugin_handle_anon_device_vma)
++			i915_plugin_handle_anon_device_vma)
 +
 +int i915_plugin_handle_device_vma(int fd, const struct stat *st)
 +{
@@ -3473,7 +4517,7 @@ index 000000000..073deec74
 +	return 0;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_DEVICE_VMA,
-+			 i915_plugin_handle_device_vma)
++			i915_plugin_handle_device_vma)
 +
 +static int record_dump_dmabuf_file(int file_id, uint64_t object_id)
 +{
@@ -3490,7 +4534,7 @@ index 000000000..073deec74
 +	if (dump_dmabuf_file_count == I915_MAX_RESTORE_FILES)
 +		return -E2BIG;
 +	dump_dmabuf_files[dump_dmabuf_file_count++] =
-+		(struct dump_dmabuf_file) {
++		(struct dump_dmabuf_file){
 +			.file_id = file_id,
 +			.object_id = object_id,
 +			.fd_count = 1,
@@ -3514,7 +4558,7 @@ index 000000000..073deec74
 +	if (dump_sync_file_count == I915_MAX_RESTORE_FILES)
 +		return -E2BIG;
 +	file = &dump_sync_files[dump_sync_file_count++];
-+	*file = (struct dump_sync_file) {
++	*file = (struct dump_sync_file){
 +		.file_id = file_id,
 +		.retained_fd = dup(fd),
 +		.fd_count = 1,
@@ -3532,7 +4576,7 @@ index 000000000..073deec74
 +	}
 +	if (dump_drm_file_count == I915_MAX_RESTORE_FILES)
 +		return -E2BIG;
-+	dump_drm_files[dump_drm_file_count] = (struct dump_drm_file) {
++	dump_drm_files[dump_drm_file_count] = (struct dump_drm_file){
 +		.file_id = file_id,
 +		.retained_fd = dup(fd),
 +	};
@@ -3560,7 +4604,7 @@ index 000000000..073deec74
 +	return record_dump_dmabuf_file(id, object_id);
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__HANDLE_EXT_FILE_REFERENCE,
-+			 i915_plugin_handle_ext_file_reference)
++			i915_plugin_handle_ext_file_reference)
 +
 +int i915_plugin_dump_file(int fd, int id)
 +{
@@ -3569,11 +4613,18 @@ index 000000000..073deec74
 +	struct i915_image_context *vms = NULL;
 +	struct i915_image_context *contexts = NULL;
 +	struct i915_image_binding *bindings = NULL;
++	struct i915_image_framebuffer *framebuffers = NULL;
++	struct dump_blob *blobs = NULL;
++	struct i915_image_kms_property *kms_properties = NULL;
 +	size_t count = 0;
 +	size_t syncobj_count = 0;
 +	size_t vm_count = 0;
 +	size_t context_count = 0;
 +	size_t binding_count = 0;
++	size_t framebuffer_count = 0;
++	size_t blob_count = 0;
++	size_t kms_property_count = 0;
++	uint32_t file_flags = 0;
 +	uint64_t cookie = 0;
 +	int ret;
 +
@@ -3606,7 +4657,9 @@ index 000000000..073deec74
 +			    checkpoint_pid, &cookie);
 +	if (ret)
 +		return ret;
-+	ret = collect_dump_objects(fd, cookie, &objects, &count);
++	ret = collect_dump_file_state(fd, cookie, &file_flags);
++	if (!ret)
++		ret = collect_dump_objects(fd, cookie, &objects, &count);
 +	if (!ret)
 +		ret = collect_dump_syncobjs(fd, cookie, &syncobjs,
 +					    &syncobj_count);
@@ -3624,18 +4677,32 @@ index 000000000..073deec74
 +		ret = collect_dump_bindings(fd, cookie, vms, vm_count,
 +					    &bindings, &binding_count);
 +	if (!ret)
++		ret = collect_dump_framebuffers(fd, cookie, &framebuffers,
++						&framebuffer_count);
++	if (!ret)
++		ret = collect_dump_blobs(fd, cookie, &blobs, &blob_count);
++	if (!ret)
++		ret = collect_dump_kms_properties(fd, file_flags,
++						  &kms_properties,
++						  &kms_property_count);
++	if (!ret)
 +		ret = write_image(id, objects, count, syncobjs, syncobj_count,
 +				  vms, vm_count, contexts, context_count,
-+				  bindings, binding_count);
-+	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT :
-+				       I915_CRIU_SESSION_COMMIT,
-+			  0, &cookie) && !ret)
++				  bindings, binding_count, framebuffers,
++				  framebuffer_count, blobs, blob_count,
++				  kms_properties, kms_property_count, file_flags);
++	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT : I915_CRIU_SESSION_COMMIT,
++			  0, &cookie) &&
++	    !ret)
 +		ret = -EIO;
 +	free_dump_objects(objects, count);
 +	xfree(syncobjs);
 +	xfree(vms);
 +	xfree(contexts);
 +	xfree(bindings);
++	xfree(framebuffers);
++	free_dump_blobs(blobs, blob_count);
++	xfree(kms_properties);
 +	if (!ret)
 +		ret = record_dump_drm_file(id, fd);
 +	return ret;
@@ -3675,7 +4742,8 @@ index 000000000..073deec74
 +	if (session_ioctl(relationship->verification_fd,
 +			  ret ? I915_CRIU_SESSION_ABORT :
 +				I915_CRIU_SESSION_COMMIT,
-+			  0, &cookie) && !ret)
++			  0, &cookie) &&
++	    !ret)
 +		ret = -EIO;
 +out:
 +	close(relationship->verification_fd);
@@ -3780,7 +4848,8 @@ index 000000000..073deec74
 +		if (session_ioctl(drm->retained_fd,
 +				  ret ? I915_CRIU_SESSION_ABORT :
 +					I915_CRIU_SESSION_COMMIT,
-+				  0, &cookie) && !ret)
++				  0, &cookie) &&
++		    !ret)
 +			ret = -EIO;
 +		if (ret == -EXDEV)
 +			continue;
@@ -3816,7 +4885,8 @@ index 000000000..073deec74
 +		}
 +		if (refresh_dump_relationship(relationship)) {
 +			pr_err("failed final i915 relationship query for object %#" PRIx64
-+			       "\n", relationship->object_id);
++			       "\n",
++			       relationship->object_id);
 +			return -EXDEV;
 +		}
 +		if (relationship->seen_handles != relationship->expected_handles) {
@@ -3837,8 +4907,8 @@ index 000000000..073deec74
 +		}
 +		if (expected_dma_buf_refcount &&
 +		    expected_dma_buf_refcount !=
-+			1 + (uint64_t)relationship->expected_handles +
-+			relationship->seen_dma_buf_fds) {
++			    1 + (uint64_t)relationship->expected_handles +
++				    relationship->seen_dma_buf_fds) {
 +			pr_err("i915 object %#" PRIx64
 +			       " has %u captured dma-buf fds but refcount %u is not complete\n",
 +			       relationship->object_id,
@@ -3873,7 +4943,7 @@ index 000000000..073deec74
 +	return 0;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__FINALIZE_DEVICES,
-+			 i915_plugin_finalize_devices)
++			i915_plugin_finalize_devices)
 +
 +static int validate_image_object(const struct i915_image_object *image)
 +{
@@ -3895,7 +4965,7 @@ index 000000000..073deec74
 +			    restore_objects[i].handle_count != image->handle_count ||
 +			    restore_objects[i].sharing_flags != image->sharing_flags ||
 +			    restore_objects[i].dma_buf_refcount !=
-+				image->dma_buf_refcount)
++				    image->dma_buf_refcount)
 +				return -EINVAL;
 +			return 0;
 +		}
@@ -3936,7 +5006,7 @@ index 000000000..073deec74
 +		if (existing->prime_fdstore_id < 0)
 +			return -EINVAL;
 +		object_fd = existing->transient_fd >= 0 ? existing->transient_fd :
-+			criu_plugin_fdstore_get(existing->fdstore_id);
++							  criu_plugin_fdstore_get(existing->fdstore_id);
 +		prime_fd = criu_plugin_fdstore_get(existing->prime_fdstore_id);
 +		if (object_fd < 0 || prime_fd < 0) {
 +			if (existing->transient_fd < 0 && object_fd >= 0)
@@ -3952,7 +5022,7 @@ index 000000000..073deec74
 +			close(prime_fd);
 +			return -ENOMEM;
 +		}
-+		pread = (struct drm_i915_gem_pread) {
++		pread = (struct drm_i915_gem_pread){
 +			.handle = existing->handle,
 +			.size = image->size,
 +			.data_ptr = (uintptr_t)verify,
@@ -3986,7 +5056,7 @@ index 000000000..073deec74
 +	if (ioctl(fd, DRM_IOCTL_I915_CRIU_OBJECT, &create) < 0)
 +		return -errno;
 +
-+	write_data = (struct drm_i915_criu_data) {
++	write_data = (struct drm_i915_criu_data){
 +		.version = I915_CRIU_ABI_VERSION,
 +		.op = I915_CRIU_DATA_WRITE,
 +		.cookie = cookie,
@@ -3997,14 +5067,14 @@ index 000000000..073deec74
 +	if (ioctl(fd, DRM_IOCTL_I915_CRIU_DATA, &write_data) < 0)
 +		return -errno;
 +
-+	mmap_offset = (struct drm_i915_gem_mmap_offset) {
++	mmap_offset = (struct drm_i915_gem_mmap_offset){
 +		.handle = create.handle,
 +		.flags = image->mmap_type,
 +	};
 +	if (ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mmap_offset) < 0)
 +		return -errno;
 +
-+	restore_objects[restore_object_count] = (struct restore_object) {
++	restore_objects[restore_object_count] = (struct restore_object){
 +		.object_id = image->object_id,
 +		.old_mmap_offset = image->mmap_offset,
 +		.new_mmap_offset = mmap_offset.offset,
@@ -4040,8 +5110,8 @@ index 000000000..073deec74
 +			   uint32_t previous_handle)
 +{
 +	const uint32_t supported = I915_CRIU_SYNCOBJ_EMPTY |
-+		I915_CRIU_SYNCOBJ_BINARY_SIGNALED |
-+		I915_CRIU_SYNCOBJ_TIMELINE;
++				   I915_CRIU_SYNCOBJ_BINARY_SIGNALED |
++				   I915_CRIU_SYNCOBJ_TIMELINE;
 +	struct drm_i915_criu_syncobj create = {
 +		.version = I915_CRIU_ABI_VERSION,
 +		.op = I915_CRIU_SYNCOBJ_CREATE,
@@ -4079,9 +5149,9 @@ index 000000000..073deec74
 +				 uint32_t op, uint32_t previous_id)
 +{
 +	const uint32_t supported = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
-+		I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
-+		I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
-+		I915_CRIU_CONTEXT_PERSISTENCE;
++				   I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
++				   I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
++				   I915_CRIU_CONTEXT_PERSISTENCE;
 +	struct drm_i915_criu_context create = {
 +		.version = I915_CRIU_ABI_VERSION,
 +		.op = op,
@@ -4142,10 +5212,79 @@ index 000000000..073deec74
 +	return 0;
 +}
 +
++static int restore_framebuffer(int fd, uint64_t cookie,
++			       const struct i915_image_framebuffer *image,
++			       uint32_t previous_id)
++{
++	struct drm_i915_criu_framebuffer create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_FRAMEBUFFER_CREATE,
++		.cookie = cookie,
++		.id = image->id,
++		.flags = image->flags,
++		.object_id = image->object_id,
++		.width = image->width,
++		.height = image->height,
++		.pixel_format = image->pixel_format,
++		.pitch = image->pitch,
++		.offset = image->offset,
++		.modifier = image->modifier,
++	};
++
++	if (!image->id || image->id <= previous_id ||
++	    image->flags != I915_CRIU_FRAMEBUFFER_LINEAR ||
++	    !image->object_id || !image->width || !image->height ||
++	    image->pixel_format != DRM_FORMAT_XRGB8888 || !image->pitch ||
++	    image->offset || image->pad || image->modifier != DRM_FORMAT_MOD_LINEAR)
++		return -EINVAL;
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_FRAMEBUFFER, &create) < 0)
++		return -errno;
++	return 0;
++}
++
++static int restore_blob(int fd, uint64_t cookie,
++			const struct i915_image_blob *image,
++			const void *contents, uint32_t previous_id)
++{
++	struct drm_i915_criu_blob create = {
++		.version = I915_CRIU_ABI_VERSION,
++		.op = I915_CRIU_BLOB_CREATE,
++		.cookie = cookie,
++		.id = image->id,
++		.length = image->length,
++		.data_ptr = (uintptr_t)contents,
++	};
++
++	if (!image->id || image->id <= previous_id || !image->length ||
++	    image->length > I915_MAX_BLOB_SIZE)
++		return -EINVAL;
++	if (ioctl(fd, DRM_IOCTL_I915_CRIU_BLOB, &create) < 0)
++		return -errno;
++	return 0;
++}
++
++static int remember_kms_property(int file_id,
++				 const struct i915_image_kms_property *image)
++{
++	if (!image->object_id || !image->property_id || image->reserved ||
++	    (image->object_type != DRM_MODE_OBJECT_CONNECTOR &&
++	     image->object_type != DRM_MODE_OBJECT_CRTC &&
++	     image->object_type != DRM_MODE_OBJECT_PLANE) ||
++	    restore_kms_property_count == I915_MAX_RESTORE_KMS_PROPERTIES)
++		return -EINVAL;
++	restore_kms_properties[restore_kms_property_count++] =
++		(struct restore_kms_property){
++			.file_id = file_id,
++			.image = *image,
++		};
++	return 0;
++}
++
 +static int restore_file_image(int id)
 +{
 +	struct i915_image_header header;
 +	struct restore_file *restore_file;
++	size_t kms_property_base = restore_kms_property_count;
 +	uint64_t cookie = 0;
 +	int image;
 +	int fd;
@@ -4162,15 +5301,29 @@ index 000000000..073deec74
 +	    header.vm_count > I915_MAX_RESTORE_VMS ||
 +	    header.context_count > I915_MAX_RESTORE_CONTEXTS ||
 +	    header.binding_count > I915_MAX_RESTORE_BINDINGS ||
++	    header.framebuffer_count > I915_MAX_RESTORE_FRAMEBUFFERS ||
++	    header.blob_count > I915_MAX_RESTORE_BLOBS ||
++	    header.kms_property_count > I915_MAX_RESTORE_KMS_PROPERTIES ||
++	    !(header.file_flags & (I915_CRIU_FILE_PRIMARY |
++				   I915_CRIU_FILE_RENDER)) ||
 +	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
 +
-+	fd = open(render_node(), O_RDWR | O_CLOEXEC);
++	if (header.file_flags & I915_CRIU_FILE_PRIMARY)
++		fd = open_i915_primary();
++	else
++		fd = open(render_node(), O_RDWR | O_CLOEXEC);
 +	if (fd < 0) {
 +		close(image);
-+		return -errno;
++		return fd == -ENODEV ? fd : -errno;
++	}
++	ret = configure_restore_file(fd, header.file_flags);
++	if (ret) {
++		close(image);
++		close(fd);
++		return ret;
 +	}
 +	if (restore_file_count == I915_MAX_RESTORE_FILES) {
 +		close(image);
@@ -4179,6 +5332,17 @@ index 000000000..073deec74
 +	}
 +
 +	ret = session_ioctl(fd, I915_CRIU_SESSION_RESTORE_BEGIN, 0, &cookie);
++	if (!ret) {
++		struct drm_i915_criu_file restore = {
++			.version = I915_CRIU_ABI_VERSION,
++			.op = I915_CRIU_FILE_RESTORE,
++			.cookie = cookie,
++			.flags = header.file_flags,
++		};
++
++		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &restore) < 0)
++			ret = -errno;
++	}
 +	if (ret) {
 +		close(image);
 +		close(fd);
@@ -4260,6 +5424,47 @@ index 000000000..073deec74
 +			}
 +		}
 +	}
++	for (uint32_t i = 0, previous = 0;
++	     !ret && i < header.framebuffer_count; i++) {
++		struct i915_image_framebuffer framebuffer;
++
++		ret = read_all(image, &framebuffer, sizeof(framebuffer));
++		if (!ret)
++			ret = restore_framebuffer(fd, cookie, &framebuffer, previous);
++		if (!ret)
++			previous = framebuffer.id;
++	}
++	for (uint32_t i = 0, previous = 0;
++	     !ret && i < header.blob_count; i++) {
++		struct i915_image_blob blob;
++		void *contents;
++
++		ret = read_all(image, &blob, sizeof(blob));
++		if (ret)
++			break;
++		if (!blob.length || blob.length > I915_MAX_BLOB_SIZE) {
++			ret = -EINVAL;
++			break;
++		}
++		contents = xmalloc(blob.length);
++		if (!contents) {
++			ret = -ENOMEM;
++			break;
++		}
++		ret = read_all(image, contents, blob.length);
++		if (!ret)
++			ret = restore_blob(fd, cookie, &blob, contents, previous);
++		xfree(contents);
++		if (!ret)
++			previous = blob.id;
++	}
++	for (uint32_t i = 0; !ret && i < header.kms_property_count; i++) {
++		struct i915_image_kms_property property;
++
++		ret = read_all(image, &property, sizeof(property));
++		if (!ret)
++			ret = remember_kms_property(id, &property);
++	}
 +	if (!ret) {
 +		char trailing;
 +		ssize_t got;
@@ -4272,6 +5477,7 @@ index 000000000..073deec74
 +	}
 +	close(image);
 +	if (ret) {
++		restore_kms_property_count = kms_property_base;
 +		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
 +		abort_restore_sessions();
 +		close(fd);
@@ -4280,16 +5486,18 @@ index 000000000..073deec74
 +
 +	ret = criu_plugin_fdstore_add(fd);
 +	if (ret < 0) {
++		restore_kms_property_count = kms_property_base;
 +		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
 +		abort_restore_sessions();
 +		close(fd);
 +		return -EIO;
 +	}
 +	restore_file = &restore_files[restore_file_count++];
-+	*restore_file = (struct restore_file) {
++	*restore_file = (struct restore_file){
 +		.file_id = id,
 +		.fdstore_id = ret,
 +		.cookie = cookie,
++		.file_flags = header.file_flags,
 +		.active = true,
 +	};
 +	for (size_t i = 0; i < restore_object_count; i++) {
@@ -4321,7 +5529,9 @@ index 000000000..073deec74
 +		     header.kind != I915_IMAGE_KIND_DMABUF ||
 +		     header.object_count || header.syncobj_count ||
 +		     header.vm_count || header.context_count ||
-+		     header.binding_count || !image.object_id || !image.fd_count ||
++		     header.binding_count || header.framebuffer_count ||
++		     header.blob_count || header.kms_property_count ||
++		     header.file_flags || !image.object_id || !image.fd_count ||
 +		     image.reserved))
 +		ret = -EINVAL;
 +	if (!ret) {
@@ -4371,7 +5581,9 @@ index 000000000..073deec74
 +		     header.kind != I915_IMAGE_KIND_SYNC_FILE ||
 +		     header.object_count || header.syncobj_count ||
 +		     header.vm_count || header.context_count ||
-+		     header.binding_count || !image.source_file_id ||
++		     header.binding_count || header.framebuffer_count ||
++		     header.blob_count || header.kms_property_count ||
++		     header.file_flags || !image.source_file_id ||
 +		     !image.handle ||
 +		     image.flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
 +		     !image.fd_count || image.point || image.reserved[0] ||
@@ -4420,9 +5632,10 @@ index 000000000..073deec74
 +struct restore_image {
 +	int id;
 +	uint32_t kind;
++	uint32_t file_flags;
 +};
 +
-+static int read_image_kind(int id, uint32_t *kind)
++static int read_image_kind(int id, uint32_t *kind, uint32_t *file_flags)
 +{
 +	struct i915_image_header header;
 +	int fd = image_fd(id, O_RDONLY);
@@ -4442,6 +5655,7 @@ index 000000000..073deec74
 +	     header.kind != I915_IMAGE_KIND_SYNC_FILE))
 +		return -EINVAL;
 +	*kind = header.kind;
++	*file_flags = header.file_flags;
 +	return 0;
 +}
 +
@@ -4452,6 +5666,13 @@ index 000000000..073deec74
 +
 +	if (a->kind != b->kind)
 +		return (a->kind > b->kind) - (a->kind < b->kind);
++	if (a->kind == I915_IMAGE_KIND_DRM_FILE) {
++		bool a_master = a->file_flags & I915_CRIU_FILE_MASTER;
++		bool b_master = b->file_flags & I915_CRIU_FILE_MASTER;
++
++		if (a_master != b_master)
++			return b_master - a_master;
++	}
 +	return (a->id > b->id) - (a->id < b->id);
 +}
 +
@@ -4483,7 +5704,8 @@ index 000000000..073deec74
 +			return -E2BIG;
 +		}
 +		images[image_count].id = id;
-+		if (read_image_kind(id, &images[image_count].kind)) {
++		if (read_image_kind(id, &images[image_count].kind,
++				    &images[image_count].file_flags)) {
 +			closedir(directory);
 +			return -EINVAL;
 +		}
@@ -4520,7 +5742,7 @@ index 000000000..073deec74
 +		close(fd);
 +		if (fdstore_id < 0)
 +			return -EIO;
-+		prepared_files[prepared_file_count++] = (struct prepared_file) {
++		prepared_files[prepared_file_count++] = (struct prepared_file){
 +			.file_id = images[i].id,
 +			.fdstore_id = fdstore_id,
 +		};
@@ -4540,7 +5762,7 @@ index 000000000..073deec74
 +	return 0;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__PREPARE_RESTORE,
-+			 i915_plugin_prepare_restore)
++			i915_plugin_prepare_restore)
 +
 +int i915_plugin_restore_file(int id)
 +{
@@ -4551,7 +5773,7 @@ index 000000000..073deec74
 +	return -ENOTSUP;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESTORE_EXT_FILE,
-+			 i915_plugin_restore_file)
++			i915_plugin_restore_file)
 +
 +int i915_plugin_update_vma_map(const char *path, uint64_t addr,
 +			       uint64_t old_pgoff, uint64_t *new_pgoff,
@@ -4569,7 +5791,101 @@ index 000000000..073deec74
 +	return 0;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__UPDATE_VMA_MAP,
-+			 i915_plugin_update_vma_map)
++			i915_plugin_update_vma_map)
++
++static bool object_has_property(drmModeObjectPropertiesPtr object,
++				uint32_t property_id)
++{
++	for (uint32_t i = 0; i < object->count_props; i++)
++		if (object->props[i] == property_id)
++			return true;
++	return false;
++}
++
++static int apply_kms_file_state(const struct restore_file *restore_file,
++				bool test_only)
++{
++	drmModeAtomicReqPtr request;
++	size_t property_count = 0;
++	uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
++	int fd;
++	int ret = 0;
++
++	if (test_only)
++		flags |= DRM_MODE_ATOMIC_TEST_ONLY;
++	fd = criu_plugin_fdstore_get(restore_file->fdstore_id);
++	if (fd < 0)
++		return -EIO;
++	request = drmModeAtomicAlloc();
++	if (!request) {
++		close(fd);
++		return -ENOMEM;
++	}
++	for (size_t i = 0; i < restore_kms_property_count; i++) {
++		const struct restore_kms_property *property =
++			&restore_kms_properties[i];
++		drmModeObjectPropertiesPtr object;
++		drmModePropertyPtr metadata;
++
++		if (property->file_id != restore_file->file_id)
++			continue;
++		for (size_t j = 0; j < i; j++) {
++			if (restore_kms_properties[j].file_id == property->file_id &&
++			    restore_kms_properties[j].image.object_id ==
++				    property->image.object_id &&
++			    restore_kms_properties[j].image.property_id ==
++				    property->image.property_id) {
++				ret = -EINVAL;
++				goto out;
++			}
++		}
++		object = drmModeObjectGetProperties(
++			fd, property->image.object_id,
++			property->image.object_type);
++		metadata = drmModeGetProperty(fd, property->image.property_id);
++		if (!object || !metadata ||
++		    !object_has_property(object, property->image.property_id) ||
++		    metadata->flags & DRM_MODE_PROP_IMMUTABLE ||
++		    ephemeral_atomic_property(metadata->name)) {
++			if (object)
++				drmModeFreeObjectProperties(object);
++			if (metadata)
++				drmModeFreeProperty(metadata);
++			ret = -EXDEV;
++			goto out;
++		}
++		drmModeFreeObjectProperties(object);
++		drmModeFreeProperty(metadata);
++		if (drmModeAtomicAddProperty(request,
++					     property->image.object_id,
++					     property->image.property_id,
++					     property->image.value) < 0) {
++			ret = -errno;
++			goto out;
++		}
++		property_count++;
++	}
++	if (property_count && drmModeAtomicCommit(fd, request, flags, NULL))
++		ret = -errno;
++out:
++	drmModeAtomicFree(request);
++	close(fd);
++	return ret;
++}
++
++static int apply_kms_state(bool test_only)
++{
++	for (size_t i = 0; i < restore_file_count; i++) {
++		int ret;
++
++		if (!(restore_files[i].file_flags & I915_CRIU_FILE_MASTER))
++			continue;
++		ret = apply_kms_file_state(&restore_files[i], test_only);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
 +
 +int i915_plugin_resume_devices_late(int pid)
 +{
@@ -4584,6 +5900,12 @@ index 000000000..073deec74
 +			       restore_objects[i].handle_count);
 +			return -EXDEV;
 +		}
++	}
++	{
++		int ret = apply_kms_state(true);
++
++		if (ret)
++			return ret;
 +	}
 +	for (size_t i = 0; i < restore_file_count; i++) {
 +		int fd;
@@ -4601,10 +5923,10 @@ index 000000000..073deec74
 +			return ret;
 +		restore_files[i].active = false;
 +	}
-+	return 0;
++	return apply_kms_state(false);
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE,
-+			 i915_plugin_resume_devices_late)
++			i915_plugin_resume_devices_late)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
 index 000000000..a6a02e0f6
@@ -5586,6 +6908,477 @@ index 000000000..dfd0160de
 +	puts("PASS: two-process dma-buf identity, mappings, CPU sharing, and GPU execution");
 +	return EXIT_SUCCESS;
 +}
+diff --git a/test/others/i915-criu/i915-kms-atomic.c b/test/others/i915-criu/i915-kms-atomic.c
+new file mode 100644
+index 000000000..ccd9b403e
+--- /dev/null
++++ b/test/others/i915-criu/i915-kms-atomic.c
+@@ -0,0 +1,465 @@
++// SPDX-License-Identifier: GPL-2.0
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <signal.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#include <drm/drm.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_mode.h>
++#include <xf86drm.h>
++#include <xf86drmMode.h>
++
++struct dumb_buffer {
++	uint32_t handle;
++	uint32_t pitch;
++	uint64_t size;
++	uint32_t fb_id;
++	uint32_t *mapping;
++};
++
++struct kms_properties {
++	uint32_t connector_crtc_id;
++	uint32_t crtc_active;
++	uint32_t crtc_mode_id;
++	uint32_t plane_fb_id;
++	uint32_t plane_crtc_id;
++	uint32_t crtc_x;
++	uint32_t crtc_y;
++	uint32_t crtc_w;
++	uint32_t crtc_h;
++	uint32_t src_x;
++	uint32_t src_y;
++	uint32_t src_w;
++	uint32_t src_h;
++};
++
++static volatile sig_atomic_t resumed;
++
++static void on_signal(int signo)
++{
++	(void)signo;
++	resumed = 1;
++}
++
++static void die(const char *what)
++{
++	perror(what);
++	exit(EXIT_FAILURE);
++}
++
++static void fail(const char *what)
++{
++	fprintf(stderr, "%s\n", what);
++	exit(EXIT_FAILURE);
++}
++
++static int open_i915_primary(void)
++{
++	char path[64];
++
++	for (unsigned int index = 0; index < 64; index++) {
++		drmVersionPtr version;
++		int fd;
++
++		snprintf(path, sizeof(path), "/dev/dri/card%u", index);
++		fd = open(path, O_RDWR | O_CLOEXEC);
++		if (fd < 0)
++			continue;
++		version = drmGetVersion(fd);
++		if (version && version->name && !strcmp(version->name, "i915") &&
++		    drmGetNodeTypeFromFd(fd) == DRM_NODE_PRIMARY) {
++			drmFreeVersion(version);
++			return fd;
++		}
++		if (version)
++			drmFreeVersion(version);
++		close(fd);
++	}
++	errno = ENODEV;
++	return -1;
++}
++
++static uint32_t property_id(int fd, uint32_t object_id, uint32_t object_type,
++			    const char *name, uint64_t *value)
++{
++	drmModeObjectPropertiesPtr object =
++		drmModeObjectGetProperties(fd, object_id, object_type);
++	uint32_t id = 0;
++
++	if (!object)
++		die("drmModeObjectGetProperties");
++	for (uint32_t i = 0; i < object->count_props; i++) {
++		drmModePropertyPtr property = drmModeGetProperty(fd, object->props[i]);
++
++		if (!property)
++			die("drmModeGetProperty");
++		if (!strcmp(property->name, name)) {
++			id = property->prop_id;
++			if (value)
++				*value = object->prop_values[i];
++			drmModeFreeProperty(property);
++			break;
++		}
++		drmModeFreeProperty(property);
++	}
++	drmModeFreeObjectProperties(object);
++	if (!id) {
++		fprintf(stderr, "missing property %s on object %u\n", name, object_id);
++		exit(EXIT_FAILURE);
++	}
++	return id;
++}
++
++static void find_pipeline(int fd, drmModeResPtr resources,
++			  uint32_t *connector_id, uint32_t *crtc_id,
++			  uint32_t *crtc_index, drmModeModeInfo *mode)
++{
++	for (int i = 0; i < resources->count_connectors; i++) {
++		drmModeConnectorPtr connector =
++			drmModeGetConnector(fd, resources->connectors[i]);
++		drmModeEncoderPtr encoder = NULL;
++
++		if (!connector)
++			continue;
++		if (connector->connection != DRM_MODE_CONNECTED ||
++		    connector->count_modes == 0 || connector->count_encoders == 0) {
++			drmModeFreeConnector(connector);
++			continue;
++		}
++		for (int encoder_index = -1;
++		     encoder_index < connector->count_encoders; encoder_index++) {
++			uint32_t encoder_id = encoder_index < 0 ? connector->encoder_id :
++								  connector->encoders[encoder_index];
++
++			if (!encoder_id)
++				continue;
++			encoder = drmModeGetEncoder(fd, encoder_id);
++			if (!encoder)
++				continue;
++			for (int j = 0; j < resources->count_crtcs; j++) {
++				if (encoder->crtc_id) {
++					if (resources->crtcs[j] != encoder->crtc_id)
++						continue;
++				} else if (!(encoder->possible_crtcs & (1u << j))) {
++					continue;
++				}
++				*connector_id = connector->connector_id;
++				*crtc_id = resources->crtcs[j];
++				*crtc_index = (uint32_t)j;
++				*mode = connector->modes[0];
++				for (int k = 0; k < connector->count_modes; k++) {
++					if (connector->modes[k].type & DRM_MODE_TYPE_PREFERRED) {
++						*mode = connector->modes[k];
++						break;
++					}
++				}
++				drmModeFreeEncoder(encoder);
++				drmModeFreeConnector(connector);
++				return;
++			}
++			drmModeFreeEncoder(encoder);
++			encoder = NULL;
++		}
++		drmModeFreeConnector(connector);
++	}
++	fail("no connected connector with an assigned CRTC");
++}
++
++static uint32_t find_primary_plane(int fd, uint32_t crtc_index)
++{
++	drmModePlaneResPtr planes = drmModeGetPlaneResources(fd);
++
++	if (!planes)
++		die("drmModeGetPlaneResources");
++	for (uint32_t i = 0; i < planes->count_planes; i++) {
++		drmModePlanePtr plane = drmModeGetPlane(fd, planes->planes[i]);
++		uint64_t type = 0;
++
++		if (!plane)
++			continue;
++		if (!(plane->possible_crtcs & (1u << crtc_index))) {
++			drmModeFreePlane(plane);
++			continue;
++		}
++		(void)property_id(fd, plane->plane_id, DRM_MODE_OBJECT_PLANE,
++				  "type", &type);
++		if (type == DRM_PLANE_TYPE_PRIMARY) {
++			uint32_t id = plane->plane_id;
++
++			drmModeFreePlane(plane);
++			drmModeFreePlaneResources(planes);
++			return id;
++		}
++		drmModeFreePlane(plane);
++	}
++	drmModeFreePlaneResources(planes);
++	fail("no compatible primary plane");
++	return 0;
++}
++
++static void fill_buffer(struct dumb_buffer *buffer, uint32_t width,
++			uint32_t height, uint32_t phase)
++{
++	for (uint32_t y = 0; y < height; y++) {
++		uint32_t *row = (uint32_t *)((char *)buffer->mapping +
++					     (uint64_t)y * buffer->pitch);
++
++		for (uint32_t x = 0; x < width; x++)
++			row[x] = UINT32_C(0xff000000) |
++				 (((x + phase * 31) & 0xff) << 16) |
++				 (((y + phase * 17) & 0xff) << 8) |
++				 ((x ^ y ^ phase) & 0xff);
++	}
++}
++
++static void verify_buffer(const struct dumb_buffer *buffer, uint32_t width,
++			  uint32_t height, uint32_t phase)
++{
++	for (uint32_t y = 0; y < height; y++) {
++		const uint32_t *row = (const uint32_t *)((const char *)buffer->mapping +
++							 (uint64_t)y * buffer->pitch);
++
++		for (uint32_t x = 0; x < width; x++) {
++			uint32_t expected = UINT32_C(0xff000000) |
++					    (((x + phase * 31) & 0xff) << 16) |
++					    (((y + phase * 17) & 0xff) << 8) |
++					    ((x ^ y ^ phase) & 0xff);
++
++			if (row[x] != expected)
++				fail("restored scanout contents differ");
++		}
++	}
++}
++
++static void create_dumb_buffer(int fd, uint32_t width, uint32_t height,
++			       uint32_t phase, struct dumb_buffer *buffer)
++{
++	struct drm_mode_create_dumb create = {
++		.width = width,
++		.height = height,
++		.bpp = 32,
++	};
++	struct drm_mode_map_dumb map = { 0 };
++	uint32_t handles[4] = { 0 };
++	uint32_t pitches[4] = { 0 };
++	uint32_t offsets[4] = { 0 };
++
++	if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
++		die("DRM_IOCTL_MODE_CREATE_DUMB");
++	buffer->handle = create.handle;
++	buffer->pitch = create.pitch;
++	buffer->size = create.size;
++	map.handle = create.handle;
++	if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
++		die("DRM_IOCTL_MODE_MAP_DUMB");
++	buffer->mapping = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
++			       MAP_SHARED, fd, map.offset);
++	if (buffer->mapping == MAP_FAILED)
++		die("mmap dumb buffer");
++	fill_buffer(buffer, width, height, phase);
++	handles[0] = create.handle;
++	pitches[0] = create.pitch;
++	if (drmModeAddFB2(fd, width, height, DRM_FORMAT_XRGB8888,
++			  handles, pitches, offsets, &buffer->fb_id, 0))
++		die("drmModeAddFB2");
++}
++
++static struct kms_properties get_properties(int fd, uint32_t connector_id,
++					    uint32_t crtc_id,
++					    uint32_t plane_id)
++{
++	return (struct kms_properties){
++		.connector_crtc_id = property_id(fd, connector_id,
++						 DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", NULL),
++		.crtc_active = property_id(fd, crtc_id, DRM_MODE_OBJECT_CRTC,
++					   "ACTIVE", NULL),
++		.crtc_mode_id = property_id(fd, crtc_id, DRM_MODE_OBJECT_CRTC,
++					    "MODE_ID", NULL),
++		.plane_fb_id = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++					   "FB_ID", NULL),
++		.plane_crtc_id = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++					     "CRTC_ID", NULL),
++		.crtc_x = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				      "CRTC_X", NULL),
++		.crtc_y = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				      "CRTC_Y", NULL),
++		.crtc_w = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				      "CRTC_W", NULL),
++		.crtc_h = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				      "CRTC_H", NULL),
++		.src_x = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				     "SRC_X", NULL),
++		.src_y = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				     "SRC_Y", NULL),
++		.src_w = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				     "SRC_W", NULL),
++		.src_h = property_id(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++				     "SRC_H", NULL),
++	};
++}
++
++static void add_property(drmModeAtomicReqPtr request, uint32_t object,
++			 uint32_t property, uint64_t value)
++{
++	if (drmModeAtomicAddProperty(request, object, property, value) < 0)
++		die("drmModeAtomicAddProperty");
++}
++
++static void commit_initial_state(int fd, uint32_t connector_id,
++				 uint32_t crtc_id, uint32_t plane_id,
++				 const struct kms_properties *properties,
++				 uint32_t mode_blob, uint32_t fb_id,
++				 uint32_t width, uint32_t height)
++{
++	drmModeAtomicReqPtr request = drmModeAtomicAlloc();
++
++	if (!request)
++		die("drmModeAtomicAlloc");
++	add_property(request, connector_id, properties->connector_crtc_id, crtc_id);
++	add_property(request, crtc_id, properties->crtc_active, 1);
++	add_property(request, crtc_id, properties->crtc_mode_id, mode_blob);
++	add_property(request, plane_id, properties->plane_fb_id, fb_id);
++	add_property(request, plane_id, properties->plane_crtc_id, crtc_id);
++	add_property(request, plane_id, properties->crtc_x, 0);
++	add_property(request, plane_id, properties->crtc_y, 0);
++	add_property(request, plane_id, properties->crtc_w, width);
++	add_property(request, plane_id, properties->crtc_h, height);
++	add_property(request, plane_id, properties->src_x, 0);
++	add_property(request, plane_id, properties->src_y, 0);
++	add_property(request, plane_id, properties->src_w, (uint64_t)width << 16);
++	add_property(request, plane_id, properties->src_h, (uint64_t)height << 16);
++	if (drmModeAtomicCommit(fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL))
++		die("initial drmModeAtomicCommit");
++	drmModeAtomicFree(request);
++}
++
++static void expect_property(int fd, uint32_t object_id, uint32_t object_type,
++			    const char *name, uint64_t expected)
++{
++	uint64_t actual = 0;
++
++	(void)property_id(fd, object_id, object_type, name, &actual);
++	if (actual != expected) {
++		fprintf(stderr, "%s value %#llx != %#llx\n", name,
++			(unsigned long long)actual, (unsigned long long)expected);
++		exit(EXIT_FAILURE);
++	}
++}
++
++static void verify_framebuffer(int fd, const struct dumb_buffer *buffer,
++			       uint32_t width, uint32_t height)
++{
++	drmModeFB2Ptr fb = drmModeGetFB2(fd, buffer->fb_id);
++
++	if (!fb)
++		die("drmModeGetFB2");
++	if (fb->fb_id != buffer->fb_id || fb->width != width ||
++	    fb->height != height || fb->pixel_format != DRM_FORMAT_XRGB8888 ||
++	    fb->pitches[0] != buffer->pitch)
++		fail("restored framebuffer metadata differs");
++	for (unsigned int i = 0; i < 4; i++) {
++		if (!fb->handles[i])
++			continue;
++		struct drm_gem_close close_handle = { .handle = fb->handles[i] };
++
++		(void)ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close_handle);
++	}
++	drmModeFreeFB2(fb);
++}
++
++static void post_restore_page_flip(int fd, uint32_t plane_id,
++				   const struct kms_properties *properties,
++				   uint32_t fb_id)
++{
++	drmModeAtomicReqPtr request = drmModeAtomicAlloc();
++	struct pollfd pollfd = { .fd = fd, .events = POLLIN };
++	char events[4096];
++
++	if (!request)
++		die("drmModeAtomicAlloc post-restore");
++	add_property(request, plane_id, properties->plane_fb_id, fb_id);
++	if (drmModeAtomicCommit(fd, request,
++				DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
++				(void *)(uintptr_t)UINT64_C(0x9158)))
++		die("post-restore drmModeAtomicCommit");
++	drmModeAtomicFree(request);
++	if (poll(&pollfd, 1, 5000) != 1)
++		die("post-restore page-flip poll");
++	if (read(fd, events, sizeof(events)) <= 0)
++		die("post-restore page-flip event");
++}
++
++int main(void)
++{
++	struct sigaction action = { .sa_handler = on_signal };
++	struct dumb_buffer buffers[2] = { 0 };
++	struct kms_properties properties;
++	drmModeResPtr resources;
++	drmModeModeInfo mode;
++	uint32_t connector_id = 0;
++	uint32_t crtc_id = 0;
++	uint32_t crtc_index = 0;
++	uint32_t plane_id;
++	uint32_t mode_blob;
++	int fd = open_i915_primary();
++
++	if (fd < 0)
++		die("open i915 primary node");
++	if (!drmIsMaster(fd) && drmSetMaster(fd))
++		die("drmSetMaster (stop the graphical session before this test)");
++	if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
++	    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
++		die("drmSetClientCap atomic");
++	resources = drmModeGetResources(fd);
++	if (!resources)
++		die("drmModeGetResources");
++	find_pipeline(fd, resources, &connector_id, &crtc_id, &crtc_index, &mode);
++	plane_id = find_primary_plane(fd, crtc_index);
++	properties = get_properties(fd, connector_id, crtc_id, plane_id);
++	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 1, &buffers[0]);
++	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 2, &buffers[1]);
++	if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob))
++		die("drmModeCreatePropertyBlob");
++	commit_initial_state(fd, connector_id, crtc_id, plane_id, &properties,
++			     mode_blob, buffers[0].fb_id,
++			     mode.hdisplay, mode.vdisplay);
++	drmModeFreeResources(resources);
++
++	if (sigaction(SIGUSR1, &action, NULL))
++		die("sigaction");
++	printf("READY fd=%d connector=%u crtc=%u plane=%u mode_blob=%u fb=%u,%u size=%ux%u\n",
++	       fd, connector_id, crtc_id, plane_id, mode_blob,
++	       buffers[0].fb_id, buffers[1].fb_id, mode.hdisplay, mode.vdisplay);
++	fflush(stdout);
++	while (!resumed)
++		pause();
++
++	if (!drmIsMaster(fd))
++		fail("restored DRM file did not retain master ownership");
++	verify_buffer(&buffers[0], mode.hdisplay, mode.vdisplay, 1);
++	verify_buffer(&buffers[1], mode.hdisplay, mode.vdisplay, 2);
++	verify_framebuffer(fd, &buffers[0], mode.hdisplay, mode.vdisplay);
++	verify_framebuffer(fd, &buffers[1], mode.hdisplay, mode.vdisplay);
++	expect_property(fd, connector_id, DRM_MODE_OBJECT_CONNECTOR,
++			"CRTC_ID", crtc_id);
++	expect_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE", 1);
++	expect_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID", mode_blob);
++	expect_property(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++			"FB_ID", buffers[0].fb_id);
++	expect_property(fd, plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id);
++	post_restore_page_flip(fd, plane_id, &properties, buffers[1].fb_id);
++	expect_property(fd, plane_id, DRM_MODE_OBJECT_PLANE,
++			"FB_ID", buffers[1].fb_id);
++	puts("PASS: exact DRM master, blob/framebuffer IDs, atomic scanout, contents, and post-restore page flip");
++	return EXIT_SUCCESS;
++}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100755
 index 000000000..03b6b362e
@@ -5707,6 +7500,134 @@ index 000000000..03b6b362e
 +fixture_pid=
 +printf 'PASS: CRIU restored context/sync pid=%s address=%s\n' \
 +    "$original_pid" "$original_address"
+diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
+new file mode 100755
+index 000000000..ecac8275f
+--- /dev/null
++++ b/test/others/i915-criu/run-kms-criu.sh
+@@ -0,0 +1,122 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if (( EUID != 0 )); then
++    echo "run as root from a text console with the graphical session stopped: sudo $0" >&2
++    exit 2
++fi
++
++repo=$(cd "$(dirname "$0")/../../.." && pwd)
++work=${I915_CRIU_TEST_DIR:-/tmp/i915-criu-kms}
++criu=${CRIU:-/run/current-system/sw/bin/criu}
++plugin_dir=${CRIU_PLUGIN_DIR:-}
++plugin_args=()
++[[ -n $plugin_dir ]] && plugin_args+=(--libdir "$plugin_dir")
++cc=${CC:-gcc}
++fixture="$work/i915-kms-atomic"
++fixture_source=${FIXTURE:-/tmp/i915-kms-atomic}
++images="$work/images"
++log="$work/fixture.log"
++corrupt_mode=${I915_CRIU_KMS_CORRUPT_MODE:-}
++
++cleanup() {
++    if [[ -n ${fixture_pid:-} ]]; then
++        kill -KILL "$fixture_pid" 2>/dev/null || true
++    fi
++}
++trap cleanup EXIT
++rm -rf "$work"
++mkdir -p "$images"
++
++if [[ -x $fixture_source ]]; then
++    cp "$fixture_source" "$fixture"
++elif command -v "$cc" >/dev/null && command -v pkg-config >/dev/null; then
++    # shellcheck disable=SC2046
++    "$cc" -std=c11 -Wall -Wextra -Werror \
++        $(pkg-config --cflags libdrm) \
++        "$repo/test/others/i915-criu/i915-kms-atomic.c" -o "$fixture" \
++        $(pkg-config --libs libdrm)
++else
++    echo "no prebuilt fixture at $fixture_source and no libdrm compiler environment" >&2
++    exit 2
++fi
++
++"$fixture" >"$log" 2>&1 &
++fixture_pid=$!
++for _ in $(seq 1 200); do
++    grep -q '^READY ' "$log" && break
++    if ! kill -0 "$fixture_pid" 2>/dev/null; then
++        cat "$log" >&2
++        exit 1
++    fi
++    sleep 0.05
++done
++grep -q '^READY ' "$log"
++original_pid=$fixture_pid
++ready=$(grep '^READY ' "$log")
++printf '%s\n' "$ready"
++
++"$criu" dump -t "$original_pid" -D "$images" --shell-job \
++    "${plugin_args[@]}" --log-file dump.log -v4
++wait "$fixture_pid" 2>/dev/null || true
++fixture_pid=
++if [[ -n $corrupt_mode ]]; then
++    i915_images=("$images"/i915-criu-*.img)
++    if (( ${#i915_images[@]} != 1 )); then
++        echo "expected one i915 image, found ${#i915_images[@]}" >&2
++        exit 1
++    fi
++    case $corrupt_mode in
++        role)
++            printf '\002\000\000\000' | dd of="${i915_images[0]}" \
++                bs=1 seek=44 conv=notrunc status=none
++            ;;
++        framebuffer-count)
++            printf '\377\377\377\377' | dd of="${i915_images[0]}" \
++                bs=1 seek=32 conv=notrunc status=none
++            ;;
++        truncated)
++            truncate -s -1 "${i915_images[0]}"
++            ;;
++        *)
++            echo "unknown KMS corruption mode: $corrupt_mode" >&2
++            exit 2
++            ;;
++    esac
++    set +e
++    "$criu" restore -D "$images" --shell-job --restore-detached \
++        "${plugin_args[@]}" --log-file restore.log -v4
++    restore_status=$?
++    set -e
++    if (( restore_status == 0 || restore_status >= 128 )); then
++        echo "corrupt KMS image did not fail safely: status=$restore_status" >&2
++        exit 1
++    fi
++    for _ in $(seq 1 100); do
++        ! kill -0 "$original_pid" 2>/dev/null && break
++        sleep 0.05
++    done
++    if kill -0 "$original_pid" 2>/dev/null; then
++        echo "partially restored KMS fixture survived refusal" >&2
++        kill -KILL "$original_pid" 2>/dev/null || true
++        exit 1
++    fi
++    grep -q 'Restoring FAILED' "$images/restore.log"
++    printf 'PASS: corrupt KMS image mode=%s refused transactionally (status=%s)\n' \
++        "$corrupt_mode" "$restore_status"
++    exit 0
++fi
++"$criu" restore -D "$images" --shell-job --restore-detached \
++    "${plugin_args[@]}" --log-file restore.log -v4
++fixture_pid=$original_pid
++kill -USR1 "$fixture_pid"
++expected='PASS: exact DRM master, blob/framebuffer IDs, atomic scanout, contents, and post-restore page flip'
++for _ in $(seq 1 200); do
++    grep -Fqx "$expected" "$log" && break
++    kill -0 "$fixture_pid" 2>/dev/null || true
++    sleep 0.05
++done
++grep -Fqx "$expected" "$log"
++fixture_pid=
++printf 'PASS: CRIU restored physical atomic KMS pid=%s (%s)\n' \
++    "$original_pid" "$ready"
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
 index 000000000..6ddfd4867
@@ -5835,10 +7756,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..c75aba44f
+index 000000000..ca905d828
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,157 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -5856,6 +7777,7 @@ index 000000000..c75aba44f
 +minimal_fixture=${MINIMAL_FIXTURE:-/tmp/i915-gem-minimal}
 +sharing_fixture=${SHARING_FIXTURE:-/tmp/i915-gem-sharing}
 +context_fixture=${CONTEXT_FIXTURE:-/tmp/i915-context-sync}
++kms_fixture=${KMS_FIXTURE:-/tmp/i915-kms-atomic}
 +
 +umask 077
 +mkdir -p "$suite"
@@ -5870,7 +7792,7 @@ index 000000000..c75aba44f
 +trap return_evidence_to_invoker EXIT
 +
 +for required in "$criu" "$plugin_dir/i915_plugin.so" \
-+    "$minimal_fixture" "$sharing_fixture" "$context_fixture"; do
++    "$minimal_fixture" "$sharing_fixture" "$context_fixture" "$kms_fixture"; do
 +    if [[ ! -e $required ]]; then
 +        echo "required physical-suite artifact is missing: $required" >&2
 +        exit 2
@@ -5879,9 +7801,9 @@ index 000000000..c75aba44f
 +
 +kernel_module=$(modinfo -F filename i915)
 +if [[ $kernel_module == *.xz ]]; then
-+    xzgrep -a -q 'i915_criu_sync_file_ioctl' "$kernel_module"
++    xzgrep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
 +else
-+    grep -a -q 'i915_criu_sync_file_ioctl' "$kernel_module"
++    grep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
 +fi
 +
 +read_parameter() {
@@ -5904,7 +7826,7 @@ index 000000000..c75aba44f
 +    --arg modeset "$(read_parameter modeset)" \
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,abi:7,image_schema:7,niri:$niri,i915:{enable_guc:$enable_guc,
++      plugin:$plugin,abi:8,image_schema:8,niri:$niri,i915:{enable_guc:$enable_guc,
 +      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
 +    >"$suite/metadata.json"
 +
@@ -5974,6 +7896,17 @@ index 000000000..c75aba44f
 +    I915_CRIU_CUSTOM_ENGINE=1 \
 +    I915_CRIU_TEST_DIR="$suite/custom-engine-refusal" \
 +    "$scripts/run-context-sync-criu.sh"
++run_case physical-kms env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_TEST_DIR="$suite/physical-kms" \
++    "$scripts/run-kms-criu.sh"
++run_case kms-role-corruption-refusal env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=role \
++    I915_CRIU_TEST_DIR="$suite/kms-role-corruption-refusal" \
++    "$scripts/run-kms-criu.sh"
++run_case kms-count-corruption-refusal env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=framebuffer-count \
++    I915_CRIU_TEST_DIR="$suite/kms-count-corruption-refusal" \
++    "$scripts/run-kms-criu.sh"
 +
 +jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
 +    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
@@ -5981,7 +7914,8 @@ index 000000000..c75aba44f
 +      "retained-dmabuf","external-dmabuf-refusal","synchronization",
 +      "retained-sync-file","external-sync-file-refusal",
 +      "idle-context-vm","sync-callback-refusal",
-+      "context-vm-binding","custom-engine-refusal"]}' >"$suite/verdict.json"
++      "context-vm-binding","custom-engine-refusal","physical-kms",
++      "kms-role-corruption-refusal","kms-count-corruption-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
