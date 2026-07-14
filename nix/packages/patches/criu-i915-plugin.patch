@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..ae83e60e0
+index 000000000..db2781e0e
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,536 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -490,7 +490,11 @@ index 000000000..ae83e60e0
 +and requires the resulting file state to match exactly.
 +
 +The same transaction enumerates file-owned framebuffer IDs and property-blob
-+IDs. This first admission subset is one-plane linear XRGB8888 framebuffers
++IDs. DRM core takes one internal GEM `handle_count` reference for each
++framebuffer plane without adding an entry to any userspace handle table; ABI 8
++subtracts those proven framebuffer-only references before CRIU performs its
++complete userspace-handle graph check. It does not weaken external-handle
++refusal. This first admission subset is one-plane linear XRGB8888 framebuffers
 +backed by already captured local i915 shmem objects and bounded user property
 +blobs. Restore recreates both through validated DRM/i915 constructors and
 +atomically assigns their exact userspace-visible mode-object IDs; conflicts or
@@ -810,10 +814,10 @@ index 000000000..f3850cf8d
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..5cbcca291
+index 000000000..44e1f88c9
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2150 @@
+@@ -0,0 +1,2181 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -875,10 +879,10 @@ index 000000000..5cbcca291
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..0fd7f18
++index 0000000..906048f
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1676 @@
++@@ -0,0 +1,1707 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 8. */
 ++
@@ -1418,6 +1422,34 @@ index 000000000..5cbcca291
 ++	return ret;
 ++}
 ++
+++static int user_gem_handle_count(struct drm_device *dev,
+++				 struct drm_gem_object *object, u32 *count)
+++{
+++	struct drm_framebuffer *fb;
+++	u32 framebuffer_refs = 0;
+++	unsigned int total;
+++
+++	mutex_lock(&dev->mode_config.fb_lock);
+++	list_for_each_entry(fb, &dev->mode_config.fb_list, head) {
+++		for (unsigned int plane = 0;
+++		     plane < fb->format->num_planes; plane++) {
+++			if (fb->obj[plane] == object &&
+++			    fb->internal_flags &
+++				    DRM_FRAMEBUFFER_HAS_HANDLE_REF(plane))
+++				framebuffer_refs++;
+++		}
+++	}
+++	mutex_unlock(&dev->mode_config.fb_lock);
+++
+++	mutex_lock(&dev->object_name_lock);
+++	total = object->handle_count;
+++	mutex_unlock(&dev->object_name_lock);
+++	if (framebuffer_refs >= total)
+++		return -EUCLEAN;
+++	*count = total - framebuffer_refs;
+++	return 0;
+++}
+++
 ++int i915_criu_object_ioctl(struct drm_device *dev, void *data,
 ++			   struct drm_file *file)
 ++{
@@ -1435,6 +1467,7 @@ index 000000000..5cbcca291
 ++		struct drm_i915_gem_mmap_offset mmap = {
 ++			.flags = I915_MMAP_OFFSET_WB,
 ++		};
+++		u32 user_handles;
 ++		int handle = args->handle ? args->handle + 1 : 1;
 ++
 ++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
@@ -1452,12 +1485,14 @@ index 000000000..5cbcca291
 ++		}
 ++
 ++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
-++		    !obj->base.handle_count ||
-++		    obj->base.handle_count > U32_MAX ||
 ++		    i915_gem_object_is_userptr(obj)) {
 ++			ret = -EOPNOTSUPP;
 ++			goto put_obj;
 ++		}
+++
+++		ret = user_gem_handle_count(dev, &obj->base, &user_handles);
+++		if (ret)
+++			goto put_obj;
 ++
 ++		ret = describe_dma_buf(obj, args);
 ++		if (ret)
@@ -1478,9 +1513,9 @@ index 000000000..5cbcca291
 ++		args->flags = I915_CRIU_OBJECT_SHMEM;
 ++		args->mmap_offset = mmap.offset;
 ++		args->mmap_type = I915_MMAP_OFFSET_WB;
-++		args->handle_count = obj->base.handle_count;
+++		args->handle_count = user_handles;
 ++		args->sharing_flags =
-++			obj->base.dma_buf || obj->base.handle_count > 1 ?
+++			obj->base.dma_buf || user_handles > 1 ?
 ++				I915_CRIU_OBJECT_SHARED :
 ++				0;
 ++put_obj:
@@ -7502,7 +7537,7 @@ index 000000000..03b6b362e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 000000000..ecac8275f
+index 000000000..677e00a77
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
 @@ -0,0 +1,122 @@
@@ -7577,11 +7612,11 @@ index 000000000..ecac8275f
 +    case $corrupt_mode in
 +        role)
 +            printf '\002\000\000\000' | dd of="${i915_images[0]}" \
-+                bs=1 seek=44 conv=notrunc status=none
++                bs=1 seek=48 conv=notrunc status=none
 +            ;;
 +        framebuffer-count)
 +            printf '\377\377\377\377' | dd of="${i915_images[0]}" \
-+                bs=1 seek=32 conv=notrunc status=none
++                bs=1 seek=36 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "${i915_images[0]}"
