@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..3c058e422
+index 000000000..afbd7b566
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,575 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -524,6 +524,17 @@ index 000000000..3c058e422
 +corrupt mapping refuses the transaction. CRIU no longer falls back to reopening
 +a DRM path when an i915 mapping record is absent.
 +
++The first ABI-9 KMS attempt also exposed a CRIU VMA-inventory issue: adjacent
++mappings with equal anonymous-device inode metadata borrowed one file-info
++record, so only the first VMA reached the plugin. File identity remains safely
++shared, but CRIU now invokes the anonymous-device hook for every borrowed VMA
++so device-private mmap-offset provenance cannot collapse. The focused physical
++rerun at `/var/tmp/i915-kms-abi9-adjacent` recorded both WC nodes, restored both
++VMAs at their original virtual addresses with bit-identical contents, retained
++DRM master and exact framebuffer/blob IDs, restored atomic scanout, and consumed
++a real post-restore page-flip event. Its image has two object and two mapping
++records; `images/restore.log` ends in `Restore finished successfully`.
++
 +The plugin records mutable atomic properties only for the active connector,
 +CRTC, and planes, excluding immutable, legacy DPMS, and transient fence-pointer
 +properties. It verifies every restored object/property ID, submits a full
@@ -862,10 +873,10 @@ index 000000000..f2a0dcf63
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..809bc7d6c
+index 000000000..7201d027c
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2360 @@
+@@ -0,0 +1,2369 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -927,10 +938,10 @@ index 000000000..809bc7d6c
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..8750b1b
++index 0000000..4dae447
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1852 @@
++@@ -0,0 +1,1861 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 9. */
 ++
@@ -1374,6 +1385,18 @@ index 000000000..809bc7d6c
 ++	return ret;
 ++}
 ++
+++static u64 i915_criu_reset_epoch(struct drm_i915_private *i915)
+++{
+++	u64 epoch = i915_reset_count(&i915->gpu_error);
+++	unsigned int class;
+++
+++	/* Engine resets do not necessarily advance the global reset counter. */
+++	for (class = 0;
+++	     class < ARRAY_SIZE(i915->gpu_error.reset_engine_count); class++)
+++		epoch += atomic_read(&i915->gpu_error.reset_engine_count[class]);
+++	return epoch;
+++}
+++
 ++static int check_session(struct drm_i915_file_private *fpriv, u64 cookie,
 ++			 u32 mode)
 ++{
@@ -1381,8 +1404,7 @@ index 000000000..809bc7d6c
 ++		return -EINVAL;
 ++	if (!cookie || cookie != fpriv->criu_cookie)
 ++		return -ESTALE;
-++	if (fpriv->criu_reset_count !=
-++	    i915_reset_count(&fpriv->i915->gpu_error))
+++	if (fpriv->criu_reset_epoch != i915_criu_reset_epoch(fpriv->i915))
 ++		return -EIO;
 ++	return 0;
 ++}
@@ -1414,8 +1436,7 @@ index 000000000..809bc7d6c
 ++		ret = validate_syncobjs(file);
 ++		if (ret)
 ++			break;
-++		fpriv->criu_reset_count =
-++			i915_reset_count(&fpriv->i915->gpu_error);
+++		fpriv->criu_reset_epoch = i915_criu_reset_epoch(fpriv->i915);
 ++		fpriv->criu_mode = I915_CRIU_MODE_DUMP;
 ++		fpriv->criu_cookie = get_random_u64();
 ++		if (!fpriv->criu_cookie)
@@ -1432,8 +1453,7 @@ index 000000000..809bc7d6c
 ++			ret = -EINVAL;
 ++			break;
 ++		}
-++		fpriv->criu_reset_count =
-++			i915_reset_count(&fpriv->i915->gpu_error);
+++		fpriv->criu_reset_epoch = i915_criu_reset_epoch(fpriv->i915);
 ++		fpriv->criu_mode = I915_CRIU_MODE_RESTORE;
 ++		fpriv->criu_cookie = get_random_u64();
 ++		if (!fpriv->criu_cookie)
@@ -1446,8 +1466,8 @@ index 000000000..809bc7d6c
 ++			ret = -ESTALE;
 ++			break;
 ++		}
-++		if (fpriv->criu_reset_count !=
-++		    i915_reset_count(&fpriv->i915->gpu_error)) {
+++		if (fpriv->criu_reset_epoch !=
+++		    i915_criu_reset_epoch(fpriv->i915)) {
 ++			ret = -EIO;
 ++			break;
 ++		}
@@ -2862,7 +2882,7 @@ index 000000000..809bc7d6c
 + 
 + /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
-+index c9cb8ee..df3bf73 100644
++index c9cb8ee..55b8d16 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
 +@@ -106,6 +106,19 @@ struct drm_i915_file_private {
@@ -2879,7 +2899,7 @@ index 000000000..809bc7d6c
 ++	struct xarray criu_restore_fbs;
 ++	struct xarray criu_restore_blobs;
 ++	u64 criu_cookie;
-++	u32 criu_reset_count;
+++	u64 criu_reset_epoch;
 ++	u32 criu_mode;
 ++	bool criu_context_touched;
 + };
@@ -3457,7 +3477,7 @@ index 18da0499d..f5222e54d 100644
  {
  	int exit_code = -1;
 diff --git a/criu/proc_parse.c b/criu/proc_parse.c
-index 0d3b5b23f..dfd222770 100644
+index 0d3b5b23f..04f1cf126 100644
 --- a/criu/proc_parse.c
 +++ b/criu/proc_parse.c
 @@ -418,8 +418,9 @@ closefd:
@@ -3472,7 +3492,35 @@ index 0d3b5b23f..dfd222770 100644
  {
  	char path[32];
  	int flags;
-@@ -481,10 +482,22 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
+@@ -441,6 +442,27 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
+ 			return 0;
+ 
+ 		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
++		if (vfi->dev_maj == 0) {
++			int surrogate_fd = -1;
++			int ret;
++
++			/*
++			 * Equal device/inode metadata permits CRIU to reuse file
++			 * identity, but not device-private mmap-offset provenance.
++			 * Notify the plugin for every anonymous-device VMA so two
++			 * adjacent i915 mappings cannot collapse into one record.
++			 */
++			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
++					  vma->e->start, vma->e->pgoff,
++					  &surrogate_fd);
++			if (ret < 0)
++				return -1;
++			if (ret == 1) {
++				if (surrogate_fd < 0)
++					return -1;
++				close(surrogate_fd);
++			}
++		}
+ 		if (prev->e->status & VMA_AREA_SOCKET)
+ 			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
+ 
+@@ -481,10 +503,22 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
  
  		if (errno == ENXIO) {
  			struct stat buf;
@@ -3495,7 +3543,7 @@ index 0d3b5b23f..dfd222770 100644
  			if (S_ISSOCK(buf.st_mode)) {
  				pr_info("Found socket mapping @%" PRIx64 "\n", vma->e->start);
  				vma->vm_socket_id = buf.st_ino;
-@@ -591,7 +604,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
+@@ -591,7 +625,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
  static int handle_vma(pid_t pid, struct vma_area *vma_area, const char *file_path, DIR *map_files_dir,
  		      struct vma_file_info *vfi, struct vma_file_info *prev_vfi, int *vm_file_fd)
  {
@@ -3543,10 +3591,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..ff230da2d
+index 000000000..be6755cc6
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,2907 @@
+@@ -0,0 +1,2971 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -5773,7 +5821,10 @@ index 000000000..ff230da2d
 +	struct restore_file *restore_file;
 +	size_t mapping_base = restore_mapping_count;
 +	size_t kms_property_base = restore_kms_property_count;
++	const char *stage = "image-header";
++	uint64_t resource_id = 0;
 +	uint64_t cookie = 0;
++	uint32_t stage_index = 0;
 +	int image;
 +	int fd;
 +	int ret;
@@ -5798,8 +5849,11 @@ index 000000000..ff230da2d
 +	    !(header.device_identity & UINT32_C(0xffff)) ||
 +	    !(header.device_identity >> 16) || header.revision > UINT8_MAX ||
 +	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
++		ret = ret ? ret : -EINVAL;
++		pr_err("i915 restore file=%d stage=%s failed: %d\n",
++		       id, stage, ret);
 +		close(image);
-+		return ret ? ret : -EINVAL;
++		return ret;
 +	}
 +
 +	if (header.file_flags & I915_CRIU_FILE_PRIMARY)
@@ -5810,8 +5864,11 @@ index 000000000..ff230da2d
 +		close(image);
 +		return fd == -ENODEV ? fd : -errno;
 +	}
++	stage = "file-configuration";
 +	ret = configure_restore_file(fd, header.file_flags);
 +	if (ret) {
++		pr_err("i915 restore file=%d stage=%s failed: %d\n",
++		       id, stage, ret);
 +		close(image);
 +		close(fd);
 +		return ret;
@@ -5822,6 +5879,7 @@ index 000000000..ff230da2d
 +		return -E2BIG;
 +	}
 +
++	stage = "session-begin";
 +	ret = session_ioctl(fd, I915_CRIU_SESSION_RESTORE_BEGIN, 0, &cookie);
 +	if (!ret) {
 +		struct drm_i915_criu_file restore = {
@@ -5837,10 +5895,13 @@ index 000000000..ff230da2d
 +			.revision = header.revision,
 +		};
 +
++		stage = "file-state";
 +		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &restore) < 0)
 +			ret = -errno;
 +	}
 +	if (ret) {
++		pr_err("i915 restore file=%d stage=%s failed: %d\n",
++		       id, stage, ret);
 +		close(image);
 +		close(fd);
 +		return ret;
@@ -5849,7 +5910,12 @@ index 000000000..ff230da2d
 +		struct i915_image_object object;
 +		void *contents;
 +
++		stage = "object";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &object, sizeof(object));
++		if (!ret)
++			resource_id = object.object_id;
 +		if (ret)
 +			break;
 +		ret = validate_image_object(&object);
@@ -5870,17 +5936,27 @@ index 000000000..ff230da2d
 +	for (uint32_t i = 0; !ret && i < header.mapping_count; i++) {
 +		struct i915_image_mapping mapping;
 +
++		stage = "mapping";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &mapping, sizeof(mapping));
-+		if (!ret)
++		if (!ret) {
++			resource_id = mapping.object_id;
 +			ret = restore_mapping(fd, cookie, id, &mapping);
++		}
 +	}
 +	for (uint32_t i = 0, previous = 0;
 +	     !ret && i < header.syncobj_count; i++) {
 +		struct i915_image_syncobj syncobj;
 +
++		stage = "syncobj";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &syncobj, sizeof(syncobj));
-+		if (!ret)
++		if (!ret) {
++			resource_id = syncobj.handle;
 +			ret = restore_syncobj(fd, cookie, &syncobj, previous);
++		}
 +		if (!ret)
 +			previous = syncobj.handle;
 +	}
@@ -5888,11 +5964,16 @@ index 000000000..ff230da2d
 +	     !ret && i < header.vm_count; i++) {
 +		struct i915_image_context vm;
 +
++		stage = "vm";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &vm, sizeof(vm));
-+		if (!ret)
++		if (!ret) {
++			resource_id = vm.id;
 +			ret = restore_context_state(fd, cookie, &vm,
 +						    I915_CRIU_CONTEXT_CREATE_VM,
 +						    previous);
++		}
 +		if (!ret)
 +			previous = vm.id;
 +	}
@@ -5900,11 +5981,16 @@ index 000000000..ff230da2d
 +	     !ret && i < header.context_count; i++) {
 +		struct i915_image_context context;
 +
++		stage = "context";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &context, sizeof(context));
-+		if (!ret)
++		if (!ret) {
++			resource_id = context.id;
 +			ret = restore_context_state(fd, cookie, &context,
 +						    I915_CRIU_CONTEXT_CREATE_CONTEXT,
 +						    previous);
++		}
 +		if (!ret)
 +			previous = context.id;
 +	}
@@ -5915,7 +6001,12 @@ index 000000000..ff230da2d
 +		for (uint32_t i = 0; !ret && i < header.binding_count; i++) {
 +			struct i915_image_binding binding;
 +
++			stage = "binding";
++			stage_index = i;
++			resource_id = 0;
 +			ret = read_all(image, &binding, sizeof(binding));
++			if (!ret)
++				resource_id = binding.object_id;
 +			if (!ret && binding.vm_id != previous_vm)
 +				previous_address = 0;
 +			if (!ret)
@@ -5932,9 +6023,14 @@ index 000000000..ff230da2d
 +	     !ret && i < header.framebuffer_count; i++) {
 +		struct i915_image_framebuffer framebuffer;
 +
++		stage = "framebuffer";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &framebuffer, sizeof(framebuffer));
-+		if (!ret)
++		if (!ret) {
++			resource_id = framebuffer.id;
 +			ret = restore_framebuffer(fd, cookie, &framebuffer, previous);
++		}
 +		if (!ret)
 +			previous = framebuffer.id;
 +	}
@@ -5943,7 +6039,12 @@ index 000000000..ff230da2d
 +		struct i915_image_blob blob;
 +		void *contents;
 +
++		stage = "blob";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &blob, sizeof(blob));
++		if (!ret)
++			resource_id = blob.id;
 +		if (ret)
 +			break;
 +		if (!blob.length || blob.length > I915_MAX_BLOB_SIZE) {
@@ -5965,11 +6066,19 @@ index 000000000..ff230da2d
 +	for (uint32_t i = 0; !ret && i < header.kms_property_count; i++) {
 +		struct i915_image_kms_property property;
 +
++		stage = "kms-property";
++		stage_index = i;
++		resource_id = 0;
 +		ret = read_all(image, &property, sizeof(property));
-+		if (!ret)
++		if (!ret) {
++			resource_id = property.object_id;
 +			ret = remember_kms_property(id, &property);
++		}
 +	}
 +	if (!ret) {
++		stage = "trailing-data";
++		stage_index = 0;
++		resource_id = 0;
 +		char trailing;
 +		ssize_t got;
 +
@@ -5981,6 +6090,9 @@ index 000000000..ff230da2d
 +	}
 +	close(image);
 +	if (ret) {
++		pr_err("i915 restore file=%d stage=%s index=%" PRIu32
++		       " resource=%" PRIu64 " failed: %d\n",
++		       id, stage, stage_index, resource_id, ret);
 +		restore_mapping_count = mapping_base;
 +		restore_kms_property_count = kms_property_base;
 +		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
@@ -7437,10 +7549,10 @@ index 000000000..dfd0160de
 +}
 diff --git a/test/others/i915-criu/i915-kms-atomic.c b/test/others/i915-criu/i915-kms-atomic.c
 new file mode 100644
-index 000000000..ccd9b403e
+index 000000000..1460357c7
 --- /dev/null
 +++ b/test/others/i915-criu/i915-kms-atomic.c
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,497 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -7461,6 +7573,8 @@ index 000000000..ccd9b403e
 +#include <drm/drm_mode.h>
 +#include <xf86drm.h>
 +#include <xf86drmMode.h>
++
++#define MODE_ID_RESERVATIONS 128
 +
 +struct dumb_buffer {
 +	uint32_t handle;
@@ -7842,6 +7956,20 @@ index 000000000..ccd9b403e
 +		die("post-restore page-flip event");
 +}
 +
++static void acquire_master(int fd)
++{
++	for (unsigned int attempt = 0; attempt < 100; attempt++) {
++		if (drmIsMaster(fd) || drmSetMaster(fd) == 0)
++			return;
++		if (errno != EBUSY)
++			die("drmSetMaster (stop the graphical session before this test)");
++		if (poll(NULL, 0, 20) < 0 && errno != EINTR)
++			die("poll waiting for prior DRM master release");
++	}
++	errno = EBUSY;
++	die("drmSetMaster remained busy after prior fixture exit");
++}
++
 +int main(void)
 +{
 +	struct sigaction action = { .sa_handler = on_signal };
@@ -7854,12 +7982,13 @@ index 000000000..ccd9b403e
 +	uint32_t crtc_index = 0;
 +	uint32_t plane_id;
 +	uint32_t mode_blob;
++	uint32_t reservations[MODE_ID_RESERVATIONS];
++	uint8_t reservation_data = 0;
 +	int fd = open_i915_primary();
 +
 +	if (fd < 0)
 +		die("open i915 primary node");
-+	if (!drmIsMaster(fd) && drmSetMaster(fd))
-+		die("drmSetMaster (stop the graphical session before this test)");
++	acquire_master(fd);
 +	if (drmSetClientCap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1) ||
 +	    drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1))
 +		die("drmSetClientCap atomic");
@@ -7869,6 +7998,18 @@ index 000000000..ccd9b403e
 +	find_pipeline(fd, resources, &connector_id, &crtc_id, &crtc_index, &mode);
 +	plane_id = find_primary_plane(fd, crtc_index);
 +	properties = get_properties(fd, connector_id, crtc_id, plane_id);
++	/*
++	 * Dynamic MST connectors consume low holes in DRM's global mode-object
++	 * IDR during lastclose. Place the fixture-owned identities above a bounded
++	 * set of temporary allocations, then release those low IDs before dump.
++	 * This keeps the positive exact-ID case independent from unrelated hotplug
++	 * churn without weakening restore's EEXIST refusal for real conflicts.
++	 */
++	for (size_t i = 0; i < MODE_ID_RESERVATIONS; i++)
++		if (drmModeCreatePropertyBlob(fd, &reservation_data,
++					      sizeof(reservation_data),
++					      &reservations[i]))
++			die("drmModeCreatePropertyBlob reservation");
 +	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 1, &buffers[0]);
 +	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 2, &buffers[1]);
 +	if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob))
@@ -7876,6 +8017,9 @@ index 000000000..ccd9b403e
 +	commit_initial_state(fd, connector_id, crtc_id, plane_id, &properties,
 +			     mode_blob, buffers[0].fb_id,
 +			     mode.hdisplay, mode.vdisplay);
++	for (size_t i = 0; i < MODE_ID_RESERVATIONS; i++)
++		if (drmModeDestroyPropertyBlob(fd, reservations[i]))
++			die("drmModeDestroyPropertyBlob reservation");
 +	drmModeFreeResources(resources);
 +
 +	if (sigaction(SIGUSR1, &action, NULL))
@@ -8029,10 +8173,10 @@ index 000000000..03b6b362e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 000000000..7617dc35d
+index 000000000..0ed2055c3
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,170 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -8179,7 +8323,8 @@ index 000000000..7617dc35d
 +        kill -KILL "$original_pid" 2>/dev/null || true
 +        exit 1
 +    fi
-+    grep -q 'Restoring FAILED' "$images/restore.log"
++    grep -Eq 'Restoring FAILED|Failed to prepare restore plugins' \
++        "$images/restore.log"
 +    printf 'PASS: corrupt KMS image mode=%s refused transactionally (status=%s)\n' \
 +        "$corrupt_mode" "$restore_status"
 +    exit 0
@@ -8195,6 +8340,10 @@ index 000000000..7617dc35d
 +    sleep 0.05
 +done
 +grep -Fqx "$expected" "$log"
++# The focused test has proved resumed scanout and a new page flip. Reap the
++# restored fixture so later fault cases can acquire DRM master independently.
++kill -KILL "$fixture_pid"
++wait "$fixture_pid" 2>/dev/null || true
 +fixture_pid=
 +printf 'PASS: CRIU restored physical atomic KMS pid=%s (%s)\n' \
 +    "$original_pid" "$ready"
@@ -8326,10 +8475,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..c4bb69246
+index 000000000..4eeac1783
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,181 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -8370,11 +8519,21 @@ index 000000000..c4bb69246
 +done
 +
 +kernel_module=$(modinfo -F filename i915)
-+if [[ $kernel_module == *.xz ]]; then
-+    xzgrep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
-+else
-+    grep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
-+fi
++require_kernel_symbol() {
++    local symbol=$1
++
++    if [[ $kernel_module == *.xz ]]; then
++        xzgrep -a -q "$symbol" "$kernel_module"
++    else
++        grep -a -q "$symbol" "$kernel_module"
++    fi
++}
++for symbol in i915_criu_framebuffer_ioctl i915_criu_mapping_ioctl; do
++    if ! require_kernel_symbol "$symbol"; then
++        echo "booted i915 module lacks required ABI-9 symbol: $symbol" >&2
++        exit 2
++    fi
++done
 +
 +read_parameter() {
 +    local name=$1
@@ -8761,302 +8920,3 @@ index 000000000..003da7b61
 +    "module parameter -1 means automatic policy; effective GuC state was taken from the kernel initialization log"
 +  ]
 +}
-diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
-index c4bb69246..4eeac1783 100755
---- a/test/others/i915-criu/run-physical-suite.sh
-+++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -38,11 +38,21 @@ for required in "$criu" "$plugin_dir/i915_plugin.so" \
- done
- 
- kernel_module=$(modinfo -F filename i915)
--if [[ $kernel_module == *.xz ]]; then
--    xzgrep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
--else
--    grep -a -q 'i915_criu_framebuffer_ioctl' "$kernel_module"
--fi
-+require_kernel_symbol() {
-+    local symbol=$1
-+
-+    if [[ $kernel_module == *.xz ]]; then
-+        xzgrep -a -q "$symbol" "$kernel_module"
-+    else
-+        grep -a -q "$symbol" "$kernel_module"
-+    fi
-+}
-+for symbol in i915_criu_framebuffer_ioctl i915_criu_mapping_ioctl; do
-+    if ! require_kernel_symbol "$symbol"; then
-+        echo "booted i915 module lacks required ABI-9 symbol: $symbol" >&2
-+        exit 2
-+    fi
-+done
- 
- read_parameter() {
-     local name=$1
-diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
-index 3c058e422..afbd7b566 100644
---- a/Documentation/i915-checkpoint-contract.md
-+++ b/Documentation/i915-checkpoint-contract.md
-@@ -518,6 +518,17 @@ subrange delta; an unresolved, overlapping, unauthorized, fixed/special, or
- corrupt mapping refuses the transaction. CRIU no longer falls back to reopening
- a DRM path when an i915 mapping record is absent.
- 
-+The first ABI-9 KMS attempt also exposed a CRIU VMA-inventory issue: adjacent
-+mappings with equal anonymous-device inode metadata borrowed one file-info
-+record, so only the first VMA reached the plugin. File identity remains safely
-+shared, but CRIU now invokes the anonymous-device hook for every borrowed VMA
-+so device-private mmap-offset provenance cannot collapse. The focused physical
-+rerun at `/var/tmp/i915-kms-abi9-adjacent` recorded both WC nodes, restored both
-+VMAs at their original virtual addresses with bit-identical contents, retained
-+DRM master and exact framebuffer/blob IDs, restored atomic scanout, and consumed
-+a real post-restore page-flip event. Its image has two object and two mapping
-+records; `images/restore.log` ends in `Restore finished successfully`.
-+
- The plugin records mutable atomic properties only for the active connector,
- CRTC, and planes, excluding immutable, legacy DPMS, and transient fence-pointer
- properties. It verifies every restored object/property ID, submits a full
-diff --git a/criu/proc_parse.c b/criu/proc_parse.c
-index dfd222770..04f1cf126 100644
---- a/criu/proc_parse.c
-+++ b/criu/proc_parse.c
-@@ -442,6 +442,27 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
- 			return 0;
- 
- 		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
-+		if (vfi->dev_maj == 0) {
-+			int surrogate_fd = -1;
-+			int ret;
-+
-+			/*
-+			 * Equal device/inode metadata permits CRIU to reuse file
-+			 * identity, but not device-private mmap-offset provenance.
-+			 * Notify the plugin for every anonymous-device VMA so two
-+			 * adjacent i915 mappings cannot collapse into one record.
-+			 */
-+			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
-+					  vma->e->start, vma->e->pgoff,
-+					  &surrogate_fd);
-+			if (ret < 0)
-+				return -1;
-+			if (ret == 1) {
-+				if (surrogate_fd < 0)
-+					return -1;
-+				close(surrogate_fd);
-+			}
-+		}
- 		if (prev->e->status & VMA_AREA_SOCKET)
- 			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
- 
-diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
-index ff230da2d..be6755cc6 100644
---- a/plugins/i915/i915_plugin.c
-+++ b/plugins/i915/i915_plugin.c
-@@ -2224,7 +2224,10 @@ static int restore_file_image(int id)
- 	struct restore_file *restore_file;
- 	size_t mapping_base = restore_mapping_count;
- 	size_t kms_property_base = restore_kms_property_count;
-+	const char *stage = "image-header";
-+	uint64_t resource_id = 0;
- 	uint64_t cookie = 0;
-+	uint32_t stage_index = 0;
- 	int image;
- 	int fd;
- 	int ret;
-@@ -2249,8 +2252,11 @@ static int restore_file_image(int id)
- 	    !(header.device_identity & UINT32_C(0xffff)) ||
- 	    !(header.device_identity >> 16) || header.revision > UINT8_MAX ||
- 	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
-+		ret = ret ? ret : -EINVAL;
-+		pr_err("i915 restore file=%d stage=%s failed: %d\n",
-+		       id, stage, ret);
- 		close(image);
--		return ret ? ret : -EINVAL;
-+		return ret;
- 	}
- 
- 	if (header.file_flags & I915_CRIU_FILE_PRIMARY)
-@@ -2261,8 +2267,11 @@ static int restore_file_image(int id)
- 		close(image);
- 		return fd == -ENODEV ? fd : -errno;
- 	}
-+	stage = "file-configuration";
- 	ret = configure_restore_file(fd, header.file_flags);
- 	if (ret) {
-+		pr_err("i915 restore file=%d stage=%s failed: %d\n",
-+		       id, stage, ret);
- 		close(image);
- 		close(fd);
- 		return ret;
-@@ -2273,6 +2282,7 @@ static int restore_file_image(int id)
- 		return -E2BIG;
- 	}
- 
-+	stage = "session-begin";
- 	ret = session_ioctl(fd, I915_CRIU_SESSION_RESTORE_BEGIN, 0, &cookie);
- 	if (!ret) {
- 		struct drm_i915_criu_file restore = {
-@@ -2288,10 +2298,13 @@ static int restore_file_image(int id)
- 			.revision = header.revision,
- 		};
- 
-+		stage = "file-state";
- 		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &restore) < 0)
- 			ret = -errno;
- 	}
- 	if (ret) {
-+		pr_err("i915 restore file=%d stage=%s failed: %d\n",
-+		       id, stage, ret);
- 		close(image);
- 		close(fd);
- 		return ret;
-@@ -2300,7 +2313,12 @@ static int restore_file_image(int id)
- 		struct i915_image_object object;
- 		void *contents;
- 
-+		stage = "object";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &object, sizeof(object));
-+		if (!ret)
-+			resource_id = object.object_id;
- 		if (ret)
- 			break;
- 		ret = validate_image_object(&object);
-@@ -2321,17 +2339,27 @@ static int restore_file_image(int id)
- 	for (uint32_t i = 0; !ret && i < header.mapping_count; i++) {
- 		struct i915_image_mapping mapping;
- 
-+		stage = "mapping";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &mapping, sizeof(mapping));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = mapping.object_id;
- 			ret = restore_mapping(fd, cookie, id, &mapping);
-+		}
- 	}
- 	for (uint32_t i = 0, previous = 0;
- 	     !ret && i < header.syncobj_count; i++) {
- 		struct i915_image_syncobj syncobj;
- 
-+		stage = "syncobj";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &syncobj, sizeof(syncobj));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = syncobj.handle;
- 			ret = restore_syncobj(fd, cookie, &syncobj, previous);
-+		}
- 		if (!ret)
- 			previous = syncobj.handle;
- 	}
-@@ -2339,11 +2367,16 @@ static int restore_file_image(int id)
- 	     !ret && i < header.vm_count; i++) {
- 		struct i915_image_context vm;
- 
-+		stage = "vm";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &vm, sizeof(vm));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = vm.id;
- 			ret = restore_context_state(fd, cookie, &vm,
- 						    I915_CRIU_CONTEXT_CREATE_VM,
- 						    previous);
-+		}
- 		if (!ret)
- 			previous = vm.id;
- 	}
-@@ -2351,11 +2384,16 @@ static int restore_file_image(int id)
- 	     !ret && i < header.context_count; i++) {
- 		struct i915_image_context context;
- 
-+		stage = "context";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &context, sizeof(context));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = context.id;
- 			ret = restore_context_state(fd, cookie, &context,
- 						    I915_CRIU_CONTEXT_CREATE_CONTEXT,
- 						    previous);
-+		}
- 		if (!ret)
- 			previous = context.id;
- 	}
-@@ -2366,7 +2404,12 @@ static int restore_file_image(int id)
- 		for (uint32_t i = 0; !ret && i < header.binding_count; i++) {
- 			struct i915_image_binding binding;
- 
-+			stage = "binding";
-+			stage_index = i;
-+			resource_id = 0;
- 			ret = read_all(image, &binding, sizeof(binding));
-+			if (!ret)
-+				resource_id = binding.object_id;
- 			if (!ret && binding.vm_id != previous_vm)
- 				previous_address = 0;
- 			if (!ret)
-@@ -2383,9 +2426,14 @@ static int restore_file_image(int id)
- 	     !ret && i < header.framebuffer_count; i++) {
- 		struct i915_image_framebuffer framebuffer;
- 
-+		stage = "framebuffer";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &framebuffer, sizeof(framebuffer));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = framebuffer.id;
- 			ret = restore_framebuffer(fd, cookie, &framebuffer, previous);
-+		}
- 		if (!ret)
- 			previous = framebuffer.id;
- 	}
-@@ -2394,7 +2442,12 @@ static int restore_file_image(int id)
- 		struct i915_image_blob blob;
- 		void *contents;
- 
-+		stage = "blob";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &blob, sizeof(blob));
-+		if (!ret)
-+			resource_id = blob.id;
- 		if (ret)
- 			break;
- 		if (!blob.length || blob.length > I915_MAX_BLOB_SIZE) {
-@@ -2416,11 +2469,19 @@ static int restore_file_image(int id)
- 	for (uint32_t i = 0; !ret && i < header.kms_property_count; i++) {
- 		struct i915_image_kms_property property;
- 
-+		stage = "kms-property";
-+		stage_index = i;
-+		resource_id = 0;
- 		ret = read_all(image, &property, sizeof(property));
--		if (!ret)
-+		if (!ret) {
-+			resource_id = property.object_id;
- 			ret = remember_kms_property(id, &property);
-+		}
- 	}
- 	if (!ret) {
-+		stage = "trailing-data";
-+		stage_index = 0;
-+		resource_id = 0;
- 		char trailing;
- 		ssize_t got;
- 
-@@ -2432,6 +2493,9 @@ static int restore_file_image(int id)
- 	}
- 	close(image);
- 	if (ret) {
-+		pr_err("i915 restore file=%d stage=%s index=%" PRIu32
-+		       " resource=%" PRIu64 " failed: %d\n",
-+		       id, stage, stage_index, resource_id, ret);
- 		restore_mapping_count = mapping_base;
- 		restore_kms_property_count = kms_property_base;
- 		session_ioctl(fd, I915_CRIU_SESSION_ABORT, 0, &cookie);
