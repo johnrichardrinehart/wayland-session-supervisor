@@ -78,6 +78,11 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("multi-user.target")
     boot_before = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
 
+    # Keep exact restored PIDs above the deterministic post-reboot service range.
+    machine.succeed(
+      "while test $(cat /proc/sys/kernel/ns_last_pid) -lt 4096; do "
+      "/run/current-system/sw/bin/true; done"
+    )
     machine.succeed(
       "systemd-run --unit=wss-feasibility --service-type=exec "
       "--property=StandardOutput=null --property=StandardError=null "
@@ -107,7 +112,8 @@ pkgs.testers.runNixOSTest {
 
     machine.succeed(
       "criu restore --images-dir /var/lib/wayland-session-supervisor/checkpoint "
-      "--shell-job --file-locks --restore-detached --log-file restore.log -v4"
+      "--shell-job --file-locks --restore-detached --log-file restore.log -v4 || "
+      "{ cat /var/lib/wayland-session-supervisor/checkpoint/restore.log; exit 1; }"
     )
     client_pid = machine.succeed("cat /var/lib/wayland-session-supervisor/client.pid").strip()
     machine.succeed(f"kill -USR1 {client_pid}")
