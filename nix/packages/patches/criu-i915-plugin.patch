@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..db2781e0e
+index 000000000..fbaf50d92
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,550 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -489,6 +489,13 @@ index 000000000..db2781e0e
 +privileged restore phase has begun, reapplies the recorded client capabilities,
 +and requires the resulting file state to match exactly.
 +
++The file-state record also carries the PCI vendor/device, subsystem IDs, and
++revision. Restore obtains those values from the newly opened kernel device and
++rejects a mismatch before object creation. Each dump and restore transaction
++snapshots i915's global GPU reset counter; every subsequent operation and commit
++returns `EIO` if a reset occurred while the graph was being serialized or
++created.
++
 +The same transaction enumerates file-owned framebuffer IDs and property-blob
 +IDs. DRM core takes one internal GEM `handle_count` reference for each
 +framebuffer plane without adding an entry to any userspace handle table; ABI 8
@@ -505,9 +512,12 @@ index 000000000..db2781e0e
 +The plugin records mutable atomic properties only for the active connector,
 +CRTC, and planes, excluding immutable, legacy DPMS, and transient fence-pointer
 +properties. It verifies every restored object/property ID, submits a full
-+`DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET` transaction before
-+i915 commit, commits the i915 restore transaction, and then issues the real
-+atomic modeset before processes resume. An atomic failure is a restore failure;
++`DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET` transaction, then
++issues the real atomic modeset while the i915 restore transaction is still
++active. Non-master DRM files commit first and the KMS master commits last, so a
++reset or commit failure can still abort the master transaction, remove its
++recreated framebuffers/blobs, and disable the restored scanout before any
++process resumes. An atomic failure is a restore failure;
 +there is no partial-success path.
 +
 +`i915-kms-atomic.c` creates two deterministic dumb-buffer framebuffers, an exact
@@ -518,7 +528,11 @@ index 000000000..db2781e0e
 +`run-kms-criu.sh` must run from a text console with the graphical session
 +stopped. ABI-8 implementation and warning-clean kernel/plugin/fixture builds are
 +complete; physical pass evidence is intentionally not claimed until the
-+matching kernel and plugin are booted and the suite runs successfully.
++matching kernel and plugin are booted and the suite runs successfully. The KMS
++harness also corrupts captured PCI identity to prove incompatible-device
++refusal and uses i915's privileged debugfs reset injector during a deliberately
++paused test transaction to prove reset detection without admitting a partial
++image.
 +
 +`run-physical-suite.sh` reproduces all prior cases in one privileged run and,
 +for ABI 8, adds the physical atomic-KMS case after the retained duplicate
@@ -607,10 +621,10 @@ index 70c607ec6..542fe575f 100644
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..f3850cf8d
+index 000000000..eb39a4151
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,205 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -735,8 +749,12 @@ index 000000000..f3850cf8d
 +	uint32_t op;
 +	uint64_t cookie;
 +	uint32_t flags;
-+	uint32_t pad;
-+	uint64_t reserved[4];
++	uint16_t vendor_id;
++	uint16_t device_id;
++	uint16_t subsystem_vendor_id;
++	uint16_t subsystem_device_id;
++	uint32_t revision;
++	uint64_t reserved[3];
 +};
 +
 +struct drm_i915_criu_framebuffer {
@@ -814,10 +832,10 @@ index 000000000..f3850cf8d
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..44e1f88c9
+index 000000000..8405db29f
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2181 @@
+@@ -0,0 +1,2214 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -879,10 +897,10 @@ index 000000000..44e1f88c9
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..906048f
++index 0000000..292d7e0
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1707 @@
++@@ -0,0 +1,1735 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 8. */
 ++
@@ -892,6 +910,7 @@ index 000000000..44e1f88c9
 ++#include <linux/file.h>
 ++#include <linux/pid.h>
 ++#include <linux/ptrace.h>
+++#include <linux/pci.h>
 ++#include <linux/random.h>
 ++#include <linux/sched/task.h>
 ++#include <linux/sizes.h>
@@ -914,6 +933,7 @@ index 000000000..44e1f88c9
 ++#include "gem/i915_gem_ioctls.h"
 ++#include "gem/i915_gem_object.h"
 ++#include "display/intel_fb.h"
+++#include "i915_gpu_error.h"
 ++#include "i915_request.h"
 ++#include "i915_vma.h"
 ++
@@ -1330,6 +1350,9 @@ index 000000000..44e1f88c9
 ++		return -EINVAL;
 ++	if (!cookie || cookie != fpriv->criu_cookie)
 ++		return -ESTALE;
+++	if (fpriv->criu_reset_count !=
+++	    i915_reset_count(&fpriv->i915->gpu_error))
+++		return -EIO;
 ++	return 0;
 ++}
 ++
@@ -1360,6 +1383,8 @@ index 000000000..44e1f88c9
 ++		ret = validate_syncobjs(file);
 ++		if (ret)
 ++			break;
+++		fpriv->criu_reset_count =
+++			i915_reset_count(&fpriv->i915->gpu_error);
 ++		fpriv->criu_mode = I915_CRIU_MODE_DUMP;
 ++		fpriv->criu_cookie = get_random_u64();
 ++		if (!fpriv->criu_cookie)
@@ -1376,6 +1401,8 @@ index 000000000..44e1f88c9
 ++			ret = -EINVAL;
 ++			break;
 ++		}
+++		fpriv->criu_reset_count =
+++			i915_reset_count(&fpriv->i915->gpu_error);
 ++		fpriv->criu_mode = I915_CRIU_MODE_RESTORE;
 ++		fpriv->criu_cookie = get_random_u64();
 ++		if (!fpriv->criu_cookie)
@@ -1386,6 +1413,11 @@ index 000000000..44e1f88c9
 ++		if (!args->cookie || args->cookie != fpriv->criu_cookie ||
 ++		    fpriv->criu_mode == I915_CRIU_MODE_NONE) {
 ++			ret = -ESTALE;
+++			break;
+++		}
+++		if (fpriv->criu_reset_count !=
+++		    i915_reset_count(&fpriv->i915->gpu_error)) {
+++			ret = -EIO;
 ++			break;
 ++		}
 ++		xa_destroy(&fpriv->criu_restore_handles);
@@ -1932,10 +1964,11 @@ index 000000000..44e1f88c9
 ++		I915_CRIU_FILE_WRITEBACK_CONNECTORS;
 ++	struct drm_i915_criu_file *args = data;
 ++	struct drm_i915_file_private *fpriv = file->driver_priv;
+++	struct pci_dev *pdev = to_pci_dev(dev->dev);
 ++	u32 actual;
 ++	int ret;
 ++
-++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
+++	if (args->version != I915_CRIU_ABI_VERSION ||
 ++	    args->flags & ~supported ||
 ++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
 ++		return -EINVAL;
@@ -1943,19 +1976,32 @@ index 000000000..44e1f88c9
 ++	mutex_lock(&fpriv->criu_lock);
 ++	actual = checkpoint_file_flags(file);
 ++	if (args->op == I915_CRIU_FILE_QUERY) {
-++		if (args->flags) {
+++		if (args->flags || args->vendor_id || args->device_id ||
+++		    args->subsystem_vendor_id || args->subsystem_device_id ||
+++		    args->revision) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
 ++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
 ++		if (!ret)
 ++			ret = validate_kms_file_state(dev, file);
-++		if (!ret)
+++		if (!ret) {
 ++			args->flags = actual;
+++			args->vendor_id = pdev->vendor;
+++			args->device_id = pdev->device;
+++			args->subsystem_vendor_id = pdev->subsystem_vendor;
+++			args->subsystem_device_id = pdev->subsystem_device;
+++			args->revision = pdev->revision;
+++		}
 ++	} else if (args->op == I915_CRIU_FILE_RESTORE) {
 ++		ret = check_session(fpriv, args->cookie,
 ++				    I915_CRIU_MODE_RESTORE);
-++		if (!ret && args->flags != actual)
+++		if (!ret &&
+++		    (args->flags != actual || args->vendor_id != pdev->vendor ||
+++		     args->device_id != pdev->device ||
+++		     args->subsystem_vendor_id != pdev->subsystem_vendor ||
+++		     args->subsystem_device_id != pdev->subsystem_device ||
+++		     args->revision != pdev->revision))
 ++			ret = -EXDEV;
 ++		if (!ret)
 ++			ret = validate_kms_file_state(dev, file);
@@ -2666,10 +2712,10 @@ index 000000000..44e1f88c9
 + 
 + /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
-+index c9cb8ee..7c48282 100644
++index c9cb8ee..df3bf73 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
-+@@ -106,6 +106,18 @@ struct drm_i915_file_private {
++@@ -106,6 +106,19 @@ struct drm_i915_file_private {
 + 	unsigned long hang_timestamp;
 + 
 + 	struct i915_drm_client *client;
@@ -2683,6 +2729,7 @@ index 000000000..44e1f88c9
 ++	struct xarray criu_restore_fbs;
 ++	struct xarray criu_restore_blobs;
 ++	u64 criu_cookie;
+++	u32 criu_reset_count;
 ++	u32 criu_mode;
 ++	bool criu_context_touched;
 + };
@@ -2717,7 +2764,7 @@ index 000000000..44e1f88c9
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..3dd9860 100644
++index 535cb68..45dfd70 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,16 @@ typedef struct _drm_i915_sarea {
@@ -2754,7 +2801,7 @@ index 000000000..44e1f88c9
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3926,233 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3926,237 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -2900,8 +2947,12 @@ index 000000000..44e1f88c9
 ++	__u32 op;
 ++	__u64 cookie;
 ++	__u32 flags;
-++	__u32 pad;
-++	__u64 reserved[4];
+++	__u16 vendor_id;
+++	__u16 device_id;
+++	__u16 subsystem_vendor_id;
+++	__u16 subsystem_device_id;
+++	__u32 revision;
+++	__u64 reserved[3];
 ++};
 ++
 ++#define I915_CRIU_FRAMEBUFFER_QUERY  1
@@ -3316,10 +3367,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..4791a50ca
+index 000000000..e070f181e
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,2642 @@
+@@ -0,0 +1,2709 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -3379,8 +3430,19 @@ index 000000000..4791a50ca
 +	uint32_t blob_count;
 +	uint32_t kms_property_count;
 +	uint32_t file_flags;
++	uint32_t device_identity;
++	uint32_t subsystem_identity;
++	uint32_t revision;
++	uint32_t header_reserved;
 +	uint32_t kind;
 +};
++
++_Static_assert(sizeof(struct i915_image_header) == 72,
++	       "i915 image header layout changed");
++_Static_assert(offsetof(struct i915_image_header, file_flags) == 48,
++	       "i915 file flags offset changed");
++_Static_assert(offsetof(struct i915_image_header, device_identity) == 52,
++	       "i915 device identity offset changed");
 +
 +struct i915_image_object {
 +	uint64_t object_id;
@@ -3413,6 +3475,14 @@ index 000000000..4791a50ca
 +	uint64_t object_id;
 +	uint64_t address;
 +	uint64_t size;
++};
++
++struct i915_device_identity {
++	uint16_t vendor_id;
++	uint16_t device_id;
++	uint16_t subsystem_vendor_id;
++	uint16_t subsystem_device_id;
++	uint32_t revision;
 +};
 +
 +struct i915_image_framebuffer {
@@ -4115,7 +4185,8 @@ index 000000000..4791a50ca
 +}
 +
 +static int collect_dump_file_state(int fd, uint64_t cookie,
-+				   uint32_t *file_flags)
++				   uint32_t *file_flags,
++				   struct i915_device_identity *identity)
 +{
 +	struct drm_i915_criu_file query = {
 +		.version = I915_CRIU_ABI_VERSION,
@@ -4126,6 +4197,27 @@ index 000000000..4791a50ca
 +	if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &query) < 0)
 +		return -errno;
 +	*file_flags = query.flags;
++	*identity = (struct i915_device_identity) {
++		.vendor_id = query.vendor_id,
++		.device_id = query.device_id,
++		.subsystem_vendor_id = query.subsystem_vendor_id,
++		.subsystem_device_id = query.subsystem_device_id,
++		.revision = query.revision,
++	};
++	{
++		const char *pause_ms = getenv("I915_CRIU_TEST_PAUSE_AFTER_FILE_QUERY_MS");
++
++		if (pause_ms && *pause_ms) {
++			char *end = NULL;
++			unsigned long milliseconds = strtoul(pause_ms, &end, 10);
++
++			if (!end || *end || !milliseconds || milliseconds > 5000)
++				return -EINVAL;
++			pr_info("i915 test pause after file query: %lu ms\n",
++				milliseconds);
++			usleep(milliseconds * 1000);
++		}
++	}
 +	return 0;
 +}
 +
@@ -4391,7 +4483,8 @@ index 000000000..4791a50ca
 +		       size_t framebuffer_count,
 +		       const struct dump_blob *blobs, size_t blob_count,
 +		       const struct i915_image_kms_property *kms_properties,
-+		       size_t kms_property_count, uint32_t file_flags)
++		       size_t kms_property_count, uint32_t file_flags,
++		       const struct i915_device_identity *identity)
 +{
 +	struct i915_image_header header = {
 +		.magic = I915_IMAGE_MAGIC,
@@ -4406,6 +4499,11 @@ index 000000000..4791a50ca
 +		.blob_count = blob_count,
 +		.kms_property_count = kms_property_count,
 +		.file_flags = file_flags,
++		.device_identity = identity->vendor_id |
++				   (uint32_t)identity->device_id << 16,
++		.subsystem_identity = identity->subsystem_vendor_id |
++				      (uint32_t)identity->subsystem_device_id << 16,
++		.revision = identity->revision,
 +		.kind = I915_IMAGE_KIND_DRM_FILE,
 +	};
 +	int fd = image_fd(file_id, O_WRONLY | O_CREAT | O_EXCL);
@@ -4660,6 +4758,7 @@ index 000000000..4791a50ca
 +	size_t blob_count = 0;
 +	size_t kms_property_count = 0;
 +	uint32_t file_flags = 0;
++	struct i915_device_identity identity = {0};
 +	uint64_t cookie = 0;
 +	int ret;
 +
@@ -4692,7 +4791,7 @@ index 000000000..4791a50ca
 +			    checkpoint_pid, &cookie);
 +	if (ret)
 +		return ret;
-+	ret = collect_dump_file_state(fd, cookie, &file_flags);
++	ret = collect_dump_file_state(fd, cookie, &file_flags, &identity);
 +	if (!ret)
 +		ret = collect_dump_objects(fd, cookie, &objects, &count);
 +	if (!ret)
@@ -4725,7 +4824,8 @@ index 000000000..4791a50ca
 +				  vms, vm_count, contexts, context_count,
 +				  bindings, binding_count, framebuffers,
 +				  framebuffer_count, blobs, blob_count,
-+				  kms_properties, kms_property_count, file_flags);
++				  kms_properties, kms_property_count, file_flags,
++				  &identity);
 +	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT : I915_CRIU_SESSION_COMMIT,
 +			  0, &cookie) &&
 +	    !ret)
@@ -5341,7 +5441,9 @@ index 000000000..4791a50ca
 +	    header.kms_property_count > I915_MAX_RESTORE_KMS_PROPERTIES ||
 +	    !(header.file_flags & (I915_CRIU_FILE_PRIMARY |
 +				   I915_CRIU_FILE_RENDER)) ||
-+	    header.kind != I915_IMAGE_KIND_DRM_FILE) {
++	    !(header.device_identity & UINT32_C(0xffff)) ||
++	    !(header.device_identity >> 16) || header.revision > UINT8_MAX ||
++	    header.header_reserved || header.kind != I915_IMAGE_KIND_DRM_FILE) {
 +		close(image);
 +		return ret ? ret : -EINVAL;
 +	}
@@ -5373,6 +5475,12 @@ index 000000000..4791a50ca
 +			.op = I915_CRIU_FILE_RESTORE,
 +			.cookie = cookie,
 +			.flags = header.file_flags,
++			.vendor_id = header.device_identity & UINT32_C(0xffff),
++			.device_id = header.device_identity >> 16,
++			.subsystem_vendor_id =
++				header.subsystem_identity & UINT32_C(0xffff),
++			.subsystem_device_id = header.subsystem_identity >> 16,
++			.revision = header.revision,
 +		};
 +
 +		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FILE, &restore) < 0)
@@ -5566,7 +5674,9 @@ index 000000000..4791a50ca
 +		     header.vm_count || header.context_count ||
 +		     header.binding_count || header.framebuffer_count ||
 +		     header.blob_count || header.kms_property_count ||
-+		     header.file_flags || !image.object_id || !image.fd_count ||
++		     header.file_flags || header.device_identity ||
++		     header.subsystem_identity || header.revision ||
++		     header.header_reserved || !image.object_id || !image.fd_count ||
 +		     image.reserved))
 +		ret = -EINVAL;
 +	if (!ret) {
@@ -5618,7 +5728,9 @@ index 000000000..4791a50ca
 +		     header.vm_count || header.context_count ||
 +		     header.binding_count || header.framebuffer_count ||
 +		     header.blob_count || header.kms_property_count ||
-+		     header.file_flags || !image.source_file_id ||
++		     header.file_flags || header.device_identity ||
++		     header.subsystem_identity || header.revision ||
++		     header.header_reserved || !image.source_file_id ||
 +		     !image.handle ||
 +		     image.flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
 +		     !image.fd_count || image.point || image.reserved[0] ||
@@ -5939,26 +6051,32 @@ index 000000000..4791a50ca
 +	{
 +		int ret = apply_kms_state(true);
 +
++		if (!ret)
++			ret = apply_kms_state(false);
 +		if (ret)
 +			return ret;
 +	}
-+	for (size_t i = 0; i < restore_file_count; i++) {
-+		int fd;
-+		int ret;
++	for (unsigned int master_pass = 0; master_pass < 2; master_pass++) {
++		for (size_t i = 0; i < restore_file_count; i++) {
++			bool is_master = restore_files[i].file_flags &
++					 I915_CRIU_FILE_MASTER;
++			int fd;
++			int ret;
 +
-+		if (!restore_files[i].active)
-+			continue;
-+		fd = criu_plugin_fdstore_get(restore_files[i].fdstore_id);
-+		if (fd < 0)
-+			return -EIO;
-+		ret = session_ioctl(fd, I915_CRIU_SESSION_COMMIT,
-+				    0, &restore_files[i].cookie);
-+		close(fd);
-+		if (ret)
-+			return ret;
-+		restore_files[i].active = false;
++			if (!restore_files[i].active || is_master != master_pass)
++				continue;
++			fd = criu_plugin_fdstore_get(restore_files[i].fdstore_id);
++			if (fd < 0)
++				return -EIO;
++			ret = session_ioctl(fd, I915_CRIU_SESSION_COMMIT,
++					    0, &restore_files[i].cookie);
++			close(fd);
++			if (ret)
++				return ret;
++			restore_files[i].active = false;
++		}
 +	}
-+	return apply_kms_state(false);
++	return 0;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE,
 +			i915_plugin_resume_devices_late)
@@ -7537,10 +7655,10 @@ index 000000000..03b6b362e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 000000000..677e00a77
+index 000000000..dc61f2e07
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,161 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -7561,6 +7679,7 @@ index 000000000..677e00a77
 +images="$work/images"
 +log="$work/fixture.log"
 +corrupt_mode=${I915_CRIU_KMS_CORRUPT_MODE:-}
++reset_fault=${I915_CRIU_KMS_RESET_FAULT:-0}
 +
 +cleanup() {
 +    if [[ -n ${fixture_pid:-} ]]; then
@@ -7599,6 +7718,40 @@ index 000000000..677e00a77
 +ready=$(grep '^READY ' "$log")
 +printf '%s\n' "$ready"
 +
++if [[ $reset_fault == 1 ]]; then
++    reset_file=$(find /sys/kernel/debug/dri -path '*/i915_wedged' -print -quit)
++    if [[ -z $reset_file ]]; then
++        echo 'i915 reset fault injection is unavailable in debugfs' >&2
++        exit 2
++    fi
++    set +e
++    I915_CRIU_TEST_PAUSE_AFTER_FILE_QUERY_MS=3000 \
++        "$criu" dump -t "$original_pid" -D "$images" --shell-job \
++        "${plugin_args[@]}" --log-file dump.log -v4 &
++    dump_pid=$!
++    set -e
++    for _ in $(seq 1 200); do
++        grep -q 'i915 test pause after file query' "$images/dump.log" 2>/dev/null && break
++        kill -0 "$dump_pid" 2>/dev/null || break
++        sleep 0.02
++    done
++    grep -q 'i915 test pause after file query' "$images/dump.log"
++    printf '1\n' >"$reset_file"
++    set +e
++    wait "$dump_pid"
++    dump_status=$?
++    set -e
++    if (( dump_status == 0 || dump_status >= 128 )); then
++        echo "GPU reset during dump did not fail safely: status=$dump_status" >&2
++        exit 1
++    fi
++    grep -q 'Dumping FAILED' "$images/dump.log"
++    kill -0 "$fixture_pid"
++    printf 'PASS: GPU reset during the i915 transaction refused dump without partial capture (status=%s)\n' \
++        "$dump_status"
++    exit 0
++fi
++
 +"$criu" dump -t "$original_pid" -D "$images" --shell-job \
 +    "${plugin_args[@]}" --log-file dump.log -v4
 +wait "$fixture_pid" 2>/dev/null || true
@@ -7617,6 +7770,10 @@ index 000000000..677e00a77
 +        framebuffer-count)
 +            printf '\377\377\377\377' | dd of="${i915_images[0]}" \
 +                bs=1 seek=36 conv=notrunc status=none
++            ;;
++        device)
++            printf '\206\200\377\377' | dd of="${i915_images[0]}" \
++                bs=1 seek=52 conv=notrunc status=none
 +            ;;
 +        truncated)
 +            truncate -s -1 "${i915_images[0]}"
@@ -7791,10 +7948,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..ca905d828
+index 000000000..d17ab38da
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,166 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -7942,6 +8099,14 @@ index 000000000..ca905d828
 +    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=framebuffer-count \
 +    I915_CRIU_TEST_DIR="$suite/kms-count-corruption-refusal" \
 +    "$scripts/run-kms-criu.sh"
++run_case kms-device-mismatch-refusal env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=device \
++    I915_CRIU_TEST_DIR="$suite/kms-device-mismatch-refusal" \
++    "$scripts/run-kms-criu.sh"
++run_case kms-reset-refusal env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_RESET_FAULT=1 \
++    I915_CRIU_TEST_DIR="$suite/kms-reset-refusal" \
++    "$scripts/run-kms-criu.sh"
 +
 +jq -n --arg timestamp "$timestamp" --arg suite "$suite" \
 +    '{schema:1,timestamp:$timestamp,suite:$suite,verdict:"pass",
@@ -7950,7 +8115,8 @@ index 000000000..ca905d828
 +      "retained-sync-file","external-sync-file-refusal",
 +      "idle-context-vm","sync-callback-refusal",
 +      "context-vm-binding","custom-engine-refusal","physical-kms",
-+      "kms-role-corruption-refusal","kms-count-corruption-refusal"]}' >"$suite/verdict.json"
++      "kms-role-corruption-refusal","kms-count-corruption-refusal",
++      "kms-device-mismatch-refusal","kms-reset-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
