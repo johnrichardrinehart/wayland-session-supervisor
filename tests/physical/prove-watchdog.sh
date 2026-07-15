@@ -26,8 +26,8 @@ fi
 cleanup() {
     "${user_systemctl[@]}" stop "$victim" >/dev/null 2>&1 || true
     "${user_systemctl[@]}" reset-failed "$victim" >/dev/null 2>&1 || true
-    sudo -n systemctl stop "$timer" "${watchdog}.service" >/dev/null 2>&1 || true
-    sudo -n systemctl reset-failed "$timer" "${watchdog}.service" >/dev/null 2>&1 || true
+    sudo -n systemctl --system --machine=.host stop "$timer" "${watchdog}.service" >/dev/null 2>&1 || true
+    sudo -n systemctl --system --machine=.host reset-failed "$timer" "${watchdog}.service" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
@@ -45,7 +45,8 @@ fi
 
 # Arm the system-manager timer only after the target cgroup is known. The
 # physical launcher uses the same sequence before its target can open devices.
-sudo -n systemd-run --unit="$watchdog" --on-active=2s \
+sudo -n systemd-run --system --machine=.host \
+    --unit="$watchdog" --on-active=2s \
     --service-type=oneshot --collect \
     --setenv=PATH=/run/current-system/sw/bin \
     "$bash_bin" "$repo/tests/physical/watchdog-action.sh" \
@@ -60,7 +61,7 @@ for _ in $(seq 1 100); do
 done
 if "${user_systemctl[@]}" is-active --quiet "$victim" || [[ ! -s $marker ]]; then
     echo "independent system watchdog did not terminate the victim" >&2
-    sudo -n journalctl -u "${watchdog}.service" --no-pager >&2 || true
+    sudo -n journalctl --machine=.host -u "${watchdog}.service" --no-pager >&2 || true
     exit 1
 fi
 
