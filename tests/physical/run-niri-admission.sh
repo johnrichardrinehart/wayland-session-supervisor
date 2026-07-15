@@ -47,7 +47,8 @@ criu=${WSS_PHYSICAL_CRIU:-/tmp/criu-i915-worktree}
 niri_candidate=${WSS_PHYSICAL_NIRI:-$(command -v niri || true)}
 [[ -n $niri_candidate ]] || fail "Niri is not on PATH"
 niri=$(readlink -f "$niri_candidate") || fail "cannot resolve Niri: $niri_candidate"
-plugin=${WSS_PHYSICAL_I915_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/i915/i915_plugin.so}
+i915_plugin=${WSS_PHYSICAL_I915_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/i915/i915_plugin.so}
+input_plugin=${WSS_PHYSICAL_INPUT_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/input/input_plugin.so}
 production_scope=${WSS_PHYSICAL_PRODUCTION_SCOPE:-wayland-session-supervisor-default.scope}
 session_id=${XDG_SESSION_ID:-$(loginctl list-sessions --no-legend | awk -v uid="$uid" '$2 == uid && $4 == "seat0" { print $1; exit }')}
 vt_number=${XDG_VTNR:-$(loginctl show-session "$session_id" -p VTNr --value 2>/dev/null || true)}
@@ -71,7 +72,8 @@ for expected in \
 done
 [[ -x $wss ]] || fail "supervisor is not executable: $wss"
 [[ -x $criu ]] || fail "CRIU wrapper is not executable: $criu"
-[[ -f $plugin ]] || fail "i915 plugin is absent: $plugin"
+[[ -f $i915_plugin ]] || fail "i915 plugin is absent: $i915_plugin"
+[[ -f $input_plugin ]] || fail "input plugin is absent: $input_plugin"
 [[ -x $niri ]] || fail "Niri is not executable: $niri"
 "$niri" validate -c "$config" >/dev/null || fail "minimal Niri config is invalid"
 grep -F 'allow-inhibiting=false' "$config" | grep -F 'quit skip-confirmation=true' >/dev/null \
@@ -114,14 +116,16 @@ jq -n \
     --arg mode "$mode" --arg boot_id "$boot_id" --arg user "$user" \
     --arg gate "$gate" --arg evidence "$evidence" --arg state "$state" \
     --arg runtime "$runtime" --arg wss "$wss" --arg criu "$criu" \
-    --arg plugin "$plugin" --arg niri "$niri" --arg config "$config" \
+    --arg i915_plugin "$i915_plugin" --arg input_plugin "$input_plugin" \
+    --arg niri "$niri" --arg config "$config" \
     --arg namespace_wrapper "$namespace_wrapper_source" \
     --arg seatd_wrapper "$seatd_wrapper_source" \
     --arg production_scope "$production_scope" --arg session_id "$session_id" \
     --arg vt_number "$vt_number" --argjson ssh_connections "$ssh_connections" \
     '{schema: 1, mode: $mode, boot_id: $boot_id, user: $user,
       gate: $gate, evidence: $evidence, state: $state, runtime: $runtime,
-      supervisor: $wss, criu: $criu, plugin: $plugin, niri: $niri,
+      supervisor: $wss, criu: $criu,
+      plugins: {i915: $i915_plugin, input: $input_plugin}, niri: $niri,
       config: $config, namespace_wrapper_source: $namespace_wrapper,
       seatd_wrapper_source: $seatd_wrapper, production_scope: $production_scope,
       session_id: $session_id, vt_number: $vt_number,
@@ -146,7 +150,8 @@ sudo -n systemd-run --system --machine=.host \
     "$bash_bin" "$repo/tests/physical/niri-admission-coordinator.sh" \
     "$user" "$state" "$runtime" "$evidence" "$wss" "$criu" \
     "$namespace_wrapper_source" "$seatd_wrapper_source" "$niri" "$config" \
-    "$session_id" "$vt_number" "$production_scope" "$repo" "$plugin"
+    "$session_id" "$vt_number" "$production_scope" "$repo" \
+    "$i915_plugin" "$input_plugin"
 
 cat <<EOF
 ARMED: root coordinator ${coordinator}.service

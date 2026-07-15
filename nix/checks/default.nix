@@ -6,6 +6,11 @@
 {
   package = self.packages.${system}.default;
   cargo-test = self.packages.${system}.default;
+  criu-plugins = pkgs.runCommand "wayland-session-supervisor-criu-plugins" { } ''
+    test -x ${self.packages.${system}.our-criu}/lib/criu/i915_plugin.so
+    test -x ${self.packages.${system}.our-criu}/lib/criu/input_plugin.so
+    touch "$out"
+  '';
   manual-snapshot-and-reboot = import ./manual-snapshot-and-reboot.nix { inherit pkgs self system; };
   auto-snapshot-and-reboot = import ./auto-snapshot-and-reboot.nix { inherit pkgs self system; };
   niri-manual-snapshot-and-reboot = import ./niri-manual-snapshot-and-reboot.nix {

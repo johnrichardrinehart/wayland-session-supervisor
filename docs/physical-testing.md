@@ -30,23 +30,25 @@ substitute for these controls.
 
 ## Current blocker
 
-The first physical Niri admission run retained a pidfd supplied by the host
-seat/session stack. Its PID namespace is outside the supervised process domain.
-Reopening that pidfd after reboot would reconstruct an external relationship,
-which the exact-restore contract forbids. The experimental
-`services.wayland-session-supervisor.inDomainSeatAuthority` option is the
-fail-closed candidate: it installs upstream `seatd-launch` as a dedicated
-setuid wrapper, forces `LIBSEAT_BACKEND=seatd`, and places the seatd launcher,
-its privileged seatd child, and Niri inside the checkpoint command tree. It
-conflicts with a host-global `services.seatd` daemon and is off by default.
-This is upstream's documented privilege model for `seatd-launch`; Niri itself
-runs as the authenticated real UID.
+The original host-seat pidfd remains deliberately unsupported because reopening
+it after reboot would reconstruct an external relationship. The experimental
+`services.wayland-session-supervisor.inDomainSeatAuthority` option instead
+installs upstream `seatd-launch` as a dedicated setuid wrapper, forces
+`LIBSEAT_BACKEND=seatd`, and places the launcher, privileged seatd child, and
+Niri inside the checkpoint command tree. It conflicts with a host-global
+`services.seatd` daemon. This is upstream's documented privilege model for
+`seatd-launch`; Niri itself runs as the authenticated real UID.
 
-The option has configuration-level and VM reboot proof: CRIU restores the
-mixed-credential seatd tree with exact namespace-local PIDs and credentials.
-It must not be enabled as the normal physical session until seatd socket/device
-identity, rollback, and physical restore behavior pass without external
-process references.
+The bounded physical run at
+`/var/tmp/wss-physical-niri-admission-20260715T214728Z` proved exact equality
+for the four-process namespace/cgroup and reached CRIU with physical i915/KMS
+active. CRIU then refused seatd's `/dev/input/event2` file description. The
+next generation therefore carries a versioned, read-only evdev admission query
+and a separate input plugin. The initial subset requires empty queues, no grab,
+no event filter, no force feedback, one exact device identity match, and equal
+global input state. Every other state remains a conservative refusal. The
+uinput ABI fixture and physical plugin round trip must pass before this option
+is deployed as the normal session or any restore success is claimed.
 
 ## Bounded Niri admission
 
@@ -70,8 +72,9 @@ Niri domain intentionally terminates that terminal and this agent with it.
 
 `run-niri-admission.sh --dry-run` is non-destructive. It verifies the current
 boot's schema-2 escape gate, all recovery-stage results, active SSH control,
-user-manager lingering, exact temporary security-wrapper targets, the CRIU
-plugin, and the safety config. It does not open DRM, input, or a VT.
+user-manager lingering, exact temporary security-wrapper targets, both the
+i915 and input CRIU plugins, and the safety config. It does not open DRM,
+input, or a VT.
 
 `--execute` is deliberately session-destructive and also requires
 `WSS_PHYSICAL_NIRI_CONFIRM=stop-production-session`. It starts a root

@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 000000000..afbd7b566
+index 0000000000000000000000000000000000000000..99cdc80e04d3d1c02d99e1081a8a0e9250c11607
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,685 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -570,6 +570,116 @@ index 000000000..afbd7b566
 +beforehand and passed from `/tmp` by default, keeping the root run free of
 +ad-hoc toolchain dependencies.
 +
++On 2026-07-15 ABI/image version 9 passed all eighteen staged cases on boot ID
++`64fda6fe-15cf-40ea-ba14-cb8d09ecd709` and the final NixOS generation
++`/nix/store/bk4x1f27gbmm8cbfd1v35fpmp8s357f7-nixos-system-framie-26.05.20260709.5fe3335`.
++The private evidence directory is
++`/var/tmp/i915-criu-physical-final-20260715T132240Z`; both
++`verdict.json` and `invocation-status.txt` report success. Its positive KMS
++fixture retained DRM master, exact blob IDs `780`, framebuffer IDs `778` and
++`779`, both independent WC mapping records and bit-identical contents, active
++atomic eDP scanout, and delivery of a new page-flip event after restore. The
++negative matrix refused role, framebuffer-count, mapping-count, and PCI-device
++corruption transactionally, in addition to the earlier schema, sharing,
++dma-buf, sync-file, callback, and custom-engine refusal cases.
++
++An idle i915 engine treats a debugfs reset request as a successful no-op, so the
++reset test now starts a separate render client only after the target dump
++transaction reaches its deliberate pause and keeps a long batch stream queued.
++This leaves target-client quiescence unchanged while guaranteeing that the
++request performs a real `rcs0` reset and advances the driver's reset epoch. The
++strengthened focused evidence at `/var/tmp/i915-kms-reset-real-final` records
++the `GPU HANG`, `Resetting rcs0 for Manually reset engine mask to 1`, and
++context-reset messages in `reset-kernel.log`. CRIU exits with status 1,
++`dump.log` ends in `Dumping FAILED`, and no complete inventory or i915 private
++image exists. The original KMS fixture then revalidates DRM master, exact
++framebuffer/blob identities, scanout properties and both mapped contents, and
++successfully consumes a new page-flip event. Thus reset interruption neither
++commits a partial checkpoint nor damages the existing display state.
++
++`generation-supplement.json` binds the full run to i915 module SHA-256
++`fb7001801215ee83adfee0c45a01d36334120e2e92d3acaa6969da5c0521e6a0`,
++plugin SHA-256
++`0344a43812b78b82db91e984826ea1d81510197db4fab20efd491d8855504996`,
++libdrm 2.4.133, Niri's Mesa libgbm 26.0.3, Mesa iris 26.1.4, and the four
++fixture hashes. The matching boot log resolves automatic GuC policy to
++`enable_guc=0 (guc:no submission:no huc:no slpc:no)`. This evidence completes
++the isolated physical-KMS boundary; it does not by itself establish physical
++Niri restoration, authenticated reboot restoration, repeated-cycle leak
++freedom, or production safety.
++
++### Physical Niri admission baseline
++
++The first isolated physical-Niri run on 2026-07-15 used the supervisor's real
++PID and mount namespaces with a minimal Niri configuration and no clients. The
++private cgroup and process tree were equal and contained exactly namespace init
++(PID 1) and Niri (PID 2). Niri acquired i915 render and primary nodes, DRM
++master, the Framework eDP panel, and both attached DisplayPort outputs. This
++establishes a useful compositor admission baseline, not a restore result.
++
++The first capture exposed two process-domain issues before i915 inventory could
++admit compositor state. First, the anonymous-VMA surrogate was opened in CRIU's
++mount namespace, whose devtmpfs mount ID did not exist in the target mount
++tree. Commit `549d10d60` opens the configured render node through
++`/proc/<target-pid>/root`; the physical rerun advanced past mount lookup with
++the target devtmpfs identity.
++
++Second, Niri retained a pidfd supplied by the host seat/session stack. Its
++target PID namespace is the host namespace rather than the supervised domain,
++so CRIU correctly refused it as outside the checkpoint tree. Rebinding that
++pidfd to a newly booted host process would be external-resource reconstruction,
++not exact restoration. The current exactness policy therefore requires either
++placing the seat authority and its process references inside the checkpoint
++domain or defining a separately reviewed exception; silently treating the host
++pidfd as namespace PID 1 is forbidden. No physical Niri success claim is made
++until this relationship and all subsequent GPU/KMS refusals are represented
++exactly.
++
++The ad-hoc baseline also took control of the active seat without a proven
++out-of-band escape. The prior-boot journal contains no kernel BUG, Oops, GPU
++hang, or lockup before the forced power-off; the failure is consistent with an
++unsafe test harness, not evidence of a kernel defect. Physical compositor tests
++must not be re-enabled until an independent systemd watchdog has been proven to
++terminate the transient scope, a non-inhibitable immediate quit binding is
++present, capture has a bounded timeout, and a remote/system control path has
++been tested before DRM/input acquisition.
++
++### Evdev boundary exposed by the physical compositor
++
++The bounded physical run at
++`/var/tmp/wss-physical-niri-admission-20260715T214728Z` reached CRIU with an
++exact four-process cgroup/tree: namespace init, `seatd-launch`, in-domain
++`seatd`, and physical Niri. Niri held i915 DRM master and active eDP-1, DP-5,
++and DP-7 scanout. CRIU then refused seatd's first evdev file description:
++`/dev/input/event2` (`chr 13:66`). This is a required exact-domain resource,
++not a descriptor to externalize or silently reopen.
++
++`EVIOCGCRIUSTATE` version 1 therefore provides conservative, read-only
++admission for one evdev file description. It reports the timestamp clock,
++buffer size, queue depth, and explicit flags for queued events, grabs,
++per-client filtering, and force-feedback capability. The initial input plugin
++admits only an empty, ungrabbed, unfiltered, non-force-feedback client. Its
++checksummed private image records complete input identity and capabilities,
++absolute-axis and multitouch-slot state, key/LED/sound/switch state, repeat
++settings, and the evdev clock. Restore scans event nodes rather than trusting
++an unstable event number, requires exactly one identity match, verifies global
++state exactly, recreates the admitted default-empty client, and rejects any
++event arriving before restore attachment. Queued events, grabs, masks,
++force-feedback effects, ambiguous devices, changed global state, corrupt
++images, and ABI mismatch remain explicit failures.
++
++This narrow subset is sufficient only after physical proof. It does not claim
++that arbitrary evdev clients are checkpointable, and it does not discard input
++arriving before dump admission. The uinput ABI fixture exercises malformed
++version/size/reserved fields plus queue, mask, grab, and clock reporting.
++
++The same run series diagnosed VT switching independently: `wev` records F2 as
++`XF86Switch_VT_2`, Niri invokes its hardcoded `ChangeVt(2)` path, and the
++production log reports `Failed to change vt: Permission denied`. The supervised
++compositor is no longer a process in logind's active session scope, so login1
++cannot authorize Niri's non-interactive switch request. Production must use the
++already-tested in-domain seat authority rather than weakening login1 policy.
++
 +## Privileged evidence policy
 +
 +The initial root inventory now records module policy values, effective GuC
@@ -580,16 +690,20 @@ index 000000000..afbd7b566
 +or depend on debugfs merely to make checkpointing work. These sources are
 +unstable diagnostics, not a production checkpoint ABI.
 diff --git a/Makefile b/Makefile
-index e26807158..560e6a554 100644
+index e268071584b74241a80bf8e0e9c3f97cc3a979c6..105e5ec6eddd38a1bf8d4f7cd45ba0baeef49505 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -312,15 +312,19 @@ clean-cuda_plugin:
+@@ -312,15 +312,23 @@ clean-cuda_plugin:
  	$(Q) $(MAKE) -C plugins/cuda clean
  .PHONY: clean-cuda_plugin
  
 +clean-i915_plugin:
 +	$(Q) $(MAKE) -C plugins/i915 clean
 +.PHONY: clean-i915_plugin
++
++clean-input_plugin:
++	$(Q) $(MAKE) -C plugins/input clean
++.PHONY: clean-input_plugin
 +
  clean-top:
  	$(Q) $(MAKE) -C Documentation clean
@@ -598,14 +712,14 @@ index e26807158..560e6a554 100644
  .PHONY: clean-top
  
 -clean: clean-top clean-amdgpu_plugin clean-cuda_plugin
-+clean: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin
++clean: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin clean-input_plugin
  
 -mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin
-+mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin
++mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin clean-i915_plugin clean-input_plugin
  	$(Q) $(RM) $(CONFIG_HEADER)
  	$(Q) $(RM) $(VERSION_HEADER)
  	$(Q) $(RM) $(COMPEL_VERSION_HEADER)
-@@ -356,6 +360,10 @@ cuda_plugin: criu
+@@ -356,6 +364,14 @@ cuda_plugin: criu
  	$(Q) $(MAKE) -C plugins/cuda all
  .PHONY: cuda_plugin
  
@@ -613,14 +727,27 @@ index e26807158..560e6a554 100644
 +	$(Q) $(MAKE) -C plugins/i915 all
 +.PHONY: i915_plugin
 +
++input_plugin: criu
++	$(Q) $(MAKE) -C plugins/input all
++.PHONY: input_plugin
++
  crit: lib
  	$(Q) $(MAKE) -C crit
  .PHONY: crit
+@@ -443,6 +459,8 @@ help:
+ 	@echo '      indent          - Indent C code'
+ 	@echo '      amdgpu_plugin   - Make AMD GPU plugin'
+ 	@echo '      cuda_plugin     - Make NVIDIA CUDA plugin'
++	@echo '      i915_plugin     - Make Intel i915 plugin'
++	@echo '      input_plugin    - Make conservative evdev plugin'
+ .PHONY: help
+ 
+ ruff:
 diff --git a/Makefile.install b/Makefile.install
-index 70c607ec6..542fe575f 100644
+index 70c607ec6cb5f9f7c98bccea470529acf9901b00..7ed28832990279b3714c54bbd6e7594091411440 100644
 --- a/Makefile.install
 +++ b/Makefile.install
-@@ -80,12 +80,16 @@ install-cuda_plugin: cuda_plugin
+@@ -80,12 +80,20 @@ install-cuda_plugin: cuda_plugin
  	$(Q) $(MAKE) -C plugins/cuda install
  .PHONY: install-cuda_plugin
  
@@ -628,25 +755,30 @@ index 70c607ec6..542fe575f 100644
 +	$(Q) $(MAKE) -C plugins/i915 install
 +.PHONY: install-i915_plugin
 +
++install-input_plugin: input_plugin
++	$(Q) $(MAKE) -C plugins/input install
++.PHONY: install-input_plugin
++
  install-compel: $(compel-install-targets)
  	$(Q) $(MAKE) $(build)=compel install
  	$(Q) $(MAKE) $(build)=compel/plugins install
  .PHONY: install-compel
  
 -install: install-man install-lib install-crit install-criu install-compel install-amdgpu_plugin install-cuda_plugin ;
-+install: install-man install-lib install-crit install-criu install-compel install-amdgpu_plugin install-cuda_plugin install-i915_plugin ;
++install: install-man install-lib install-crit install-criu install-compel install-amdgpu_plugin install-cuda_plugin install-i915_plugin install-input_plugin ;
  .PHONY: install
  
  uninstall:
-@@ -97,4 +101,5 @@ uninstall:
+@@ -97,4 +105,6 @@ uninstall:
  	$(Q) $(MAKE) $(build)=compel/plugins $@
  	$(Q) $(MAKE) -C plugins/amdgpu $@
  	$(Q) $(MAKE) -C plugins/cuda $@
 +	$(Q) $(MAKE) -C plugins/i915 $@
++	$(Q) $(MAKE) -C plugins/input $@
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 000000000..f2a0dcf63
+index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f9d1423cc
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
 @@ -0,0 +1,221 @@
@@ -873,10 +1005,10 @@ index 000000000..f2a0dcf63
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 000000000..7201d027c
+index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d458cb6fb79
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2369 @@
+@@ -0,0 +1,2498 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -3246,8 +3378,170 @@ index 000000000..7201d027c
 + 
 + static int check_ptrace_options(unsigned long data)
 + {
++diff --git a/drivers/input/evdev.c b/drivers/input/evdev.c
++index c732522..f006f07 100644
++--- a/drivers/input/evdev.c
+++++ b/drivers/input/evdev.c
++@@ -171,6 +171,22 @@ static void evdev_queue_syn_dropped(struct evdev_client *client)
++ 	spin_unlock_irqrestore(&client->buffer_lock, flags);
++ }
++ 
+++static unsigned int evdev_get_clk_id(const struct evdev_client *client)
+++{
+++	switch (client->clk_type) {
+++	case INPUT_CLK_REAL:
+++		return CLOCK_REALTIME;
+++	case INPUT_CLK_MONO:
+++		return CLOCK_MONOTONIC;
+++	case INPUT_CLK_BOOT:
+++		return CLOCK_BOOTTIME;
+++	case INPUT_CLK_MAX:
+++		return U32_MAX;
+++	}
+++
+++	return U32_MAX;
+++}
+++
++ static int evdev_set_clk_type(struct evdev_client *client, unsigned int clkid)
++ {
++ 	unsigned long flags;
++@@ -1024,6 +1040,50 @@ static int evdev_get_mask(struct evdev_client *client,
++ 	return 0;
++ }
++ 
+++static int evdev_get_criu_state(struct evdev *evdev,
+++				struct evdev_client *client, void __user *p)
+++{
+++	struct input_criu_state state;
+++	unsigned long irqflags;
+++	unsigned int i;
+++
+++	if (copy_from_user(&state, p, sizeof(state)))
+++		return -EFAULT;
+++	if (state.version != EVDEV_CRIU_STATE_VERSION ||
+++	    state.size != sizeof(state) || state.flags || state.clock_id ||
+++	    state.queued_events || state.buffer_size ||
+++	    memchr_inv(state.reserved, 0, sizeof(state.reserved)))
+++		return -EINVAL;
+++
+++	memset(&state, 0, sizeof(state));
+++	state.version = EVDEV_CRIU_STATE_VERSION;
+++	state.size = sizeof(state);
+++	state.clock_id = evdev_get_clk_id(client);
+++	state.buffer_size = client->bufsize;
+++
+++	spin_lock_irqsave(&client->buffer_lock, irqflags);
+++	state.queued_events = (client->head - client->tail) &
+++			      (client->bufsize - 1);
+++	if (state.queued_events)
+++		state.flags |= EVDEV_CRIU_STATE_QUEUE_NONEMPTY;
+++	for (i = 0; i < EV_CNT; i++) {
+++		if (client->evmasks[i]) {
+++			state.flags |= EVDEV_CRIU_STATE_FILTERED;
+++			break;
+++		}
+++	}
+++	spin_unlock_irqrestore(&client->buffer_lock, irqflags);
+++
+++	if (rcu_access_pointer(evdev->grab) == client)
+++		state.flags |= EVDEV_CRIU_STATE_GRABBED;
+++	if (test_bit(EV_FF, evdev->handle.dev->evbit))
+++		state.flags |= EVDEV_CRIU_STATE_FORCE_FEEDBACK;
+++
+++	if (copy_to_user(p, &state, sizeof(state)))
+++		return -EFAULT;
+++	return 0;
+++}
+++
++ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
++ 			   void __user *p, int compat_mode)
++ {
++@@ -1123,6 +1183,9 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
++ 
++ 		return evdev_set_clk_type(client, i);
++ 
+++	case EVIOCGCRIUSTATE:
+++		return evdev_get_criu_state(evdev, client, p);
+++
++ 	case EVIOCGKEYCODE:
++ 		return evdev_handle_get_keycode(dev, p);
++ 
++diff --git a/include/uapi/linux/input.h b/include/uapi/linux/input.h
++index 6aa703f..0fec679 100644
++--- a/include/uapi/linux/input.h
+++++ b/include/uapi/linux/input.h
++@@ -129,6 +129,28 @@ struct input_mask {
++ 	__u64 codes_ptr;
++ };
++ 
+++/*
+++ * Conservative checkpoint admission for one evdev file description.
+++ *
+++ * Version 1 deliberately exposes no queued input payload. Userspace may
+++ * checkpoint only the default empty subset and must refuse every flag below.
+++ */
+++#define EVDEV_CRIU_STATE_VERSION	1
+++#define EVDEV_CRIU_STATE_QUEUE_NONEMPTY	(1ULL << 0)
+++#define EVDEV_CRIU_STATE_GRABBED	(1ULL << 1)
+++#define EVDEV_CRIU_STATE_FILTERED	(1ULL << 2)
+++#define EVDEV_CRIU_STATE_FORCE_FEEDBACK	(1ULL << 3)
+++
+++struct input_criu_state {
+++	__u32 version;
+++	__u32 size;
+++	__u64 flags;
+++	__u32 clock_id;
+++	__u32 queued_events;
+++	__u32 buffer_size;
+++	__u32 reserved[9];
+++};
+++
++ #define EVIOCGVERSION		_IOR('E', 0x01, int)			/* get driver version */
++ #define EVIOCGID		_IOR('E', 0x02, struct input_id)	/* get device ID */
++ #define EVIOCGREP		_IOR('E', 0x03, unsigned int[2])	/* get repeat settings */
++@@ -241,6 +263,7 @@ struct input_mask {
++ #define EVIOCSMASK		_IOW('E', 0x93, struct input_mask)	/* Set event-masks */
++ 
++ #define EVIOCSCLOCKID		_IOW('E', 0xa0, int)			/* Set clockid to be used for timestamps */
+++#define EVIOCGCRIUSTATE		_IOWR('E', 0xa1, struct input_criu_state)
++ 
++ /*
++  * IDs.
+diff --git a/contrib/input-criu/input_criu_uapi.h b/contrib/input-criu/input_criu_uapi.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c92aa8f2363b1667f4a4c00cebbc4e354d69ac14
+--- /dev/null
++++ b/contrib/input-criu/input_criu_uapi.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef INPUT_CRIU_UAPI_H
++#define INPUT_CRIU_UAPI_H
++
++#include <linux/input.h>
++
++#ifndef EVDEV_CRIU_STATE_VERSION
++#define EVDEV_CRIU_STATE_VERSION 1
++#define EVDEV_CRIU_STATE_QUEUE_NONEMPTY (1ULL << 0)
++#define EVDEV_CRIU_STATE_GRABBED (1ULL << 1)
++#define EVDEV_CRIU_STATE_FILTERED (1ULL << 2)
++#define EVDEV_CRIU_STATE_FORCE_FEEDBACK (1ULL << 3)
++
++struct input_criu_state {
++	__u32 version;
++	__u32 size;
++	__u64 flags;
++	__u32 clock_id;
++	__u32 queued_events;
++	__u32 buffer_size;
++	__u32 reserved[9];
++};
++
++#define EVIOCGCRIUSTATE _IOWR('E', 0xa1, struct input_criu_state)
++#endif
++
++#endif
 diff --git a/criu/cr-dump.c b/criu/cr-dump.c
-index 60b8e793c..6b77061c6 100644
+index 60b8e793c9c2528da9769f6457290e620fae75fa..6b77061c62e604956054bc5940f467f7f63bf378 100644
 --- a/criu/cr-dump.c
 +++ b/criu/cr-dump.c
 @@ -2247,6 +2247,9 @@ int cr_dump_tasks(pid_t pid)
@@ -3261,7 +3555,7 @@ index 60b8e793c..6b77061c6 100644
  		inventory_entry__free_unpacked(parent_ie, NULL);
  		parent_ie = NULL;
 diff --git a/criu/cr-restore.c b/criu/cr-restore.c
-index 057ec0e93..01dd1111d 100644
+index 057ec0e93dcceac4dc44d2a4b240fcfc7fc3c80a..01dd1111d7fbd1e685d05dbdf862fe2e535836df 100644
 --- a/criu/cr-restore.c
 +++ b/criu/cr-restore.c
 @@ -2408,6 +2408,12 @@ int cr_restore_tasks(void)
@@ -3278,7 +3572,7 @@ index 057ec0e93..01dd1111d 100644
  		goto err;
  
 diff --git a/criu/files.c b/criu/files.c
-index af4b8aeac..6fb80d27d 100644
+index af4b8aeac8ba06a95c071d4f82b11ee46b9fa7c3..6fb80d27d5d3fe7e95994416cc04a4a19041631f 100644
 --- a/criu/files.c
 +++ b/criu/files.c
 @@ -19,6 +19,7 @@
@@ -3303,7 +3597,7 @@ index af4b8aeac..6fb80d27d 100644
  		ret = ops->dump(lfd, e->id, p);
  	else
 diff --git a/criu/include/criu-plugin.h b/criu/include/criu-plugin.h
-index 9fb21a449..b7effb2dd 100644
+index 9fb21a4497c304b3c7d1d6e6178b2542db28c0c4..b7effb2dd664c074dfda53d5985929438d51e9d3 100644
 --- a/criu/include/criu-plugin.h
 +++ b/criu/include/criu-plugin.h
 @@ -27,7 +27,7 @@
@@ -3368,7 +3662,7 @@ index 9fb21a449..b7effb2dd 100644
  /*
   * Deprecated, will be removed in next version.
 diff --git a/criu/include/files.h b/criu/include/files.h
-index 31ebb0ca0..5c9beea2e 100644
+index 31ebb0ca0f9fd93648f95da1cded04f2a2f6eda7..5c9beea2e71955f7fa5e8af7e66116683ca30ed7 100644
 --- a/criu/include/files.h
 +++ b/criu/include/files.h
 @@ -137,6 +137,7 @@ struct fdtype_ops {
@@ -3380,7 +3674,7 @@ index 31ebb0ca0..5c9beea2e 100644
  extern int do_dump_gen_file(struct fd_parms *p, int lfd, const struct fdtype_ops *ops, FdinfoEntry *e);
  struct parasite_drain_fd;
 diff --git a/criu/include/plugin.h b/criu/include/plugin.h
-index 0115e6ea0..de539783f 100644
+index 0115e6ea0106d4d1b0697af0dec1f816d42a5462..de539783f00a5abb41f6f1cc98ee7420bb56fdfb 100644
 --- a/criu/include/plugin.h
 +++ b/criu/include/plugin.h
 @@ -11,6 +11,8 @@
@@ -3393,7 +3687,7 @@ index 0115e6ea0..de539783f 100644
  typedef struct {
  	struct list_head head;
 diff --git a/criu/plugin.c b/criu/plugin.c
-index 18da0499d..f5222e54d 100644
+index 18da0499d742f7d1e02e2c05b8ff9f8766ef8842..f5222e54d73d8cac661a56d60b6e4a65633eb6c5 100644
 --- a/criu/plugin.c
 +++ b/criu/plugin.c
 @@ -13,6 +13,7 @@
@@ -3477,7 +3771,7 @@ index 18da0499d..f5222e54d 100644
  {
  	int exit_code = -1;
 diff --git a/criu/proc_parse.c b/criu/proc_parse.c
-index 0d3b5b23f..04f1cf126 100644
+index 0d3b5b23f1a1dc7fd406a8046e5d752b948689df..e703e2350d66392cf117c4b291b9f390ef3c469d 100644
 --- a/criu/proc_parse.c
 +++ b/criu/proc_parse.c
 @@ -418,8 +418,9 @@ closefd:
@@ -3492,10 +3786,10 @@ index 0d3b5b23f..04f1cf126 100644
  {
  	char path[32];
  	int flags;
-@@ -441,6 +442,27 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
- 			return 0;
+@@ -433,6 +434,30 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
+ 	if (prev_vfi->vma && vfi_equal(vfi, prev_vfi)) {
+ 		struct vma_area *prev = prev_vfi->vma;
  
- 		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
 +		if (vfi->dev_maj == 0) {
 +			int surrogate_fd = -1;
 +			int ret;
@@ -3503,8 +3797,10 @@ index 0d3b5b23f..04f1cf126 100644
 +			/*
 +			 * Equal device/inode metadata permits CRIU to reuse file
 +			 * identity, but not device-private mmap-offset provenance.
-+			 * Notify the plugin for every anonymous-device VMA so two
-+			 * adjacent i915 mappings cannot collapse into one record.
++			 * Notify the plugin for every anonymous-device VMA before
++			 * testing vm_file_fd: the first surrogate is closed after
++			 * collection, so later adjacent VMAs reach this branch with
++			 * no borrowable descriptor but still need distinct offsets.
 +			 */
 +			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
 +					  vma->e->start, vma->e->pgoff,
@@ -3517,10 +3813,11 @@ index 0d3b5b23f..04f1cf126 100644
 +				close(surrogate_fd);
 +			}
 +		}
- 		if (prev->e->status & VMA_AREA_SOCKET)
- 			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
- 
-@@ -481,10 +503,22 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
++
+ 		/*
+ 		 * If vfi is equal (!) and negative @vm_file_fd --
+ 		 * we have nothing to borrow for sure.
+@@ -481,10 +506,22 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
  
  		if (errno == ENXIO) {
  			struct stat buf;
@@ -3543,7 +3840,7 @@ index 0d3b5b23f..04f1cf126 100644
  			if (S_ISSOCK(buf.st_mode)) {
  				pr_info("Found socket mapping @%" PRIx64 "\n", vma->e->start);
  				vma->vm_socket_id = buf.st_ino;
-@@ -591,7 +625,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
+@@ -591,7 +628,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
  static int handle_vma(pid_t pid, struct vma_area *vma_area, const char *file_path, DIR *map_files_dir,
  		      struct vma_file_info *vfi, struct vma_file_info *prev_vfi, int *vm_file_fd)
  {
@@ -3554,7 +3851,7 @@ index 0d3b5b23f..04f1cf126 100644
  	if (vma_area->e->status != 0)
 diff --git a/plugins/i915/Makefile b/plugins/i915/Makefile
 new file mode 100644
-index 000000000..92ad72dde
+index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fdd64f519c
 --- /dev/null
 +++ b/plugins/i915/Makefile
 @@ -0,0 +1,31 @@
@@ -3591,10 +3888,10 @@ index 000000000..92ad72dde
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 000000000..be6755cc6
+index 0000000000000000000000000000000000000000..dfbd313fb67d8b403a245c54d0340a0e21abf4d5
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,2971 @@
+@@ -0,0 +1,2987 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -3602,6 +3899,7 @@ index 000000000..be6755cc6
 +#include <inttypes.h>
 +#include <linux/magic.h>
 +#include <linux/sync_file.h>
++#include <limits.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
@@ -3884,6 +4182,22 @@ index 000000000..be6755cc6
 +	const char *configured = getenv("I915_CRIU_DRM_DEVICE");
 +
 +	return configured && configured[0] ? configured : "/dev/dri/renderD128";
++}
++
++static int open_dump_render_node(int pid)
++{
++	const char *node = render_node();
++	char path[PATH_MAX];
++	int length;
++	int fd;
++
++	if (pid <= 0 || node[0] != '/')
++		return -EINVAL;
++	length = snprintf(path, sizeof(path), "/proc/%d/root%s", pid, node);
++	if (length < 0 || (size_t)length >= sizeof(path))
++		return -ENAMETOOLONG;
++	fd = open(path, O_RDWR | O_CLOEXEC);
++	return fd < 0 ? -errno : fd;
 +}
 +
 +static bool is_i915_fd(int fd)
@@ -4946,7 +5260,6 @@ index 000000000..be6755cc6
 +	long page_size = sysconf(_SC_PAGESIZE);
 +	int fd;
 +
-+	(void)pid;
 +	(void)start;
 +	if (strcmp(name, "anon_inode:i915.gem"))
 +		return 0;
@@ -4959,9 +5272,9 @@ index 000000000..be6755cc6
 +		return -E2BIG;
 +	dump_vmas[dump_vma_count++].pgoff = pgoff;
 +open_surrogate:
-+	fd = open(render_node(), O_RDWR | O_CLOEXEC);
++	fd = open_dump_render_node(pid);
 +	if (fd < 0)
-+		return -errno;
++		return fd;
 +	if (!is_i915_fd(fd)) {
 +		close(fd);
 +		return -ENODEV;
@@ -6566,9 +6879,495 @@ index 000000000..be6755cc6
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESUME_DEVICES_LATE,
 +			i915_plugin_resume_devices_late)
+diff --git a/plugins/input/Makefile b/plugins/input/Makefile
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a42d38df49d4631a78180cf67ad9550fd0e8d3d
+--- /dev/null
++++ b/plugins/input/Makefile
+@@ -0,0 +1,31 @@
++PLUGIN_NAME := input_plugin
++PLUGIN_SOBJ := input_plugin.so
++PLUGIN_INCLUDE := -iquote../../include
++PLUGIN_INCLUDE += -iquote../../criu/include
++PLUGIN_INCLUDE += -iquote../../criu/arch/$(ARCH)/include/
++PLUGIN_INCLUDE += -iquote../../
++COMPEL := ../../compel/compel-host
++
++__nmk_dir ?= ../../scripts/nmk/scripts/
++include $(__nmk_dir)msg.mk
++
++PLUGIN_CFLAGS := -g -Wall -Wextra -Werror -D_GNU_SOURCE -shared -nostartfiles -fPIC
++
++all: $(PLUGIN_SOBJ)
++
++input_plugin.so: input_plugin.c
++	$(CC) $(PLUGIN_CFLAGS) $(shell $(COMPEL) includes) $^ -o $@ $(PLUGIN_INCLUDE)
++
++clean:
++	$(call msg-clean, $@)
++	$(Q) $(RM) $(PLUGIN_SOBJ)
++
++install: $(PLUGIN_SOBJ)
++	$(Q) mkdir -p $(DESTDIR)$(PLUGINDIR)
++	$(E) "  INSTALL " $(PLUGIN_NAME)
++	$(Q) install -m 755 $(PLUGIN_SOBJ) $(DESTDIR)$(PLUGINDIR)
++
++uninstall:
++	$(Q) $(RM) $(DESTDIR)$(PLUGINDIR)/$(PLUGIN_SOBJ)
++
++.PHONY: all clean install uninstall
+diff --git a/plugins/input/input_plugin.c b/plugins/input/input_plugin.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..baeb62945c45d2be8df44448df666f09de8aa3d8
+--- /dev/null
++++ b/plugins/input/input_plugin.c
+@@ -0,0 +1,443 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <unistd.h>
++
++#include "criu-plugin.h"
++#include "criu-log.h"
++#include "../../contrib/input-criu/input_criu_uapi.h"
++
++#define INPUT_IMAGE_MAGIC UINT64_C(0x494e505554435249)
++#define INPUT_IMAGE_VERSION 1
++#define INPUT_MAJOR_NUMBER 13
++#define EVDEV_MINOR_BASE 64
++#define EVDEV_MINOR_COUNT 32
++#define INPUT_STRING_SIZE 256
++#define INPUT_MAX_MT_SLOTS 64
++#define INPUT_MT_FIRST ABS_MT_TOUCH_MAJOR
++#define INPUT_MT_LAST ABS_MT_TOOL_Y
++#define BITS_SIZE(max) (((max) + 8) / 8)
++
++struct input_image {
++	uint64_t magic;
++	uint32_t version;
++	uint32_t size;
++	int32_t file_id;
++	uint32_t open_mode;
++	uint32_t device_major;
++	uint32_t device_minor;
++	struct input_criu_state client;
++	struct input_id id;
++	char name[INPUT_STRING_SIZE];
++	char phys[INPUT_STRING_SIZE];
++	char uniq[INPUT_STRING_SIZE];
++	uint8_t properties[BITS_SIZE(INPUT_PROP_MAX)];
++	uint8_t events[BITS_SIZE(EV_MAX)];
++	uint8_t keys[BITS_SIZE(KEY_MAX)];
++	uint8_t relative[BITS_SIZE(REL_MAX)];
++	uint8_t absolute[BITS_SIZE(ABS_MAX)];
++	uint8_t misc[BITS_SIZE(MSC_MAX)];
++	uint8_t switches[BITS_SIZE(SW_MAX)];
++	uint8_t leds[BITS_SIZE(LED_MAX)];
++	uint8_t sounds[BITS_SIZE(SND_MAX)];
++	uint8_t force_feedback[BITS_SIZE(FF_MAX)];
++	uint8_t key_state[BITS_SIZE(KEY_MAX)];
++	uint8_t led_state[BITS_SIZE(LED_MAX)];
++	uint8_t sound_state[BITS_SIZE(SND_MAX)];
++	uint8_t switch_state[BITS_SIZE(SW_MAX)];
++	uint32_t repeat[2];
++	struct input_absinfo absinfo[ABS_CNT];
++	uint32_t mt_slot_count;
++	int32_t mt_values[INPUT_MT_LAST - INPUT_MT_FIRST + 1][INPUT_MAX_MT_SLOTS];
++	uint64_t checksum;
++};
++
++static bool bit_is_set(const uint8_t *bits, unsigned int bit)
++{
++	return bits[bit / 8] & (1U << (bit % 8));
++}
++
++static uint64_t image_checksum(const struct input_image *image)
++{
++	const uint8_t *bytes = (const uint8_t *)image;
++	uint64_t hash = UINT64_C(1469598103934665603);
++	size_t i;
++
++	for (i = 0; i < offsetof(struct input_image, checksum); i++) {
++		hash ^= bytes[i];
++		hash *= UINT64_C(1099511628211);
++	}
++	return hash;
++}
++
++static int image_fd(int file_id, int flags)
++{
++	char name[64];
++
++	if (snprintf(name, sizeof(name), "input-criu-%d.img", file_id) >=
++	    (int)sizeof(name))
++		return -ENAMETOOLONG;
++	return openat(criu_get_image_dir(), name, flags, 0600);
++}
++
++static int write_all(int fd, const void *buffer, size_t size)
++{
++	const uint8_t *cursor = buffer;
++
++	while (size) {
++		ssize_t written = write(fd, cursor, size);
++		if (written < 0) {
++			if (errno == EINTR)
++				continue;
++			return -errno;
++		}
++		if (!written)
++			return -EIO;
++		cursor += written;
++		size -= written;
++	}
++	return 0;
++}
++
++static int read_all(int fd, void *buffer, size_t size)
++{
++	uint8_t *cursor = buffer;
++
++	while (size) {
++		ssize_t got = read(fd, cursor, size);
++		if (got < 0) {
++			if (errno == EINTR)
++				continue;
++			return -errno;
++		}
++		if (!got)
++			return -EIO;
++		cursor += got;
++		size -= got;
++	}
++	return 0;
++}
++
++static int query_bits(int fd, unsigned int type, void *bits, size_t size)
++{
++	if (ioctl(fd, EVIOCGBIT(type, size), bits) < 0)
++		return -errno;
++	return 0;
++}
++
++static int query_string(int fd, unsigned long request, char *value)
++{
++	if (ioctl(fd, request, value) < 0)
++		return -errno;
++	value[INPUT_STRING_SIZE - 1] = '\0';
++	return 0;
++}
++
++static int query_mt_state(int fd, struct input_image *image)
++{
++	struct {
++		uint32_t code;
++		int32_t values[INPUT_MAX_MT_SLOTS];
++	} request;
++	unsigned int code;
++
++	if (!bit_is_set(image->absolute, ABS_MT_SLOT))
++		return 0;
++	if (image->absinfo[ABS_MT_SLOT].minimum != 0 ||
++	    image->absinfo[ABS_MT_SLOT].maximum < 0 ||
++	    image->absinfo[ABS_MT_SLOT].maximum >= INPUT_MAX_MT_SLOTS)
++		return -E2BIG;
++	image->mt_slot_count = image->absinfo[ABS_MT_SLOT].maximum + 1;
++
++	for (code = INPUT_MT_FIRST; code <= INPUT_MT_LAST; code++) {
++		if (!bit_is_set(image->absolute, code))
++			continue;
++		memset(&request, 0, sizeof(request));
++		request.code = code;
++		if (ioctl(fd, EVIOCGMTSLOTS(sizeof(request.code) +
++					     image->mt_slot_count * sizeof(int32_t)),
++			  &request) < 0)
++			return -errno;
++		memcpy(image->mt_values[code - INPUT_MT_FIRST], request.values,
++		       image->mt_slot_count * sizeof(int32_t));
++	}
++	return 0;
++}
++
++static int snapshot_input(int fd, int file_id, struct input_image *image)
++{
++	struct stat st;
++	unsigned int code;
++	int flags;
++	int ret;
++
++	memset(image, 0, sizeof(*image));
++	image->magic = INPUT_IMAGE_MAGIC;
++	image->version = INPUT_IMAGE_VERSION;
++	image->size = sizeof(*image);
++	image->file_id = file_id;
++	if (fstat(fd, &st) < 0)
++		return -errno;
++	image->device_major = major(st.st_rdev);
++	image->device_minor = minor(st.st_rdev);
++	flags = fcntl(fd, F_GETFL);
++	if (flags < 0)
++		return -errno;
++	image->open_mode = flags & O_ACCMODE;
++
++	image->client.version = EVDEV_CRIU_STATE_VERSION;
++	image->client.size = sizeof(image->client);
++	if (ioctl(fd, EVIOCGCRIUSTATE, &image->client) < 0)
++		return errno == ENOTTY ? -ENOTSUP : -errno;
++	if (image->client.flags || image->client.queued_events ||
++	    image->client.clock_id == UINT32_MAX)
++		return -EOPNOTSUPP;
++
++	if (ioctl(fd, EVIOCGID, &image->id) < 0)
++		return -errno;
++	ret = query_string(fd, EVIOCGNAME(INPUT_STRING_SIZE), image->name);
++	if (ret)
++		return ret;
++	ret = query_string(fd, EVIOCGPHYS(INPUT_STRING_SIZE), image->phys);
++	if (ret && ret != -ENOENT)
++		return ret;
++	ret = query_string(fd, EVIOCGUNIQ(INPUT_STRING_SIZE), image->uniq);
++	if (ret && ret != -ENOENT)
++		return ret;
++
++	if ((ret = query_bits(fd, 0, image->events, sizeof(image->events))) ||
++	    (ret = query_bits(fd, EV_KEY, image->keys, sizeof(image->keys))) ||
++	    (ret = query_bits(fd, EV_REL, image->relative, sizeof(image->relative))) ||
++	    (ret = query_bits(fd, EV_ABS, image->absolute, sizeof(image->absolute))) ||
++	    (ret = query_bits(fd, EV_MSC, image->misc, sizeof(image->misc))) ||
++	    (ret = query_bits(fd, EV_SW, image->switches, sizeof(image->switches))) ||
++	    (ret = query_bits(fd, EV_LED, image->leds, sizeof(image->leds))) ||
++	    (ret = query_bits(fd, EV_SND, image->sounds, sizeof(image->sounds))) ||
++	    (ret = query_bits(fd, EV_FF, image->force_feedback,
++			      sizeof(image->force_feedback))))
++		return ret;
++	if (ioctl(fd, EVIOCGPROP(sizeof(image->properties)), image->properties) < 0)
++		return -errno;
++	if (bit_is_set(image->events, EV_FF))
++		return -EOPNOTSUPP;
++
++	if (ioctl(fd, EVIOCGKEY(sizeof(image->key_state)), image->key_state) < 0 &&
++	    errno != EINVAL)
++		return -errno;
++	if (ioctl(fd, EVIOCGLED(sizeof(image->led_state)), image->led_state) < 0 &&
++	    errno != EINVAL)
++		return -errno;
++	if (ioctl(fd, EVIOCGSND(sizeof(image->sound_state)), image->sound_state) < 0 &&
++	    errno != EINVAL)
++		return -errno;
++	if (ioctl(fd, EVIOCGSW(sizeof(image->switch_state)), image->switch_state) < 0 &&
++	    errno != EINVAL)
++		return -errno;
++	if (bit_is_set(image->events, EV_REP) && ioctl(fd, EVIOCGREP, image->repeat) < 0)
++		return -errno;
++	for (code = 0; code < ABS_CNT; code++) {
++		if (bit_is_set(image->absolute, code) &&
++		    ioctl(fd, EVIOCGABS(code), &image->absinfo[code]) < 0)
++			return -errno;
++	}
++	ret = query_mt_state(fd, image);
++	if (ret)
++		return ret;
++	image->checksum = image_checksum(image);
++	return 0;
++}
++
++static bool same_identity(const struct input_image *a,
++			  const struct input_image *b)
++{
++	return !memcmp(&a->id, &b->id, sizeof(a->id)) &&
++	       !memcmp(a->name, b->name, sizeof(a->name)) &&
++	       !memcmp(a->phys, b->phys, sizeof(a->phys)) &&
++	       !memcmp(a->uniq, b->uniq, sizeof(a->uniq)) &&
++	       !memcmp(a->properties, b->properties, sizeof(a->properties)) &&
++	       !memcmp(a->events, b->events, sizeof(a->events)) &&
++	       !memcmp(a->keys, b->keys, sizeof(a->keys)) &&
++	       !memcmp(a->relative, b->relative, sizeof(a->relative)) &&
++	       !memcmp(a->absolute, b->absolute, sizeof(a->absolute)) &&
++	       !memcmp(a->misc, b->misc, sizeof(a->misc)) &&
++	       !memcmp(a->switches, b->switches, sizeof(a->switches)) &&
++	       !memcmp(a->leds, b->leds, sizeof(a->leds)) &&
++	       !memcmp(a->sounds, b->sounds, sizeof(a->sounds)) &&
++	       !memcmp(a->force_feedback, b->force_feedback,
++		       sizeof(a->force_feedback)) &&
++	       !memcmp(a->repeat, b->repeat, sizeof(a->repeat)) &&
++	       !memcmp(a->absinfo, b->absinfo, sizeof(a->absinfo));
++}
++
++static bool same_global_state(const struct input_image *a,
++			      const struct input_image *b)
++{
++	return !memcmp(a->key_state, b->key_state, sizeof(a->key_state)) &&
++	       !memcmp(a->led_state, b->led_state, sizeof(a->led_state)) &&
++	       !memcmp(a->sound_state, b->sound_state, sizeof(a->sound_state)) &&
++	       !memcmp(a->switch_state, b->switch_state, sizeof(a->switch_state)) &&
++	       a->mt_slot_count == b->mt_slot_count &&
++	       !memcmp(a->mt_values, b->mt_values, sizeof(a->mt_values));
++}
++
++static bool is_evdev_fd(int fd)
++{
++	struct stat st;
++	unsigned int maj;
++	unsigned int min;
++
++	if (fstat(fd, &st) < 0 || !S_ISCHR(st.st_mode))
++		return false;
++	maj = major(st.st_rdev);
++	min = minor(st.st_rdev);
++	return maj == INPUT_MAJOR_NUMBER && min >= EVDEV_MINOR_BASE &&
++	       min < EVDEV_MINOR_BASE + EVDEV_MINOR_COUNT;
++}
++
++static int input_plugin_init(int stage)
++{
++	(void)stage;
++	return 0;
++}
++
++static void input_plugin_fini(int stage, int ret)
++{
++	(void)stage;
++	(void)ret;
++}
++
++CR_PLUGIN_REGISTER("input_plugin", input_plugin_init, input_plugin_fini)
++
++int input_plugin_dump_file(int fd, int id)
++{
++	struct input_image image;
++	int out;
++	int ret;
++
++	if (!is_evdev_fd(fd))
++		return -ENOTSUP;
++	ret = snapshot_input(fd, id, &image);
++	if (ret) {
++		pr_err("input_plugin: evdev file %d is outside the exact empty-client subset: %d\n",
++		       id, ret);
++		return ret;
++	}
++	out = image_fd(id, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC);
++	if (out < 0)
++		return -errno;
++	ret = write_all(out, &image, sizeof(image));
++	if (close(out) < 0 && !ret)
++		ret = -errno;
++	return ret;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, input_plugin_dump_file)
++
++static int read_image(int id, struct input_image *image)
++{
++	uint8_t trailing;
++	ssize_t got;
++	int fd;
++	int ret;
++
++	fd = image_fd(id, O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return errno == ENOENT ? -ENOTSUP : -errno;
++	ret = read_all(fd, image, sizeof(*image));
++	if (!ret) {
++		got = read(fd, &trailing, sizeof(trailing));
++		if (got < 0)
++			ret = -errno;
++		else if (got)
++			ret = -E2BIG;
++	}
++	if (close(fd) < 0 && !ret)
++		ret = -errno;
++	if (ret)
++		return ret;
++	if (image->magic != INPUT_IMAGE_MAGIC ||
++	    image->version != INPUT_IMAGE_VERSION ||
++	    image->size != sizeof(*image) || image->file_id != id ||
++	    image->checksum != image_checksum(image))
++		return -EINVAL;
++	return 0;
++}
++
++int input_plugin_restore_file(int id)
++{
++	struct input_image expected;
++	struct input_image current;
++	struct input_image matched;
++	char path[64];
++	int candidate = -1;
++	int matches = 0;
++	int ret;
++	unsigned int event;
++
++	ret = read_image(id, &expected);
++	if (ret)
++		return ret;
++	for (event = 0; event < EVDEV_MINOR_COUNT; event++) {
++		int fd;
++
++		if (snprintf(path, sizeof(path), "/dev/input/event%u", event) >=
++		    (int)sizeof(path))
++			return -ENAMETOOLONG;
++		fd = open(path, expected.open_mode | O_NONBLOCK | O_CLOEXEC);
++		if (fd < 0)
++			continue;
++		ret = snapshot_input(fd, id, &current);
++		if (!ret && same_identity(&expected, &current)) {
++			matches++;
++			if (candidate >= 0)
++				close(candidate);
++			candidate = fd;
++			matched = current;
++		} else {
++			close(fd);
++		}
++	}
++	if (matches != 1) {
++		if (candidate >= 0)
++			close(candidate);
++		pr_err("input_plugin: expected one compatible evdev device for file %d, found %d\n",
++		       id, matches);
++		return matches ? -EEXIST : -ENODEV;
++	}
++	if (!same_global_state(&expected, &matched)) {
++		close(candidate);
++		pr_err("input_plugin: global input state changed for file %d\n", id);
++		return -EXDEV;
++	}
++	if (ioctl(candidate, EVIOCSCLOCKID, &expected.client.clock_id) < 0) {
++		ret = -errno;
++		close(candidate);
++		return ret;
++	}
++	memset(&current.client, 0, sizeof(current.client));
++	current.client.version = EVDEV_CRIU_STATE_VERSION;
++	current.client.size = sizeof(current.client);
++	if (ioctl(candidate, EVIOCGCRIUSTATE, &current.client) < 0) {
++		ret = -errno;
++		close(candidate);
++		return ret;
++	}
++	if (current.client.flags || current.client.queued_events ||
++	    current.client.clock_id != expected.client.clock_id ||
++	    current.client.buffer_size != expected.client.buffer_size) {
++		close(candidate);
++		return -EOPNOTSUPP;
++	}
++	return candidate;
++}
++CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__RESTORE_EXT_FILE,
++			input_plugin_restore_file)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 000000000..a6a02e0f6
+index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1e180a7d1
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
 @@ -0,0 +1,376 @@
@@ -6950,7 +7749,7 @@ index 000000000..a6a02e0f6
 +}
 diff --git a/test/others/i915-criu/i915-gem-minimal.c b/test/others/i915-criu/i915-gem-minimal.c
 new file mode 100644
-index 000000000..f770602df
+index 0000000000000000000000000000000000000000..f770602df39ddb68463b52a7b8637d3d19841db8
 --- /dev/null
 +++ b/test/others/i915-criu/i915-gem-minimal.c
 @@ -0,0 +1,247 @@
@@ -7203,7 +8002,7 @@ index 000000000..f770602df
 +}
 diff --git a/test/others/i915-criu/i915-gem-sharing.c b/test/others/i915-criu/i915-gem-sharing.c
 new file mode 100644
-index 000000000..dfd0160de
+index 0000000000000000000000000000000000000000..dfd0160de122e8950d44be9da30ffd06517a5255
 --- /dev/null
 +++ b/test/others/i915-criu/i915-gem-sharing.c
 @@ -0,0 +1,340 @@
@@ -7549,10 +8348,10 @@ index 000000000..dfd0160de
 +}
 diff --git a/test/others/i915-criu/i915-kms-atomic.c b/test/others/i915-criu/i915-kms-atomic.c
 new file mode 100644
-index 000000000..1460357c7
+index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f81e4b9fa
 --- /dev/null
 +++ b/test/others/i915-criu/i915-kms-atomic.c
-@@ -0,0 +1,497 @@
+@@ -0,0 +1,559 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -7571,6 +8370,7 @@ index 000000000..1460357c7
 +#include <drm/drm.h>
 +#include <drm/drm_fourcc.h>
 +#include <drm/drm_mode.h>
++#include <drm/i915_drm.h>
 +#include <xf86drm.h>
 +#include <xf86drmMode.h>
 +
@@ -7620,21 +8420,26 @@ index 000000000..1460357c7
 +	exit(EXIT_FAILURE);
 +}
 +
-+static int open_i915_primary(void)
++static int open_i915_node(int node_type)
 +{
 +	char path[64];
++	unsigned int first = node_type == DRM_NODE_RENDER ? 128 : 0;
++	unsigned int last = node_type == DRM_NODE_RENDER ? 192 : 64;
 +
-+	for (unsigned int index = 0; index < 64; index++) {
++	for (unsigned int index = first; index < last; index++) {
 +		drmVersionPtr version;
 +		int fd;
 +
-+		snprintf(path, sizeof(path), "/dev/dri/card%u", index);
++		snprintf(path, sizeof(path),
++			 node_type == DRM_NODE_RENDER ? "/dev/dri/renderD%u" :
++							"/dev/dri/card%u",
++			 index);
 +		fd = open(path, O_RDWR | O_CLOEXEC);
 +		if (fd < 0)
 +			continue;
 +		version = drmGetVersion(fd);
 +		if (version && version->name && !strcmp(version->name, "i915") &&
-+		    drmGetNodeTypeFromFd(fd) == DRM_NODE_PRIMARY) {
++		    drmGetNodeTypeFromFd(fd) == node_type) {
 +			drmFreeVersion(version);
 +			return fd;
 +		}
@@ -7644,6 +8449,57 @@ index 000000000..1460357c7
 +	}
 +	errno = ENODEV;
 +	return -1;
++}
++
++static int open_i915_primary(void)
++{
++	return open_i915_node(DRM_NODE_PRIMARY);
++}
++
++static int run_reset_load(void)
++{
++	enum { LOAD_SIZE = 4 * 1024 * 1024 };
++	struct drm_i915_gem_create create = { .size = LOAD_SIZE };
++	struct drm_i915_gem_mmap_offset mmap_offset = {
++		.flags = I915_MMAP_OFFSET_WB,
++	};
++	struct drm_i915_gem_exec_object2 object = { 0 };
++	struct drm_i915_gem_execbuffer2 execbuf = {
++		.buffers_ptr = (uintptr_t)&object,
++		.buffer_count = 1,
++		.batch_len = LOAD_SIZE,
++		.flags = I915_EXEC_RENDER,
++	};
++	uint32_t *batch;
++	int fd = open_i915_node(DRM_NODE_RENDER);
++
++	if (fd < 0)
++		die("open i915 render node");
++	if (ioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &create) < 0)
++		die("reset load GEM_CREATE");
++	mmap_offset.handle = create.handle;
++	if (ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &mmap_offset) < 0)
++		die("reset load GEM_MMAP_OFFSET");
++	batch = mmap(NULL, LOAD_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
++		     fd, mmap_offset.offset);
++	if (batch == MAP_FAILED)
++		die("reset load mmap");
++	memset(batch, 0, LOAD_SIZE);
++	batch[LOAD_SIZE / sizeof(*batch) - 1] = 0x05000000;
++	object.handle = create.handle;
++	if (ioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf) < 0)
++		die("reset load first EXECBUFFER2");
++	puts("RESET_LOAD_READY");
++	fflush(stdout);
++	for (;;) {
++		if (ioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf) == 0)
++			continue;
++		if (errno == EINTR)
++			continue;
++		if (errno == EIO || errno == ENODEV)
++			return EXIT_SUCCESS;
++		die("reset load EXECBUFFER2");
++	}
 +}
 +
 +static uint32_t property_id(int fd, uint32_t object_id, uint32_t object_type,
@@ -7970,9 +8826,14 @@ index 000000000..1460357c7
 +	die("drmSetMaster remained busy after prior fixture exit");
 +}
 +
-+int main(void)
++int main(int argc, char **argv)
 +{
 +	struct sigaction action = { .sa_handler = on_signal };
++
++	if (argc == 2 && !strcmp(argv[1], "--reset-load"))
++		return run_reset_load();
++	if (argc != 1)
++		fail("usage: i915-kms-atomic [--reset-load]");
 +	struct dumb_buffer buffers[2] = { 0 };
 +	struct kms_properties properties;
 +	drmModeResPtr resources;
@@ -8052,7 +8913,7 @@ index 000000000..1460357c7
 +}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100755
-index 000000000..03b6b362e
+index 0000000000000000000000000000000000000000..03b6b362e3d76a5573dd842dd6461f7bdd87ca39
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
 @@ -0,0 +1,115 @@
@@ -8173,10 +9034,10 @@ index 000000000..03b6b362e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 000000000..0ed2055c3
+index 0000000000000000000000000000000000000000..3ab28c747abec3713fe566164bffc1ab3cd2f132
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,207 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -8185,6 +9046,7 @@ index 000000000..0ed2055c3
 +    exit 2
 +fi
 +
++umask 077
 +repo=$(cd "$(dirname "$0")/../../.." && pwd)
 +work=${I915_CRIU_TEST_DIR:-/tmp/i915-criu-kms}
 +criu=${CRIU:-/run/current-system/sw/bin/criu}
@@ -8198,8 +9060,12 @@ index 000000000..0ed2055c3
 +log="$work/fixture.log"
 +corrupt_mode=${I915_CRIU_KMS_CORRUPT_MODE:-}
 +reset_fault=${I915_CRIU_KMS_RESET_FAULT:-0}
++expected='PASS: exact DRM master, blob/framebuffer IDs, atomic scanout, contents, and post-restore page flip'
 +
 +cleanup() {
++    if [[ -n ${reset_load_pid:-} ]]; then
++        kill -KILL "$reset_load_pid" 2>/dev/null || true
++    fi
 +    if [[ -n ${fixture_pid:-} ]]; then
 +        kill -KILL "$fixture_pid" 2>/dev/null || true
 +    fi
@@ -8254,7 +9120,27 @@ index 000000000..0ed2055c3
 +        sleep 0.02
 +    done
 +    grep -q 'i915 test pause after file query' "$images/dump.log"
++    # An engine reset against an idle engine is deliberately a no-op in i915.
++    # Keep render work queued so this debugfs request performs a real reset and
++    # advances the transaction's reset epoch rather than merely capturing an
++    # empty error state.
++    reset_load_log="$work/reset-load.log"
++    "$fixture" --reset-load >"$reset_load_log" 2>&1 &
++    reset_load_pid=$!
++    for _ in $(seq 1 200); do
++        grep -q '^RESET_LOAD_READY$' "$reset_load_log" && break
++        if ! kill -0 "$reset_load_pid" 2>/dev/null; then
++            cat "$reset_load_log" >&2
++            exit 1
++        fi
++        sleep 0.01
++    done
++    grep -q '^RESET_LOAD_READY$' "$reset_load_log"
++    reset_journal_since=$(date --iso-8601=seconds)
 +    printf '1\n' >"$reset_file"
++    kill -KILL "$reset_load_pid" 2>/dev/null || true
++    wait "$reset_load_pid" 2>/dev/null || true
++    reset_load_pid=
 +    set +e
 +    wait "$dump_pid"
 +    dump_status=$?
@@ -8264,8 +9150,21 @@ index 000000000..0ed2055c3
 +        exit 1
 +    fi
 +    grep -q 'Dumping FAILED' "$images/dump.log"
++    journalctl -b -k --since "$reset_journal_since" --no-pager \
++        | grep -E 'GPU HANG|Resetting .*Manually reset|context reset due to GPU hang|ban score' \
++        >"$work/reset-kernel.log"
++    grep -q 'Resetting .*Manually reset engine mask to 1' "$work/reset-kernel.log"
 +    kill -0 "$fixture_pid"
-+    printf 'PASS: GPU reset during the i915 transaction refused dump without partial capture (status=%s)\n' \
++    kill -USR1 "$fixture_pid"
++    for _ in $(seq 1 200); do
++        grep -Fqx "$expected" "$log" && break
++        kill -0 "$fixture_pid" 2>/dev/null || break
++        sleep 0.05
++    done
++    grep -Fqx "$expected" "$log"
++    wait "$fixture_pid"
++    fixture_pid=
++    printf 'PASS: GPU reset during the i915 transaction refused dump; DRM master, exact KMS state, scanout contents, and page flip remained functional (status=%s)\n' \
 +        "$dump_status"
 +    exit 0
 +fi
@@ -8333,7 +9232,6 @@ index 000000000..0ed2055c3
 +    "${plugin_args[@]}" --log-file restore.log -v4
 +fixture_pid=$original_pid
 +kill -USR1 "$fixture_pid"
-+expected='PASS: exact DRM master, blob/framebuffer IDs, atomic scanout, contents, and post-restore page flip'
 +for _ in $(seq 1 200); do
 +    grep -Fqx "$expected" "$log" && break
 +    kill -0 "$fixture_pid" 2>/dev/null || true
@@ -8349,7 +9247,7 @@ index 000000000..0ed2055c3
 +    "$original_pid" "$ready"
 diff --git a/test/others/i915-criu/run-minimal-criu.sh b/test/others/i915-criu/run-minimal-criu.sh
 new file mode 100755
-index 000000000..6ddfd4867
+index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8e3d5dc03
 --- /dev/null
 +++ b/test/others/i915-criu/run-minimal-criu.sh
 @@ -0,0 +1,120 @@
@@ -8475,10 +9373,10 @@ index 000000000..6ddfd4867
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 000000000..4eeac1783
+index 0000000000000000000000000000000000000000..58c6d3262e96a088702d775419266cea3550b069
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,225 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -8540,6 +9438,32 @@ index 000000000..4eeac1783
 +    cat "/sys/module/i915/parameters/$name" 2>/dev/null || printf '<unavailable>'
 +}
 +
++sha256_or_unavailable() {
++    local path=$1
++    if [[ -f $path ]]; then
++        sha256sum "$path" | awk '{print $1}'
++    else
++        printf '<unavailable>'
++    fi
++}
++
++linked_library() {
++    local binary=$1
++    local soname=$2
++    local output
++    local path
++
++    output=$(ldd "$binary" 2>/dev/null || true)
++    path=$(awk -v soname="$soname" '$1 == soname { found = $3 } END { print found }' \
++        <<<"$output")
++    printf '%s' "${path:-<unavailable>}"
++}
++
++effective_uc=$(journalctl -b -k --no-pager 2>/dev/null \
++    | grep 'enable_guc=.*submission:' | tail -1 || true)
++mesa_dri=$(readlink -f /run/opengl-driver/lib/dri/iris_dri.so 2>/dev/null \
++    || printf '<unavailable>')
++
 +jq -n \
 +    --arg timestamp "$timestamp" \
 +    --arg kernel "$(uname -r)" \
@@ -8547,16 +9471,34 @@ index 000000000..4eeac1783
 +    --arg system "$(readlink -f /run/current-system)" \
 +    --arg pci "$(lspci -Dnn -s 0000:00:02.0)" \
 +    --arg kernel_module "$kernel_module" \
++    --arg kernel_module_sha256 "$(sha256_or_unavailable "$kernel_module")" \
 +    --arg criu "$($criu --version | head -1)" \
 +    --arg plugin "$(readlink -f "$plugin_dir/i915_plugin.so")" \
++    --arg plugin_sha256 "$(sha256_or_unavailable "$plugin_dir/i915_plugin.so")" \
 +    --arg niri "$(niri --version 2>/dev/null || printf '<unavailable>')" \
++    --arg niri_libgbm "$(linked_library "$(command -v niri)" libgbm.so.1)" \
++    --arg niri_libdrm "$(linked_library "$(command -v niri)" libdrm.so.2)" \
++    --arg fixture_libdrm "$(linked_library "$kms_fixture" libdrm.so.2)" \
++    --arg mesa_dri "$mesa_dri" \
++    --arg minimal_fixture_sha256 "$(sha256_or_unavailable "$minimal_fixture")" \
++    --arg sharing_fixture_sha256 "$(sha256_or_unavailable "$sharing_fixture")" \
++    --arg context_fixture_sha256 "$(sha256_or_unavailable "$context_fixture")" \
++    --arg kms_fixture_sha256 "$(sha256_or_unavailable "$kms_fixture")" \
 +    --arg enable_guc "$(read_parameter enable_guc)" \
 +    --arg enable_hangcheck "$(read_parameter enable_hangcheck)" \
 +    --arg modeset "$(read_parameter modeset)" \
++    --arg effective_uc "${effective_uc:-<unavailable>}" \
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
-+      system:$system,pci:$pci,kernel_module:$kernel_module,criu:$criu,
-+      plugin:$plugin,abi:9,image_schema:9,niri:$niri,i915:{enable_guc:$enable_guc,
-+      enable_hangcheck:$enable_hangcheck,modeset:$modeset}}' \
++      system:$system,pci:$pci,kernel_module:$kernel_module,
++      kernel_module_sha256:$kernel_module_sha256,criu:$criu,plugin:$plugin,
++      plugin_sha256:$plugin_sha256,abi:9,image_schema:9,niri:$niri,
++      userspace:{niri_libgbm:$niri_libgbm,niri_libdrm:$niri_libdrm,
++      fixture_libdrm:$fixture_libdrm,mesa_dri:$mesa_dri},
++      fixtures:{minimal_sha256:$minimal_fixture_sha256,
++      sharing_sha256:$sharing_fixture_sha256,
++      context_sha256:$context_fixture_sha256,kms_sha256:$kms_fixture_sha256},
++      i915:{enable_guc:$enable_guc,enable_hangcheck:$enable_hangcheck,
++      modeset:$modeset,effective_uc:$effective_uc}}' \
 +    >"$suite/metadata.json"
 +
 +run_case() {
@@ -8662,7 +9604,7 @@ index 000000000..4eeac1783
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
 diff --git a/test/others/i915-criu/run-sharing-criu.sh b/test/others/i915-criu/run-sharing-criu.sh
 new file mode 100755
-index 000000000..5dea1d004
+index 0000000000000000000000000000000000000000..5dea1d004ffc56d9c1fccaf385a77f47d9157c24
 --- /dev/null
 +++ b/test/others/i915-criu/run-sharing-criu.sh
 @@ -0,0 +1,146 @@
@@ -8814,7 +9756,7 @@ index 000000000..5dea1d004
 +    "$original_pid" "$child_pid" "$original_address" "$child_address"
 diff --git a/test/others/i915-target-framework.json b/test/others/i915-target-framework.json
 new file mode 100644
-index 000000000..003da7b61
+index 0000000000000000000000000000000000000000..003da7b61d5dc791d08383a310d890aa8811004b
 --- /dev/null
 +++ b/test/others/i915-target-framework.json
 @@ -0,0 +1,102 @@
@@ -8920,51 +9862,193 @@ index 000000000..003da7b61
 +    "module parameter -1 means automatic policy; effective GuC state was taken from the kernel initialization log"
 +  ]
 +}
-diff --git a/criu/proc_parse.c b/criu/proc_parse.c
-index 04f1cf126..e703e2350 100644
---- a/criu/proc_parse.c
-+++ b/criu/proc_parse.c
-@@ -434,14 +434,6 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
- 	if (prev_vfi->vma && vfi_equal(vfi, prev_vfi)) {
- 		struct vma_area *prev = prev_vfi->vma;
- 
--		/*
--		 * If vfi is equal (!) and negative @vm_file_fd --
--		 * we have nothing to borrow for sure.
--		 */
--		if (*vm_file_fd < 0)
--			return 0;
--
--		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
- 		if (vfi->dev_maj == 0) {
- 			int surrogate_fd = -1;
- 			int ret;
-@@ -449,8 +441,10 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
- 			/*
- 			 * Equal device/inode metadata permits CRIU to reuse file
- 			 * identity, but not device-private mmap-offset provenance.
--			 * Notify the plugin for every anonymous-device VMA so two
--			 * adjacent i915 mappings cannot collapse into one record.
-+			 * Notify the plugin for every anonymous-device VMA before
-+			 * testing vm_file_fd: the first surrogate is closed after
-+			 * collection, so later adjacent VMAs reach this branch with
-+			 * no borrowable descriptor but still need distinct offsets.
- 			 */
- 			ret = run_plugins(HANDLE_ANON_DEVICE_VMA, fname, pid,
- 					  vma->e->start, vma->e->pgoff,
-@@ -463,6 +457,15 @@ static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, D
- 				close(surrogate_fd);
- 			}
- 		}
+diff --git a/test/others/input-criu/input-criu-state.c b/test/others/input-criu/input-criu-state.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7f8a039148f9d756327c7841f585a4650b749bb
+--- /dev/null
++++ b/test/others/input-criu/input-criu-state.c
+@@ -0,0 +1,184 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <errno.h>
++#include <fcntl.h>
++#include <linux/input.h>
++#include <linux/uinput.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <time.h>
++#include <unistd.h>
 +
-+		/*
-+		 * If vfi is equal (!) and negative @vm_file_fd --
-+		 * we have nothing to borrow for sure.
-+		 */
-+		if (*vm_file_fd < 0)
-+			return 0;
++#include "../../../contrib/input-criu/input_criu_uapi.h"
 +
-+		pr_debug("vma %" PRIx64 " borrows vfi from previous %" PRIx64 "\n", vma->e->start, prev->e->start);
- 		if (prev->e->status & VMA_AREA_SOCKET)
- 			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
- 
++#define FIXTURE_NAME "criu-evdev-state-fixture"
++
++static void fail(const char *what)
++{
++	perror(what);
++	exit(EXIT_FAILURE);
++}
++
++static void query_state(int fd, struct input_criu_state *state)
++{
++	memset(state, 0, sizeof(*state));
++	state->version = EVDEV_CRIU_STATE_VERSION;
++	state->size = sizeof(*state);
++	if (ioctl(fd, EVIOCGCRIUSTATE, state) < 0)
++		fail("EVIOCGCRIUSTATE");
++}
++
++static int find_fixture(void)
++{
++	char path[64];
++	char name[256];
++	int attempt;
++	int event;
++
++	for (attempt = 0; attempt < 100; attempt++) {
++		for (event = 0; event < 32; event++) {
++			int fd;
++
++			snprintf(path, sizeof(path), "/dev/input/event%d", event);
++			fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
++			if (fd < 0)
++				continue;
++			memset(name, 0, sizeof(name));
++			if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
++			    !strcmp(name, FIXTURE_NAME))
++				return fd;
++			close(fd);
++		}
++		usleep(10000);
++	}
++	errno = ENODEV;
++	return -1;
++}
++
++static void inject(int uinput_fd, uint16_t type, uint16_t code, int32_t value)
++{
++	struct input_event event = {
++		.type = type,
++		.code = code,
++		.value = value,
++	};
++
++	if (write(uinput_fd, &event, sizeof(event)) != sizeof(event))
++		fail("write uinput event");
++}
++
++int main(void)
++{
++	struct uinput_setup setup = {
++		.id = {
++			.bustype = BUS_VIRTUAL,
++			.vendor = 0x1d6b,
++			.product = 0x4352,
++			.version = 1,
++		},
++	};
++	struct input_criu_state state;
++	struct input_event events[8];
++	struct input_mask mask;
++	uint8_t key_mask[(KEY_MAX + 8) / 8];
++	int clock_id = CLOCK_MONOTONIC;
++	int one = 1;
++	int zero = 0;
++	int event_fd;
++	int uinput_fd;
++	int attempt;
++
++	uinput_fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
++	if (uinput_fd < 0)
++		fail("open /dev/uinput");
++	if (ioctl(uinput_fd, UI_SET_EVBIT, EV_KEY) < 0 ||
++	    ioctl(uinput_fd, UI_SET_KEYBIT, KEY_A) < 0 ||
++	    ioctl(uinput_fd, UI_SET_EVBIT, EV_SYN) < 0)
++		fail("configure uinput");
++	strcpy(setup.name, FIXTURE_NAME);
++	if (ioctl(uinput_fd, UI_DEV_SETUP, &setup) < 0 ||
++	    ioctl(uinput_fd, UI_DEV_CREATE) < 0)
++		fail("create uinput");
++	event_fd = find_fixture();
++	if (event_fd < 0)
++		fail("find fixture event node");
++
++	query_state(event_fd, &state);
++	if (state.flags || state.queued_events)
++		return EXIT_FAILURE;
++
++	memset(&state, 0, sizeof(state));
++	state.version = EVDEV_CRIU_STATE_VERSION + 1;
++	state.size = sizeof(state);
++	errno = 0;
++	if (ioctl(event_fd, EVIOCGCRIUSTATE, &state) == 0 || errno != EINVAL)
++		return EXIT_FAILURE;
++	memset(&state, 0, sizeof(state));
++	state.version = EVDEV_CRIU_STATE_VERSION;
++	state.size = sizeof(state) - 1;
++	errno = 0;
++	if (ioctl(event_fd, EVIOCGCRIUSTATE, &state) == 0 || errno != EINVAL)
++		return EXIT_FAILURE;
++	memset(&state, 0, sizeof(state));
++	state.version = EVDEV_CRIU_STATE_VERSION;
++	state.size = sizeof(state);
++	state.reserved[0] = 1;
++	errno = 0;
++	if (ioctl(event_fd, EVIOCGCRIUSTATE, &state) == 0 || errno != EINVAL)
++		return EXIT_FAILURE;
++
++	inject(uinput_fd, EV_KEY, KEY_A, 1);
++	inject(uinput_fd, EV_SYN, SYN_REPORT, 0);
++	for (attempt = 0; attempt < 100; attempt++) {
++		query_state(event_fd, &state);
++		if (state.flags & EVDEV_CRIU_STATE_QUEUE_NONEMPTY)
++			break;
++		usleep(1000);
++	}
++	if (!(state.flags & EVDEV_CRIU_STATE_QUEUE_NONEMPTY) ||
++	    state.queued_events < 2)
++		return EXIT_FAILURE;
++	if (read(event_fd, events, sizeof(events)) < 0)
++		fail("drain events");
++	query_state(event_fd, &state);
++	if (state.flags & EVDEV_CRIU_STATE_QUEUE_NONEMPTY)
++		return EXIT_FAILURE;
++
++	memset(key_mask, 0xff, sizeof(key_mask));
++	mask.type = EV_KEY;
++	mask.codes_size = sizeof(key_mask);
++	mask.codes_ptr = (uintptr_t)key_mask;
++	if (ioctl(event_fd, EVIOCSMASK, &mask) < 0)
++		fail("EVIOCSMASK");
++	query_state(event_fd, &state);
++	if (!(state.flags & EVDEV_CRIU_STATE_FILTERED))
++		return EXIT_FAILURE;
++	close(event_fd);
++	event_fd = find_fixture();
++	if (event_fd < 0)
++		fail("reopen fixture event node");
++
++	if (ioctl(event_fd, EVIOCGRAB, one) < 0)
++		fail("EVIOCGRAB");
++	query_state(event_fd, &state);
++	if (!(state.flags & EVDEV_CRIU_STATE_GRABBED))
++		return EXIT_FAILURE;
++	if (ioctl(event_fd, EVIOCGRAB, zero) < 0)
++		fail("EVIOCGRAB release");
++	if (ioctl(event_fd, EVIOCSCLOCKID, &clock_id) < 0)
++		fail("EVIOCSCLOCKID");
++	query_state(event_fd, &state);
++	if (state.flags || state.clock_id != CLOCK_MONOTONIC)
++		return EXIT_FAILURE;
++
++	printf("evdev CRIU state ABI %u passed\n", state.version);
++	close(event_fd);
++	if (ioctl(uinput_fd, UI_DEV_DESTROY) < 0)
++		fail("destroy uinput");
++	close(uinput_fd);
++	return EXIT_SUCCESS;
++}

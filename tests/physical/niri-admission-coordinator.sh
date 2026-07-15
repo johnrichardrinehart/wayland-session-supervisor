@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( $# != 15 )); then
-    echo "usage: $0 USER STATE RUNTIME EVIDENCE WSS CRIU NAMESPACE_WRAPPER_SOURCE SEATD_WRAPPER_SOURCE NIRI CONFIG SESSION_ID VT_NUMBER PRODUCTION_SCOPE REPO PLUGIN" >&2
+if (( $# != 16 )); then
+    echo "usage: $0 USER STATE RUNTIME EVIDENCE WSS CRIU NAMESPACE_WRAPPER_SOURCE SEATD_WRAPPER_SOURCE NIRI CONFIG SESSION_ID VT_NUMBER PRODUCTION_SCOPE REPO I915_PLUGIN INPUT_PLUGIN" >&2
     exit 2
 fi
 
@@ -20,7 +20,8 @@ session_id=${11}
 vt_number=${12}
 production_scope=${13}
 repo=${14}
-plugin_path=${15}
+i915_plugin_path=${15}
+input_plugin_path=${16}
 uid=$(id -u "$user")
 user_manager="${user}@.host"
 physical_unit="wss-physical-niri.service"
@@ -121,8 +122,12 @@ install -o root -g root -m 4755 "$namespace_wrapper_source" "$namespace_wrapper"
 install -o root -g root -m 4755 "$seatd_wrapper_source" "$seatd_wrapper"
 
 module_path=$(modinfo -n i915)
-[[ -f $plugin_path ]] || {
-    echo "i915 plugin disappeared before metadata capture: $plugin_path" >&2
+[[ -f $i915_plugin_path ]] || {
+    echo "i915 plugin disappeared before metadata capture: $i915_plugin_path" >&2
+    exit 1
+}
+[[ -f $input_plugin_path ]] || {
+    echo "input plugin disappeared before metadata capture: $input_plugin_path" >&2
     exit 1
 }
 jq -n \
@@ -137,14 +142,17 @@ jq -n \
     --arg niri_version "$($niri --version)" \
     --arg config_sha256 "$(sha256sum "$config" | awk '{print $1}')" \
     --arg i915_module_sha256 "$(sha256sum "$module_path" | awk '{print $1}')" \
-    --arg plugin_sha256 "$(sha256sum "$plugin_path" | awk '{print $1}')" \
+    --arg i915_plugin_sha256 "$(sha256sum "$i915_plugin_path" | awk '{print $1}')" \
+    --arg input_plugin_sha256 "$(sha256sum "$input_plugin_path" | awk '{print $1}')" \
     --arg namespace_wrapper_sha256 "$(sha256sum "$namespace_wrapper_source" | awk '{print $1}')" \
     --arg seatd_wrapper_sha256 "$(sha256sum "$seatd_wrapper_source" | awk '{print $1}')" \
     '{schema: 1, boot_id: $boot_id, kernel: $kernel, pci: $pci,
       supervisor: {path: $wss, sha256: $wss_sha256},
       criu: {path: $criu, version: $criu_version},
       niri: {path: $niri, version: $niri_version, config_sha256: $config_sha256},
-      i915_module_sha256: $i915_module_sha256, plugin_sha256: $plugin_sha256,
+      i915_module_sha256: $i915_module_sha256,
+      plugins: {i915_sha256: $i915_plugin_sha256,
+                input_sha256: $input_plugin_sha256},
       wrappers: {namespace_sha256: $namespace_wrapper_sha256,
                  seatd_sha256: $seatd_wrapper_sha256}}' >"$evidence/metadata.json"
 
