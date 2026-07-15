@@ -2,6 +2,7 @@
   pkgs,
   self,
   system,
+  inDomainSeatAuthority ? false,
 }:
 let
   fixture = pkgs.writeShellScript "authenticated-session-fixture" ''
@@ -15,7 +16,9 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "wayland-session-supervisor-authenticated-lifecycle";
+  name = "wayland-session-supervisor-authenticated-lifecycle${
+    if inDomainSeatAuthority then "-in-domain-seat" else ""
+  }";
 
   nodes.machine = {
     imports = [ self.nixosModules.default ];
@@ -33,6 +36,7 @@ pkgs.testers.runNixOSTest {
       criuPackage = self.packages.${system}.our-criu;
       sessionName = "authenticated";
       compositorCommand = [ "${fixture}" ];
+      inherit inDomainSeatAuthority;
     };
     systemd.user.services.graphical-session-probe = {
       description = "Prove supervised sessions activate graphical user services";
@@ -51,6 +55,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     state = "/var/lib/wayland-session-supervisor/sessions/authenticated"
+    in_domain_seat = ${if inDomainSeatAuthority then "True" else "False"}
     launch = "systemd-run --unit=authenticated-login --service-type=exec --property=Before=wayland-session-supervisor-capture.service --uid=test --setenv=XDG_RUNTIME_DIR=/run/user/1000 --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /run/current-system/sw/bin/wayland-session-supervisor-session"
 
     machine.start()
@@ -64,6 +69,18 @@ pkgs.testers.runNixOSTest {
     original_pid = machine.succeed(f"cat {state}/fixture.pid").strip()
     root_pid = machine.succeed(f"cat {state}/session.pid").strip()
     machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{root_pid}/status) -eq 1000")
+    if in_domain_seat:
+        seatd_pid = machine.succeed("pgrep -xo seatd").strip()
+        seatd_launcher_pid = machine.succeed("pgrep -xo seatd-launch").strip()
+        seatd_nspid = machine.succeed(f"awk '/^NSpid:/ {{print $NF}}' /proc/{seatd_pid}/status").strip()
+        seatd_launcher_nspid = machine.succeed(f"awk '/^NSpid:/ {{print $NF}}' /proc/{seatd_launcher_pid}/status").strip()
+        domain_cgroup = machine.succeed(f"cat {state}/cgroup.path").strip()
+        machine.succeed(f"grep -Fx {seatd_pid} {domain_cgroup}/cgroup.procs")
+        machine.succeed(f"grep -Fx {seatd_launcher_pid} {domain_cgroup}/cgroup.procs")
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{seatd_pid}/status) -eq 1000")
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $3}}' /proc/{seatd_pid}/status) -eq 0")
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{seatd_launcher_pid}/status) -eq 1000")
+        machine.succeed("grep -F 'export LIBSEAT_BACKEND=seatd' /nix/store/*-wayland-session-supervisor-session-inner/bin/wayland-session-supervisor-session-inner")
     machine.succeed("grep -R -F -- '--cmd' /nix/store/*-greetd.toml | grep -F wayland-session-supervisor-session")
     machine.succeed("! systemctl list-unit-files | grep -q '^wayland-session-supervisor.service'")
 
@@ -83,5 +100,13 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("systemctl --user --machine=test@.host is-active --quiet graphical-session-probe.service", timeout=30)
     restored_pid = machine.succeed(f"cat {state}/fixture.pid").strip()
     assert restored_pid == original_pid
+    if in_domain_seat:
+        restored_seatd_pid = machine.succeed("pgrep -xo seatd").strip()
+        restored_seatd_launcher_pid = machine.succeed("pgrep -xo seatd-launch").strip()
+        assert machine.succeed(f"awk '/^NSpid:/ {{print $NF}}' /proc/{restored_seatd_pid}/status").strip() == seatd_nspid
+        assert machine.succeed(f"awk '/^NSpid:/ {{print $NF}}' /proc/{restored_seatd_launcher_pid}/status").strip() == seatd_launcher_nspid
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{restored_seatd_pid}/status) -eq 1000")
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $3}}' /proc/{restored_seatd_pid}/status) -eq 0")
+        machine.succeed(f"test $(awk '/^Uid:/ {{print $2}}' /proc/{restored_seatd_launcher_pid}/status) -eq 1000")
   '';
 }

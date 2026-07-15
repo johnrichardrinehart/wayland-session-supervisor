@@ -31,10 +31,19 @@ substitute for these controls.
 The first physical Niri admission run retained a pidfd supplied by the host
 seat/session stack. Its PID namespace is outside the supervised process domain.
 Reopening that pidfd after reboot would reconstruct an external relationship,
-which the exact-restore contract forbids. A future physical harness must first
-place the seat authority and its process references inside the checkpoint
-domain or obtain explicit design review for a different model.
+which the exact-restore contract forbids. The experimental
+`services.wayland-session-supervisor.inDomainSeatAuthority` option is the
+fail-closed candidate: it installs upstream `seatd-launch` as a dedicated
+setuid wrapper, forces `LIBSEAT_BACKEND=seatd`, and places the seatd launcher,
+its privileged seatd child, and Niri inside the checkpoint command tree. It
+conflicts with a host-global `services.seatd` daemon and is off by default.
+This is upstream's documented privilege model for `seatd-launch`; Niri itself
+runs as the authenticated real UID.
 
-Accordingly this repository intentionally provides no command that launches a
-physical compositor yet. `prove-watchdog.sh` is safe to run because its victim
-is only `sleep`; it does not open DRM, evdev, or a TTY.
+The option has configuration-level and VM reboot proof: CRIU restores the
+mixed-credential seatd tree with exact namespace-local PIDs and credentials.
+It must not be enabled on the physical target until seatd socket/device
+identity, rollback, and physical restore behavior pass without external
+process references. Accordingly this repository intentionally provides no command that
+launches a physical compositor yet. `prove-watchdog.sh` is safe to run because
+its victim is only `sleep`; it does not open DRM, evdev, or a TTY.

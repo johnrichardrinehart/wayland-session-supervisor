@@ -21,6 +21,15 @@ let
     "--session"
   ];
   compositorCommand = if cfg.compositorCommand == null then niriCommand else cfg.compositorCommand;
+  seatdWrapperName = "wayland-session-supervisor-seatd-launch";
+  # NixOS security wrappers are intentionally execute-only. This readable
+  # store script can be hashed by the authenticated user and immediately execs
+  # seatd-launch, so the persistent domain still starts at seatd-launch.
+  seatdCommand = pkgs.writeShellScript "wayland-session-supervisor-seatd-command" ''
+    exec /run/wrappers/bin/${seatdWrapperName} -- "$@"
+  '';
+  domainCommand =
+    if cfg.inDomainSeatAuthority then [ seatdCommand ] ++ compositorCommand else compositorCommand;
   cgroup = "/sys/fs/cgroup/system.slice/wayland-session-supervisor.service/domain";
   common = [
     "--session"
@@ -32,7 +41,7 @@ let
     "--criu"
     (lib.getExe' cfg.criuPackage "criu")
   ];
-  command = common ++ [ "--" ] ++ compositorCommand;
+  command = common ++ [ "--" ] ++ domainCommand;
   sessionState = "${toString cfg.stateDirectory}/sessions/${cfg.sessionName}";
   currentCheckpoint = "${sessionState}/current-checkpoint";
   start = pkgs.writeShellScript "wayland-session-supervisor-start" ''
@@ -46,7 +55,7 @@ let
       --state-dir ${lib.escapeShellArg (toString cfg.stateDirectory)} \
       --runtime-dir ${lib.escapeShellArg (toString cfg.runtimeDirectory)} \
       --cgroup-dir ${lib.escapeShellArg cgroup} \
-      -- ${lib.escapeShellArgs compositorCommand}
+      -- ${lib.escapeShellArgs domainCommand}
   '';
   capture =
     leaveRunning:
@@ -112,6 +121,8 @@ let
         fi
       done
 
+      ${lib.optionalString cfg.inDomainSeatAuthority "export LIBSEAT_BACKEND=seatd"}
+
       if test -s ${lib.escapeShellArg currentCheckpoint}; then
         rm -f ${lib.escapeShellArg "${toString cfg.runtimeDirectory}/restore-started"} ${lib.escapeShellArg "${toString cfg.runtimeDirectory}/restore-result"}
         : > ${lib.escapeShellArg "${toString cfg.runtimeDirectory}/restore-request"}
@@ -132,7 +143,7 @@ let
         --runtime-dir ${lib.escapeShellArg (toString cfg.runtimeDirectory)} \
         --cgroup-dir "$cgroup" \
         --namespace-launcher /run/wrappers/bin/wayland-session-supervisor-namespace-launcher \
-        -- ${lib.escapeShellArgs compositorCommand}
+        -- ${lib.escapeShellArgs domainCommand}
     '';
   };
   authenticatedLauncher = pkgs.writeShellApplication {
@@ -214,9 +225,31 @@ in
       default = false;
       description = "Capture a leave-running checkpoint before suspend. Hibernate remains excluded.";
     };
+    inDomainSeatAuthority = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Experimental exact-restore mode that launches a dedicated privileged seatd
+        authority inside the checkpoint domain instead of retaining logind process
+        references outside it. This installs the upstream seatd-launch setuid wrapper,
+        forces the libseat seatd backend, and remains disabled until physical proof.
+      '';
+    };
   };
 
   config = lib.mkMerge [
+    (lib.mkIf (cfg.enable && cfg.inDomainSeatAuthority) {
+      assertions = [
+        {
+          assertion = authenticated;
+          message = "inDomainSeatAuthority currently requires authenticated greetd/Niri mode";
+        }
+        {
+          assertion = !config.services.seatd.enable;
+          message = "inDomainSeatAuthority conflicts with the host-global services.seatd daemon";
+        }
+      ];
+    })
     (lib.mkIf (cfg.enable && standalone) {
       environment.systemPackages = [ cfg.package ];
       systemd.services.wayland-session-supervisor = {
@@ -273,11 +306,21 @@ in
         pkgs.util-linux
         pkgs.wtype
       ];
-      security.wrappers.wayland-session-supervisor-namespace-launcher = {
-        source = lib.getExe cfg.package;
-        owner = "root";
-        group = "root";
-        setuid = true;
+      security.wrappers = {
+        wayland-session-supervisor-namespace-launcher = {
+          source = lib.getExe cfg.package;
+          owner = "root";
+          group = "root";
+          setuid = true;
+        };
+      }
+      // lib.optionalAttrs cfg.inDomainSeatAuthority {
+        ${seatdWrapperName} = {
+          source = lib.getExe' pkgs.seatd "seatd-launch";
+          owner = "root";
+          group = "root";
+          setuid = true;
+        };
       };
       systemd = {
         services = {
