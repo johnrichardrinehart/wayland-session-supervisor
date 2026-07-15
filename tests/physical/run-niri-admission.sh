@@ -72,7 +72,10 @@ done
 "$niri" validate -c "$config" >/dev/null || fail "minimal Niri config is invalid"
 grep -F 'allow-inhibiting=false' "$config" | grep -F 'quit skip-confirmation=true' >/dev/null \
     || fail "minimal Niri config lacks an uninhibitable immediate exit"
-systemctl --system --machine=.host is-active --quiet sshd.service \
+# The VT helper already runs in the host namespaces. The local system bus also
+# remains the least-privileged read-only status path when this preflight is
+# invoked from the supervised PID namespace.
+systemctl --system is-active --quiet sshd.service \
     || fail "sshd is not active as an independent remote control path"
 ssh_connections=$(ss -Htn state established '( sport = :22 )' | wc -l)
 if (( ssh_connections == 0 )); then
