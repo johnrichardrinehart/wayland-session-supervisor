@@ -37,6 +37,10 @@ if [[ ! -e $armed ]]; then
     exit 1
 fi
 
+# The production session imports its display into the persistent user manager.
+# A physical Niri transient must not inherit that socket and select its nested
+# Wayland backend after the production compositor has been stopped.
+unset WAYLAND_DISPLAY DISPLAY WAYLAND_SOCKET
 export LIBSEAT_BACKEND=seatd
 export XDG_SESSION_TYPE=wayland
 exec "$wss" run \

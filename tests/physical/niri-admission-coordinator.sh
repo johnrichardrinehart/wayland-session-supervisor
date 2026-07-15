@@ -203,9 +203,18 @@ if [[ ! -s $session_dir/session.pid ]] || ! pgrep -x niri >/dev/null; then
     echo "physical Niri did not become ready" >&2
     exit 1
 fi
-sleep 3
-
 root_pid=$(cat "$session_dir/session.pid")
+sleep 3
+managed_cgroup=
+if [[ -s $session_dir/cgroup.path ]]; then
+    managed_cgroup=$(cat "$session_dir/cgroup.path")
+fi
+if ! kill -0 "$root_pid" 2>/dev/null || ! pgrep -x niri >/dev/null \
+    || [[ -z $managed_cgroup || ! -s $managed_cgroup/cgroup.procs ]]; then
+    echo "physical Niri exited or lost its delegated cgroup before capture" >&2
+    exit 1
+fi
+
 ps -eo pid,ppid,uid,euid,stat,comm,args >"$evidence/processes-before-capture.txt"
 find "/proc/$root_pid/fd" -maxdepth 1 -type l -printf '%f %l\n' >"$evidence/root-fds.txt" 2>/dev/null || true
 log "capturing the leave-running physical Niri domain"
