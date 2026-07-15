@@ -50,6 +50,24 @@ process references.
 
 ## Bounded Niri admission
 
+For a one-machine test, switch once from the production Niri VT to another
+Linux text VT, log in, and run:
+
+```bash
+cd /home/john/code/dev-worktrees/github.com/johnrichardrinehart/wayland-session-supervisor/main
+tests/physical/run-from-vt.sh --dry-run
+```
+
+The helper refuses a terminal inside the graphical supervisor domain or on the
+production VT. It uses the text VT's own logind session for the harmless
+current-boot watchdog proof, starts a persistent localhost SSH control
+connection outside the graphical domain, then passes the production Wayland
+session and VT explicitly to the admission harness. Thus no repeated manual VT
+toggling is required: start the eventual `--execute` run from the text VT, and
+the coordinator restores and activates the production VT after bounded
+cleanup. A terminal on VT1 cannot be the observer because stopping the exact
+Niri domain intentionally terminates that terminal and this agent with it.
+
 `run-niri-admission.sh --dry-run` is non-destructive. It verifies the current
 boot's schema-2 escape gate, all recovery-stage results, active SSH control,
 user-manager lingering, exact temporary security-wrapper targets, the CRIU

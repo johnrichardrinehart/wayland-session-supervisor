@@ -14,6 +14,7 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
   ''
     scripts=(
       ${self}/tests/physical/run-niri-admission.sh
+      ${self}/tests/physical/run-from-vt.sh
       ${self}/tests/physical/niri-admission-coordinator.sh
       ${self}/tests/physical/niri-admission-inner.sh
       ${self}/tests/physical/prove-watchdog.sh
@@ -22,6 +23,11 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
     bash -n "''${scripts[@]}"
     shellcheck "''${scripts[@]}"
     bash ${self}/tests/physical/run-niri-admission.sh --help >/dev/null
+    bash ${self}/tests/physical/run-from-vt.sh --help >/dev/null
+    grep -F 'the control shell must not use production VT' \
+      ${self}/tests/physical/run-from-vt.sh
+    grep -F 'ControlMaster=yes' ${self}/tests/physical/run-from-vt.sh
+    grep -F 'XDG_SESSION_ID=$production_session' ${self}/tests/physical/run-from-vt.sh
     niri validate -c ${self}/tests/physical/niri-minimal-safe.kdl
     grep -F 'Super+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }' \
       ${self}/tests/physical/niri-minimal-safe.kdl
