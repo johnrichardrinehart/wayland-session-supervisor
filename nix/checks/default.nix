@@ -20,6 +20,7 @@
   };
   in-domain-seat-authority = import ./in-domain-seat-authority.nix { inherit pkgs self system; };
   physical-watchdog = import ./physical-watchdog.nix { inherit pkgs self; };
+  physical-niri-harness = import ./physical-niri-harness.nix { inherit pkgs self; };
   core-integration =
     pkgs.runCommand "wayland-session-supervisor-core-integration"
       {

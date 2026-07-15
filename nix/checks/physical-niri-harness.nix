@@ -1,0 +1,34 @@
+{
+  pkgs,
+  self,
+  ...
+}:
+pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
+  {
+    nativeBuildInputs = [
+      pkgs.bash
+      pkgs.niri
+      pkgs.shellcheck
+    ];
+  }
+  ''
+    scripts=(
+      ${self}/tests/physical/run-niri-admission.sh
+      ${self}/tests/physical/niri-admission-coordinator.sh
+      ${self}/tests/physical/niri-admission-inner.sh
+      ${self}/tests/physical/prove-watchdog.sh
+      ${self}/tests/physical/watchdog-action.sh
+    )
+    bash -n "''${scripts[@]}"
+    shellcheck "''${scripts[@]}"
+    bash ${self}/tests/physical/run-niri-admission.sh --help >/dev/null
+    niri validate -c ${self}/tests/physical/niri-minimal-safe.kdl
+    grep -F 'Super+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }' \
+      ${self}/tests/physical/niri-minimal-safe.kdl
+    grep -F -- '--on-active=180s' ${self}/tests/physical/niri-admission-coordinator.sh
+    grep -F -- '--property=Delegate=yes' ${self}/tests/physical/niri-admission-coordinator.sh
+    grep -F -- 'timeout --kill-after=5s 75s' ${self}/tests/physical/niri-admission-coordinator.sh
+    grep -F 'WSS_PHYSICAL_NIRI_CONFIRM=stop-production-session' \
+      ${self}/tests/physical/run-niri-admission.sh
+    touch "$out"
+  ''

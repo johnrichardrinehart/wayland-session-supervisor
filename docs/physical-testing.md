@@ -44,8 +44,33 @@ runs as the authenticated real UID.
 
 The option has configuration-level and VM reboot proof: CRIU restores the
 mixed-credential seatd tree with exact namespace-local PIDs and credentials.
-It must not be enabled on the physical target until seatd socket/device
+It must not be enabled as the normal physical session until seatd socket/device
 identity, rollback, and physical restore behavior pass without external
-process references. Accordingly this repository intentionally provides no
-command that launches a physical compositor yet. `prove-watchdog.sh` is safe to run because
-its victim is only `sleep`; it does not open DRM, evdev, or a TTY.
+process references.
+
+## Bounded Niri admission
+
+`run-niri-admission.sh --dry-run` is non-destructive. It verifies the current
+boot's schema-2 escape gate, all recovery-stage results, active SSH control,
+user-manager lingering, exact temporary security-wrapper targets, the CRIU
+plugin, and the safety config. It does not open DRM, input, or a VT.
+
+`--execute` is deliberately session-destructive and also requires
+`WSS_PHYSICAL_NIRI_CONFIRM=stop-production-session`. It starts a root
+coordinator outside the graphical process domain. The coordinator:
+
+1. creates a blocked physical user service and obtains its cgroup;
+2. arms a 180-second system-manager watchdog before releasing that service;
+3. stops the production compositor scope, which terminates every graphical
+   terminal and coding agent in that exact domain;
+4. launches only the minimal Niri configuration through temporary,
+   source-verified namespace and `seatd-launch` security wrappers;
+5. runs CRIU leave-running capture under a shorter 75-second timeout;
+6. stops the physical scope, cancels the watchdog only after confirmed stop,
+   restores greetd/session/VT state, and writes private evidence under
+   `/var/tmp/wss-physical-niri-admission-*`.
+
+Execution must be initiated only when an SSH session is already available.
+Reconnect over SSH after the graphical terminal exits; never start another
+compositor manually. A capture refusal is an admission diagnostic, not an
+exact-restore success.
