@@ -26,6 +26,11 @@ if (( $# > 1 )); then
     exit 2
 fi
 
+fail() {
+    echo "physical admission refused: $*" >&2
+    exit 1
+}
+
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 user=$(id -un)
 uid=$(id -u)
@@ -35,20 +40,19 @@ marker=/run/wayland-session-supervisor/physical-watchdog-${uid}.env
 state=${WSS_PHYSICAL_NIRI_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/wayland-session-supervisor/physical-niri-admission}
 runtime=${WSS_PHYSICAL_NIRI_RUNTIME:-/run/user/${uid}/wayland-session-supervisor-physical}
 config=${WSS_PHYSICAL_NIRI_CONFIG:-$repo/tests/physical/niri-minimal-safe.kdl}
-wss=${WSS_PHYSICAL_WSS:-$(command -v wayland-session-supervisor)}
+wss_candidate=${WSS_PHYSICAL_WSS:-$(command -v wayland-session-supervisor || true)}
+[[ -n $wss_candidate ]] || fail "wayland-session-supervisor is not on PATH"
+wss=$(readlink -f "$wss_candidate") || fail "cannot resolve supervisor: $wss_candidate"
 criu=${WSS_PHYSICAL_CRIU:-/tmp/criu-i915-worktree}
-niri=${WSS_PHYSICAL_NIRI:-$(command -v niri)}
+niri_candidate=${WSS_PHYSICAL_NIRI:-$(command -v niri || true)}
+[[ -n $niri_candidate ]] || fail "Niri is not on PATH"
+niri=$(readlink -f "$niri_candidate") || fail "cannot resolve Niri: $niri_candidate"
 plugin=${WSS_PHYSICAL_I915_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/i915/i915_plugin.so}
 production_scope=${WSS_PHYSICAL_PRODUCTION_SCOPE:-wayland-session-supervisor-default.scope}
 session_id=${XDG_SESSION_ID:-$(loginctl list-sessions --no-legend | awk -v uid="$uid" '$2 == uid && $4 == "seat0" { print $1; exit }')}
 vt_number=${XDG_VTNR:-$(loginctl show-session "$session_id" -p VTNr --value 2>/dev/null || true)}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 evidence=${WSS_PHYSICAL_NIRI_EVIDENCE:-/var/tmp/wss-physical-niri-admission-${timestamp}}
-
-fail() {
-    echo "physical admission refused: $*" >&2
-    exit 1
-}
 
 [[ -s $gate ]] || fail "missing current-boot escape gate: $gate"
 jq -e --arg boot "$boot_id" \
