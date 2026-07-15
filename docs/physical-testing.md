@@ -6,10 +6,12 @@ substitute for these controls.
 
 ## Required gates
 
-1. Run `tests/physical/prove-watchdog.sh`. Its systemd timer and service live in
-   a cgroup separate from the bounded victim and must stop that victim without
-   input from the compositor session. The resulting private
-   `escape-gate.json` is valid only for its recorded boot ID.
+1. Refresh sudo authentication with `sudo true`, then run
+   `tests/physical/prove-watchdog.sh`. Its timer and action run under the system
+   manager, outside the bounded user victim. The action writes the victim's
+   `cgroup.kill`, stops its transient unit, and restores the recorded session
+   and VT without compositor input. The resulting private `escape-gate.json`
+   is valid only for its recorded boot ID.
 2. Validate `tests/physical/niri-minimal-safe.kdl`. Its immediate
    `Super+Shift+E` and `Ctrl+Alt+Delete` exits are non-inhibitable and skip the
    confirmation dialog. Tests must not replace this file with an empty or
@@ -17,9 +19,9 @@ substitute for these controls.
 3. Arm the independent watchdog before opening DRM or evdev. The physical scope
    must have a finite deadline, and CRIU itself must run under a shorter bounded
    timeout.
-4. Prove a control path outside the physical scope by stopping a harmless dummy
-   scope through the same user manager. An untested VT key chord is not an
-   out-of-band control path.
+4. Prove the system-manager control path against a harmless dummy unit before
+   any physical launch. A same-user-manager stop or an untested VT key chord is
+   not an independent out-of-band control path.
 5. Preserve the original logind session ID. Watchdog cleanup stops the physical
    scope and asks logind to reactivate that session before writing its private
    marker.
@@ -44,6 +46,6 @@ The option has configuration-level and VM reboot proof: CRIU restores the
 mixed-credential seatd tree with exact namespace-local PIDs and credentials.
 It must not be enabled on the physical target until seatd socket/device
 identity, rollback, and physical restore behavior pass without external
-process references. Accordingly this repository intentionally provides no command that
-launches a physical compositor yet. `prove-watchdog.sh` is safe to run because
+process references. Accordingly this repository intentionally provides no
+command that launches a physical compositor yet. `prove-watchdog.sh` is safe to run because
 its victim is only `sleep`; it does not open DRM, evdev, or a TTY.
