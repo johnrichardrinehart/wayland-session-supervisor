@@ -210,7 +210,8 @@ if [[ -s $session_dir/cgroup.path ]]; then
     managed_cgroup=$(cat "$session_dir/cgroup.path")
 fi
 if ! kill -0 "$root_pid" 2>/dev/null || ! pgrep -x niri >/dev/null \
-    || [[ -z $managed_cgroup || ! -s $managed_cgroup/cgroup.procs ]]; then
+    || [[ -z $managed_cgroup || ! -r $managed_cgroup/cgroup.procs ]] \
+    || ! grep -q . "$managed_cgroup/cgroup.procs"; then
     echo "physical Niri exited or lost its delegated cgroup before capture" >&2
     exit 1
 fi

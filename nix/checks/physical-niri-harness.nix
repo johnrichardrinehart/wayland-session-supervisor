@@ -35,6 +35,10 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
     grep -F -- '--property=Delegate=yes' ${self}/tests/physical/niri-admission-coordinator.sh
     grep -F -- 'timeout --kill-after=5s 75s' ${self}/tests/physical/niri-admission-coordinator.sh
     grep -F 'cgroup.procs' ${self}/tests/physical/niri-admission-coordinator.sh
+    grep -F 'grep -q . "$managed_cgroup/cgroup.procs"' \
+      ${self}/tests/physical/niri-admission-coordinator.sh
+    ! grep -F '! -s $managed_cgroup/cgroup.procs' \
+      ${self}/tests/physical/niri-admission-coordinator.sh
     grep -F 'physical Niri exited or lost its delegated cgroup before capture' \
       ${self}/tests/physical/niri-admission-coordinator.sh
     ! grep -F -- '--criu' ${self}/tests/physical/niri-admission-inner.sh
