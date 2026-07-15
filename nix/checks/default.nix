@@ -14,6 +14,7 @@
   checkpoint = import ./checkpoint.nix { inherit pkgs self system; };
   unprivileged-session = import ./unprivileged-session.nix { inherit pkgs self system; };
   authenticated-lifecycle = import ./authenticated-lifecycle.nix { inherit pkgs self system; };
+  multimedia-runtime = import ./multimedia-runtime.nix { inherit pkgs self system; };
   in-domain-seat-authority-lifecycle = import ./authenticated-lifecycle.nix {
     inherit pkgs self system;
     inDomainSeatAuthority = true;

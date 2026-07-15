@@ -89,7 +89,39 @@ let
     done
     if $has_user && test -n "''${WSS_SESSION_NAME:-}"; then
       if printf '%s\n' "$@" | ${lib.getExe pkgs.gnugrep} -qx import-environment; then
-        exec ${lib.getExe' pkgs.systemd "systemctl"} --machine="$USER@.host" "$@" XDG_RUNTIME_DIR
+        prefix=()
+        requested=()
+        import_seen=false
+        import_argument_count=0
+        for argument in "$@"; do
+          if ! $import_seen; then
+            prefix+=("$argument")
+            test "$argument" != import-environment || import_seen=true
+            continue
+          fi
+          import_argument_count=$((import_argument_count + 1))
+          variable="''${argument%%=*}"
+          case "$variable" in
+            XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|PIPEWIRE_RUNTIME_DIR|PULSE_SERVER|PULSE_RUNTIME_PATH|PULSE_COOKIE)
+              ;;
+            *) requested+=("$argument") ;;
+          esac
+        done
+
+        if (( import_argument_count == 0 )); then
+          # A no-argument import normally copies the entire private session
+          # environment. Import only graphical discovery variables instead.
+          for variable in DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP DESKTOP_SESSION NIRI_SOCKET; do
+            test -v "$variable" && requested+=("$variable")
+          done
+        fi
+        if (( ''${#requested[@]} == 0 )); then
+          exit 0
+        fi
+        if test -n "''${WAYLAND_DISPLAY:-}" && [[ $WAYLAND_DISPLAY != /* ]]; then
+          export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+        fi
+        exec ${lib.getExe' pkgs.systemd "systemctl"} --machine="$USER@.host" "''${prefix[@]}" "''${requested[@]}"
       fi
       exec ${lib.getExe' pkgs.systemd "systemctl"} --machine="$USER@.host" "$@"
     fi
@@ -114,6 +146,7 @@ let
       install -d -m 0700 ${lib.escapeShellArg (toString cfg.stateDirectory)} ${lib.escapeShellArg (toString cfg.runtimeDirectory)} "$session_runtime_dir"
       export XDG_RUNTIME_DIR="$session_runtime_dir"
       export PULSE_SERVER="unix:$user_runtime_dir/pulse/native"
+      export PULSE_RUNTIME_PATH="$user_runtime_dir/pulse"
       export PIPEWIRE_RUNTIME_DIR="$user_runtime_dir"
       for endpoint in bus systemd; do
         if test -e "$user_runtime_dir/$endpoint"; then
