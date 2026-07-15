@@ -75,7 +75,10 @@ if [[ -n $vt_number ]]; then
     fi
 fi
 
-install -d -o root -g root -m 0755 /run/wayland-session-supervisor
+# This directory is the authenticated supervisor's private runtime root.
+# Preserve the tmpfiles ownership contract after the privileged watchdog writes
+# its root-owned marker, or the next greetd login cannot create its runtime.
+install -d -o "$user" -g users -m 0700 /run/wayland-session-supervisor
 printf 'watchdog_fired=1\nunit=%s\nuser=%s\ncontrol_group=%s\nsession_id=%s\nvt_number=%s\ncgroup_kill_result=%s\nunit_stop_result=%s\nsession_activate_result=%s\nvt_activate_result=%s\nwatchdog_cgroup=%s\nboot_id=%s\nfired_utc=%s\n' \
     "$unit" "$user" "$control_group" "$session_id" "$vt_number" \
     "$cgroup_kill_result" "$unit_stop_result" "$session_activate_result" \

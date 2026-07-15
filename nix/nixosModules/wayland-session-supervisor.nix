@@ -143,7 +143,9 @@ let
 
       user_runtime_dir="/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)"
       session_runtime_dir=${lib.escapeShellArg "${toString cfg.runtimeDirectory}/${cfg.sessionName}"}
-      install -d -m 0700 ${lib.escapeShellArg (toString cfg.stateDirectory)} ${lib.escapeShellArg (toString cfg.runtimeDirectory)} "$session_runtime_dir"
+      # tmpfiles owns the shared runtime root; the authenticated user owns only
+      # its state and private per-session runtime directory.
+      install -d -m 0700 ${lib.escapeShellArg (toString cfg.stateDirectory)} "$session_runtime_dir"
       export XDG_RUNTIME_DIR="$session_runtime_dir"
       export PULSE_SERVER="unix:$user_runtime_dir/pulse/native"
       export PULSE_RUNTIME_PATH="$user_runtime_dir/pulse"
