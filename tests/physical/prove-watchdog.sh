@@ -47,13 +47,13 @@ fi
 # physical launcher uses the same sequence before its target can open devices.
 sudo -n systemd-run --system --machine=.host \
     --unit="$watchdog" --on-active=2s \
-    --service-type=oneshot --collect \
+    --service-type=oneshot --collect --property=TimeoutStartSec=20s \
     --setenv=PATH=/run/current-system/sw/bin \
     "$bash_bin" "$repo/tests/physical/watchdog-action.sh" \
     "$user" "$victim" "$victim_cgroup" "$session_id" "$vt_number" \
     >/dev/null
 
-for _ in $(seq 1 100); do
+for _ in $(seq 1 300); do
     if ! "${user_systemctl[@]}" is-active --quiet "$victim" && [[ -s $marker ]]; then
         break
     fi
@@ -66,6 +66,14 @@ if "${user_systemctl[@]}" is-active --quiet "$victim" || [[ ! -s $marker ]]; the
 fi
 
 grep -Fx 'watchdog_fired=1' "$marker" >/dev/null
+grep -Fx 'cgroup_kill_result=success' "$marker" >/dev/null
+grep -Fx 'unit_stop_result=success' "$marker" >/dev/null
+if [[ -n $session_id ]]; then
+    grep -Fx 'session_activate_result=success' "$marker" >/dev/null
+fi
+if [[ -n $vt_number ]]; then
+    grep -Fx 'vt_activate_result=success' "$marker" >/dev/null
+fi
 watchdog_cgroup=$(awk -F= '$1 == "watchdog_cgroup" { print $2 }' "$marker")
 recorded_boot=$(awk -F= '$1 == "boot_id" { print $2 }' "$marker")
 boot_id=$(cat /proc/sys/kernel/random/boot_id)

@@ -45,20 +45,41 @@ fi
 # compositor, its input devices, or a responsive user manager. The user-manager
 # stop then releases and resets the transient unit when that manager is alive.
 cgroup_path=/sys/fs/cgroup$control_group
+cgroup_kill_result=missing
 if [[ -e $cgroup_path/cgroup.kill ]]; then
-    printf '1\n' >"$cgroup_path/cgroup.kill"
+    if printf '1\n' >"$cgroup_path/cgroup.kill"; then
+        cgroup_kill_result=success
+    else
+        cgroup_kill_result=failure
+    fi
 fi
-systemctl --user --machine="${user}@.host" stop "$unit" || true
+if timeout 5s systemctl --user --machine="${user}@.host" stop "$unit"; then
+    unit_stop_result=success
+else
+    unit_stop_result=failure
+fi
+session_activate_result=not-requested
 if [[ -n $session_id ]]; then
-    loginctl activate "$session_id" || true
+    if timeout 5s loginctl activate "$session_id"; then
+        session_activate_result=success
+    else
+        session_activate_result=failure
+    fi
 fi
+vt_activate_result=not-requested
 if [[ -n $vt_number ]]; then
-    chvt "$vt_number" || true
+    if timeout 5s chvt "$vt_number"; then
+        vt_activate_result=success
+    else
+        vt_activate_result=failure
+    fi
 fi
 
 install -d -o root -g root -m 0755 /run/wayland-session-supervisor
-printf 'watchdog_fired=1\nunit=%s\nuser=%s\ncontrol_group=%s\nsession_id=%s\nvt_number=%s\nwatchdog_cgroup=%s\nboot_id=%s\nfired_utc=%s\n' \
+printf 'watchdog_fired=1\nunit=%s\nuser=%s\ncontrol_group=%s\nsession_id=%s\nvt_number=%s\ncgroup_kill_result=%s\nunit_stop_result=%s\nsession_activate_result=%s\nvt_activate_result=%s\nwatchdog_cgroup=%s\nboot_id=%s\nfired_utc=%s\n' \
     "$unit" "$user" "$control_group" "$session_id" "$vt_number" \
-    "$watchdog_cgroup" "$(cat /proc/sys/kernel/random/boot_id)" \
+    "$cgroup_kill_result" "$unit_stop_result" "$session_activate_result" \
+    "$vt_activate_result" "$watchdog_cgroup" \
+    "$(cat /proc/sys/kernel/random/boot_id)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$marker"
 chmod 0644 "$marker"
