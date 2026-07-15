@@ -30,5 +30,7 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
     grep -F -- 'timeout --kill-after=5s 75s' ${self}/tests/physical/niri-admission-coordinator.sh
     grep -F 'WSS_PHYSICAL_NIRI_CONFIRM=stop-production-session' \
       ${self}/tests/physical/run-niri-admission.sh
+    grep -F 'no established SSH control session exists' \
+      ${self}/tests/physical/run-niri-admission.sh
     touch "$out"
   ''

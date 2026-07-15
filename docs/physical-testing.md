@@ -70,7 +70,9 @@ coordinator outside the graphical process domain. The coordinator:
    restores greetd/session/VT state, and writes private evidence under
    `/var/tmp/wss-physical-niri-admission-*`.
 
-Execution must be initiated only when an SSH session is already available.
-Reconnect over SSH after the graphical terminal exits; never start another
+Execution is refused unless an established SSH session already exists; an
+active SSH daemon alone is not an escape path. Initiate or observe the run from
+that SSH session, then reconnect there after the graphical terminal exits;
+never start another
 compositor manually. A capture refusal is an admission diagnostic, not an
 exact-restore success.

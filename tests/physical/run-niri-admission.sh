@@ -74,6 +74,10 @@ grep -F 'allow-inhibiting=false' "$config" | grep -F 'quit skip-confirmation=tru
     || fail "minimal Niri config lacks an uninhibitable immediate exit"
 systemctl --system --machine=.host is-active --quiet sshd.service \
     || fail "sshd is not active as an independent remote control path"
+ssh_connections=$(ss -Htn state established '( sport = :22 )' | wc -l)
+if (( ssh_connections == 0 )); then
+    fail "no established SSH control session exists; connect from another terminal or machine first"
+fi
 [[ $(loginctl show-user "$user" -p Linger --value) == yes ]] \
     || fail "the user manager is not lingered"
 systemctl --user --machine="${user}@.host" is-active --quiet "$production_scope" \
@@ -107,13 +111,14 @@ jq -n \
     --arg namespace_wrapper "$namespace_wrapper_source" \
     --arg seatd_wrapper "$seatd_wrapper_source" \
     --arg production_scope "$production_scope" --arg session_id "$session_id" \
-    --arg vt_number "$vt_number" \
+    --arg vt_number "$vt_number" --argjson ssh_connections "$ssh_connections" \
     '{schema: 1, mode: $mode, boot_id: $boot_id, user: $user,
       gate: $gate, evidence: $evidence, state: $state, runtime: $runtime,
       supervisor: $wss, criu: $criu, plugin: $plugin, niri: $niri,
       config: $config, namespace_wrapper_source: $namespace_wrapper,
       seatd_wrapper_source: $seatd_wrapper, production_scope: $production_scope,
-      session_id: $session_id, vt_number: $vt_number}'
+      session_id: $session_id, vt_number: $vt_number,
+      established_ssh_connections: $ssh_connections}'
 
 if [[ $mode == dry-run ]]; then
     echo "PASS: physical Niri admission preflight; no DRM, input, VT, process, or service state changed"
