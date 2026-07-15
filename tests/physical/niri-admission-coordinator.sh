@@ -32,6 +32,7 @@ armed=$state/armed
 session_name=physical-niri
 capture_status=not-run
 physical_started=false
+physical_cgroup=
 watchdog_armed=false
 cleanup_complete=false
 
@@ -42,6 +43,15 @@ log() {
 stop_physical() {
     if $physical_started; then
         if timeout --kill-after=2s 15s systemctl --user --machine="$user_manager" stop "$physical_unit"; then
+            physical_started=false
+            return 0
+        fi
+        # A failed command can mean the transient unit already exited and was
+        # collected. Treat that as stopped only when its delegated cgroup is
+        # absent or demonstrably empty.
+        if ! systemctl --user --machine="$user_manager" is-active --quiet "$physical_unit" 2>/dev/null \
+            && { [[ -z $physical_cgroup || ! -e /sys/fs/cgroup$physical_cgroup/cgroup.procs ]] \
+                || ! grep -q . "/sys/fs/cgroup$physical_cgroup/cgroup.procs"; }; then
             physical_started=false
             return 0
         fi
@@ -144,7 +154,7 @@ systemd-run --user --machine="$user_manager" \
     --property=Delegate=yes --property=TimeoutStopSec=15s \
     --setenv=PATH=/run/current-system/sw/bin \
     "$repo/tests/physical/niri-admission-inner.sh" \
-    "$state" "$runtime" "$armed" "$wss" "$criu" \
+    "$state" "$runtime" "$armed" "$wss" \
     "$namespace_wrapper" "$seatd_wrapper" "$niri" "$config" "$session_name" \
     >"$evidence/physical-systemd-run.log" 2>&1
 physical_started=true
