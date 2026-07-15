@@ -1,0 +1,13 @@
+// Safety-only physical admission configuration. Do not remove either exit bind.
+hotkey-overlay {
+    skip-at-startup
+}
+
+binds {
+    Super+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }
+    Ctrl+Alt+Delete allow-inhibiting=false { quit skip-confirmation=true; }
+}
+
+output "eDP-1" {
+    scale 1.0
+}
