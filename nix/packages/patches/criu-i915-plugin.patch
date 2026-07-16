@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..e385bfa2a433f21cee8fa3c057bcaddfcf79d166
+index 0000000000000000000000000000000000000000..a2578f18dcac9e6e49adebb090e7599696560bf3
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,736 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -619,8 +619,20 @@ index 0000000000000000000000000000000000000000..e385bfa2a433f21cee8fa3c057bcaddf
 +physical `intel_context` always inherits its engine's default SSEU value, so
 +requiring an all-zero value rejected ordinary state. Validation now compares
 +the context SSEU with its physical engine default. A client-selected override
-+still differs and fails closed, as do virtual engines and active requests. A
-+complete hierarchy rerun remains required.
++still differs and fails closed, as do virtual engines and active requests.
++
++The rebuilt hierarchy at
++`/var/tmp/i915-criu-physical-abi10-20260716T170335Z` passed the first twelve
++cases, including exact restoration and post-restore submission through the
++physical one-slot map. Its virtual-engine negative then unexpectedly completed
++dump. The fixture had requested a load-balancing extension with only one render
++sibling; i915 legitimately collapsed that degenerate request to the physical
++render engine, so the test had not created the unsupported state it claimed.
++The corrected fixture queries `DRM_I915_QUERY_ENGINE_INFO`, selects two actual
++same-class siblings, and supplies both to the load-balancing constructor. On
++the Framework target it records video instances 0 and 1 and creates a genuine
++virtual engine. A complete hierarchy rerun remains required; the incomplete
++run has no verdict and is not compositor evidence.
 +
 +An idle i915 engine treats a debugfs reset request as a successful no-op, so the
 +reset test now starts a separate render client only after the target dump
@@ -7786,10 +7798,10 @@ index 0000000000000000000000000000000000000000..baeb62945c45d2be8df44448df666f09
 +			input_plugin_restore_file)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f33d885bc4368aeb3ee2960504d2eb895bddbc4e
+index 0000000000000000000000000000000000000000..7087f002f7526582a6fce6851e5f0bf39248f701
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,440 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -7835,6 +7847,51 @@ index 0000000000000000000000000000000000000000..f33d885bc4368aeb3ee2960504d2eb89
 +{
 +	if (ioctl(fd, request, arg) < 0)
 +		die(what);
++}
++
++static void find_virtual_siblings(
++	int fd, struct i915_engine_class_instance siblings[2])
++{
++	struct drm_i915_query_item item = {
++		.query_id = DRM_I915_QUERY_ENGINE_INFO,
++	};
++	struct drm_i915_query query = {
++		.items_ptr = (uintptr_t)&item,
++		.num_items = 1,
++	};
++	struct drm_i915_query_engine_info *info;
++	uint32_t i;
++	uint32_t j;
++
++	xioctl(fd, DRM_IOCTL_I915_QUERY, &query, "QUERY engine-info size");
++	if (item.length < (int32_t)sizeof(*info)) {
++		errno = ENODEV;
++		die("QUERY engine-info size");
++	}
++	info = calloc(1, item.length);
++	if (!info)
++		die("calloc engine-info");
++	item.data_ptr = (uintptr_t)info;
++	xioctl(fd, DRM_IOCTL_I915_QUERY, &query, "QUERY engine-info data");
++	for (i = 0; i < info->num_engines; i++) {
++		for (j = i + 1; j < info->num_engines; j++) {
++			if (info->engines[i].engine.engine_class !=
++			    info->engines[j].engine.engine_class)
++				continue;
++			siblings[0] = info->engines[i].engine;
++			siblings[1] = info->engines[j].engine;
++			fprintf(stderr,
++				"VIRTUAL-SIBLINGS class=%u instances=%u,%u\n",
++				siblings[0].engine_class,
++				siblings[0].engine_instance,
++				siblings[1].engine_instance);
++			free(info);
++			return;
++		}
++	}
++	free(info);
++	errno = ENODEV;
++	die("two same-class engines required for virtual fixture");
 +}
 +
 +static void signal_binary(int fd, uint32_t handle)
@@ -8009,11 +8066,10 @@ index 0000000000000000000000000000000000000000..f33d885bc4368aeb3ee2960504d2eb89
 +	if (!sync_only && !callback) {
 +		xioctl(fd, DRM_IOCTL_I915_GEM_VM_CREATE, &vm, "GEM_VM_CREATE");
 +		if (custom_engine || virtual_engine) {
-+			I915_DEFINE_CONTEXT_ENGINES_LOAD_BALANCE(balance, 1) = {
++			I915_DEFINE_CONTEXT_ENGINES_LOAD_BALANCE(balance, 2) = {
 +				.base.name = I915_CONTEXT_ENGINES_EXT_LOAD_BALANCE,
 +				.engine_index = 0,
-+				.num_siblings = 1,
-+				.engines = { { I915_ENGINE_CLASS_RENDER, 0 } },
++				.num_siblings = 2,
 +			};
 +			I915_DEFINE_CONTEXT_PARAM_ENGINES(engines, 1) = { 0 };
 +			struct drm_i915_gem_context_create_ext_setparam set_engines = {
@@ -8030,6 +8086,10 @@ index 0000000000000000000000000000000000000000..f33d885bc4368aeb3ee2960504d2eb89
 +			};
 +
 +			if (virtual_engine) {
++				struct i915_engine_class_instance siblings[2];
++
++				find_virtual_siblings(fd, siblings);
++				memcpy(balance.engines, siblings, sizeof(siblings));
 +				engines.extensions = (uintptr_t)&balance;
 +				engines.engines[0].engine_class =
 +					I915_ENGINE_CLASS_INVALID;
