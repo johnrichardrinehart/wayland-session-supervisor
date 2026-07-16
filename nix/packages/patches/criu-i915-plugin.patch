@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..99cdc80e04d3d1c02d99e1081a8a0e9250c11607
+index 0000000000000000000000000000000000000000..5cb6ba3b7415814f68416cf776d28da4f39cd57b
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,689 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -103,7 +103,11 @@ index 0000000000000000000000000000000000000000..99cdc80e04d3d1c02d99e1081a8a0e92
 +replacement files and objects, translate mmap offsets, restore VMAs, and only
 +then resume device execution. It is a structural reference, not a compatible
 +implementation. i915 rendering uses different object, VM, context, submission,
-+and display models.
++and display models. The plugins can be loaded together, so each external-file
++hook must establish driver ownership before requiring driver-specific companion
++devices or topology. In particular, the AMDGPU hook queries the DRM driver name
++and returns `-ENOTSUP` for i915 file descriptions before consulting `/dev/kfd`;
++plugin ordering must never turn another driver's fd into a fatal dependency.
 +
 +A CRIU core change is required to let a plugin claim an `ENXIO` map-file entry
 +before the generic unknown-map rejection. The revised interface must provide
@@ -3849,6 +3853,51 @@ index 0d3b5b23f1a1dc7fd406a8046e5d752b948689df..e703e2350d66392cf117c4b291b9f390
  		goto err_bogus_mapfile;
  
  	if (vma_area->e->status != 0)
+diff --git a/plugins/amdgpu/amdgpu_plugin.c b/plugins/amdgpu/amdgpu_plugin.c
+index 96c08616288c80bd82bcf1371bcc6531f8dbc24a..8bb263f1c266389c706b1a2f0ef55d1669046123 100644
+--- a/plugins/amdgpu/amdgpu_plugin.c
++++ b/plugins/amdgpu/amdgpu_plugin.c
+@@ -64,6 +64,20 @@ bool plugin_added_to_inventory = false;
+ 
+ bool plugin_disabled = false;
+ 
++static int reject_non_amdgpu_drm_fd(int fd)
++{
++	drmVersionPtr version;
++	int ret = 0;
++
++	version = drmGetVersion(fd);
++	if (!version)
++		return 0;
++	if (!version->name || strcmp(version->name, "amdgpu"))
++		ret = -ENOTSUP;
++	drmFreeVersion(version);
++	return ret;
++}
++
+ /**************************************************************************************************/
+ 
+ /* Call ioctl, restarting if it is interrupted */
+@@ -411,6 +425,9 @@ int amdgpu_plugin_handle_device_vma(int fd, const struct stat *st_buf)
+ 	int ret = 0;
+ 
+ 	pr_debug("Enter %s\n", __func__);
++	ret = reject_non_amdgpu_drm_fd(fd);
++	if (ret)
++		return ret;
+ 	ret = stat(AMDGPU_KFD_DEVICE, &st_kfd);
+ 	if (ret == -1) {
+ 		pr_perror("stat error for /dev/kfd");
+@@ -1198,6 +1215,9 @@ int amdgpu_plugin_dump_file(int fd, int id)
+ 		return -1;
+ 	}
+ 
++	ret = reject_non_amdgpu_drm_fd(fd);
++	if (ret)
++		return ret;
+ 	ret = stat(AMDGPU_KFD_DEVICE, &st_kfd);
+ 	if (ret == -1) {
+ 		pr_perror("fstat error for /dev/kfd");
 diff --git a/plugins/i915/Makefile b/plugins/i915/Makefile
 new file mode 100644
 index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fdd64f519c

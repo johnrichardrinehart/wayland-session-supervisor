@@ -47,8 +47,13 @@ next generation therefore carries a versioned, read-only evdev admission query
 and a separate input plugin. The initial subset requires empty queues, no grab,
 no event filter, no force feedback, one exact device identity match, and equal
 global input state. Every other state remains a conservative refusal. The
-uinput ABI fixture and physical plugin round trip must pass before this option
-is deployed as the normal session or any restore success is claimed.
+uinput ABI fixture passed on the booted kernel. The bounded run at
+`/var/tmp/wss-physical-niri-admission-20260716T012000Z` then admitted and wrote
+images for all 15 physical evdev file descriptions before exposing a separate
+plugin-dispatch bug: the AMDGPU plugin consulted `/dev/kfd` for an i915 DRM fd.
+The packaged CRIU now makes AMDGPU establish the DRM driver name and return
+`-ENOTSUP` for i915 before requiring KFD state. A physical round trip must
+still pass before any restore success is claimed.
 
 ## Bounded Niri admission
 
