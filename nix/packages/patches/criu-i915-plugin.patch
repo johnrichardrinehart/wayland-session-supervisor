@@ -9795,10 +9795,10 @@ index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e091aff9ab
+index 0000000000000000000000000000000000000000..4562440eb7855e74e8eb1f2e3099615af7117a26
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,240 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -9809,6 +9809,13 @@ index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e0
 +
 +repo=$(cd "$(dirname "$0")/../../.." && pwd)
 +scripts="$repo/test/others/i915-criu"
++abi=$(awk '$1 == "#define" && $2 == "I915_CRIU_ABI_VERSION" { print $3 }' \
++    "$repo/contrib/i915-criu/i915_criu_uapi.h")
++if [[ ! $abi =~ ^[0-9]+$ ]]; then
++    echo "cannot derive the physical-suite ABI from i915_criu_uapi.h" >&2
++    exit 2
++fi
++image_schema=$abi
 +timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 +suite=${I915_CRIU_SUITE_DIR:-/var/tmp/i915-criu-physical-$timestamp}
 +criu=${CRIU:-/run/current-system/sw/bin/criu}
@@ -9850,7 +9857,7 @@ index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e0
 +}
 +for symbol in i915_criu_framebuffer_ioctl i915_criu_mapping_ioctl; do
 +    if ! require_kernel_symbol "$symbol"; then
-+        echo "booted i915 module lacks required ABI-9 symbol: $symbol" >&2
++        echo "booted i915 module lacks required ABI-$abi symbol: $symbol" >&2
 +        exit 2
 +    fi
 +done
@@ -9888,6 +9895,8 @@ index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e0
 +
 +jq -n \
 +    --arg timestamp "$timestamp" \
++    --argjson abi "$abi" \
++    --argjson image_schema "$image_schema" \
 +    --arg kernel "$(uname -r)" \
 +    --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
 +    --arg system "$(readlink -f /run/current-system)" \
@@ -9913,7 +9922,7 @@ index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e0
 +    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,
 +      kernel_module_sha256:$kernel_module_sha256,criu:$criu,plugin:$plugin,
-+      plugin_sha256:$plugin_sha256,abi:9,image_schema:9,niri:$niri,
++      plugin_sha256:$plugin_sha256,abi:$abi,image_schema:$image_schema,niri:$niri,
 +      userspace:{niri_libgbm:$niri_libgbm,niri_libdrm:$niri_libdrm,
 +      fixture_libdrm:$fixture_libdrm,mesa_dri:$mesa_dri},
 +      fixtures:{minimal_sha256:$minimal_fixture_sha256,
