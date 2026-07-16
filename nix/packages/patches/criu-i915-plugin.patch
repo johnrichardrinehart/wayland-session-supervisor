@@ -9795,10 +9795,10 @@ index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..4562440eb7855e74e8eb1f2e3099615af7117a26
+index 0000000000000000000000000000000000000000..323c08250f9c80c9b246d878106711f266e2cba6
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,258 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -9816,6 +9816,19 @@ index 0000000000000000000000000000000000000000..4562440eb7855e74e8eb1f2e3099615a
 +    exit 2
 +fi
 +image_schema=$abi
++if ! source_status=$(git -c safe.directory="$repo" -C "$repo" \
++    status --porcelain --untracked-files=all); then
++    echo "cannot identify the physical-suite source revision" >&2
++    exit 2
++fi
++if [[ -n $source_status ]]; then
++    echo "physical-suite source tree must be clean" >&2
++    printf '%s\n' "$source_status" >&2
++    exit 2
++fi
++source_revision=$(git -c safe.directory="$repo" -C "$repo" rev-parse HEAD)
++uapi_sha256=$(sha256sum "$repo/contrib/i915-criu/i915_criu_uapi.h" | awk '{print $1}')
++runner_sha256=$(sha256sum "$repo/test/others/i915-criu/run-physical-suite.sh" | awk '{print $1}')
 +timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 +suite=${I915_CRIU_SUITE_DIR:-/var/tmp/i915-criu-physical-$timestamp}
 +criu=${CRIU:-/run/current-system/sw/bin/criu}
@@ -9897,6 +9910,9 @@ index 0000000000000000000000000000000000000000..4562440eb7855e74e8eb1f2e3099615a
 +    --arg timestamp "$timestamp" \
 +    --argjson abi "$abi" \
 +    --argjson image_schema "$image_schema" \
++    --arg source_revision "$source_revision" \
++    --arg uapi_sha256 "$uapi_sha256" \
++    --arg runner_sha256 "$runner_sha256" \
 +    --arg kernel "$(uname -r)" \
 +    --arg boot_id "$(cat /proc/sys/kernel/random/boot_id)" \
 +    --arg system "$(readlink -f /run/current-system)" \
@@ -9919,7 +9935,9 @@ index 0000000000000000000000000000000000000000..4562440eb7855e74e8eb1f2e3099615a
 +    --arg enable_hangcheck "$(read_parameter enable_hangcheck)" \
 +    --arg modeset "$(read_parameter modeset)" \
 +    --arg effective_uc "${effective_uc:-<unavailable>}" \
-+    '{schema:1,timestamp:$timestamp,kernel:$kernel,boot_id:$boot_id,
++    '{schema:1,timestamp:$timestamp,
++      source:{revision:$source_revision,uapi_sha256:$uapi_sha256,
++      runner_sha256:$runner_sha256},kernel:$kernel,boot_id:$boot_id,
 +      system:$system,pci:$pci,kernel_module:$kernel_module,
 +      kernel_module_sha256:$kernel_module_sha256,criu:$criu,plugin:$plugin,
 +      plugin_sha256:$plugin_sha256,abi:$abi,image_schema:$image_schema,niri:$niri,
