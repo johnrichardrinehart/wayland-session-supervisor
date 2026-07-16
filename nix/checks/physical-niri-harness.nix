@@ -28,6 +28,12 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
       ${self}/tests/physical/run-from-vt.sh
     grep -F 'ControlMaster=yes' ${self}/tests/physical/run-from-vt.sh
     grep -F 'XDG_SESSION_ID=$production_session' ${self}/tests/physical/run-from-vt.sh
+    grep -F 'wayland-session-supervisor-default.scope -p ControlGroup --value' \
+      ${self}/tests/physical/run-from-vt.sh
+    grep -F 'supervisor_domain/cgroup.procs' \
+      ${self}/tests/physical/run-from-vt.sh
+    grep -F 'XDG_SESSION_ID=' ${self}/tests/physical/run-from-vt.sh
+    ! grep -F 'session_type == wayland' ${self}/tests/physical/run-from-vt.sh
     niri validate -c ${self}/tests/physical/niri-minimal-safe.kdl
     grep -F 'Super+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }' \
       ${self}/tests/physical/niri-minimal-safe.kdl
