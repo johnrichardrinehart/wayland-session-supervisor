@@ -7770,7 +7770,7 @@ index 0000000000000000000000000000000000000000..baeb62945c45d2be8df44448df666f09
 +			input_plugin_restore_file)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d080eaec9
+index 0000000000000000000000000000000000000000..f33d885bc4368aeb3ee2960504d2eb895bddbc4e
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
 @@ -0,0 +1,392 @@
@@ -7912,7 +7912,7 @@ index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d
 +
 +static void submit(int fd, uint32_t context, uint32_t handle, void *mapping,
 +		   uint64_t *gpu_address, bool *gpu_address_valid,
-+		   bool require_exact_address)
++		   bool require_exact_address, bool user_engine)
 +{
 +	uint32_t *batch = (uint32_t *)((char *)mapping + OBJECT_SIZE - 8);
 +	uint32_t saved[2] = { batch[0], batch[1] };
@@ -7926,7 +7926,7 @@ index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d
 +		.buffer_count = 1,
 +		.batch_start_offset = OBJECT_SIZE - 8,
 +		.batch_len = 8,
-+		.flags = I915_EXEC_RENDER,
++		.flags = user_engine ? I915_EXEC_DEFAULT : I915_EXEC_RENDER,
 +		.rsvd1 = context,
 +	};
 +	struct drm_i915_gem_wait wait = {
@@ -8124,7 +8124,7 @@ index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
 +	if (!idle_context && !sync_only && !callback && !virtual_engine)
 +		submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
-+		       &gpu_address_valid, false);
++		       &gpu_address_valid, false, custom_engine);
 +
 +	if (sigaction(SIGUSR1, &action, NULL) < 0)
 +		die("sigaction");
@@ -8153,7 +8153,7 @@ index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d
 +	fprintf(stderr, "TIMELINE-SIGNALED handle=%u point=%" PRIu64 "\n",
 +		timeline.handle, (uint64_t)TIMELINE_POINT);
 +	submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
-+	       &gpu_address_valid, gpu_address_valid);
++	       &gpu_address_valid, gpu_address_valid, custom_engine);
 +	signal_timeline(fd, timeline.handle, POST_RESTORE_POINT);
 +	wait_timeline(fd, timeline.handle, POST_RESTORE_POINT);
 +	if (sync_file_mode)
