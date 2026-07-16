@@ -52,8 +52,13 @@ uinput ABI fixture passed on the booted kernel. The bounded run at
 images for all 15 physical evdev file descriptions before exposing a separate
 plugin-dispatch bug: the AMDGPU plugin consulted `/dev/kfd` for an i915 DRM fd.
 The packaged CRIU now makes AMDGPU establish the DRM driver name and return
-`-ENOTSUP` for i915 before requiring KFD state. A physical round trip must
-still pass before any restore success is claimed.
+`-ENOTSUP` for i915 before requiring KFD state. Verbosity-4 evidence at
+`/var/tmp/wss-physical-niri-admission-20260716T014431Z` confirmed that dispatch
+then reached the i915 hook, but seatd's drained primary-node fd could not answer
+`DRM_IOCTL_VERSION`. The i915 classifier now has one strict fallback: resolve
+the fd's `st_rdev` through `/sys/dev/char` and require the exact `i915` driver
+link before attempting the still-authoritative transactional ioctl. A physical
+round trip must still pass before any restore success is claimed.
 
 ## Bounded Niri admission
 

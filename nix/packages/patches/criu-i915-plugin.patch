@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..5cb6ba3b7415814f68416cf776d28da4f39cd57b
+index 0000000000000000000000000000000000000000..77ba8050e5b58b6b464b1152e0ed3e18fcac7ca0
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,689 @@
+@@ -0,0 +1,694 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -108,6 +108,11 @@ index 0000000000000000000000000000000000000000..5cb6ba3b7415814f68416cf776d28da4
 +devices or topology. In particular, the AMDGPU hook queries the DRM driver name
 +and returns `-ENOTSUP` for i915 file descriptions before consulting `/dev/kfd`;
 +plugin ordering must never turn another driver's fd into a fatal dependency.
++For an i915 character fd on which `DRM_IOCTL_VERSION` is unavailable during
++CRIU file draining, ownership may fall back only to its immutable `st_rdev`
++entry under `/sys/dev/char`, whose resolved device-driver basename must be
++exactly `i915`; the subsequent transactional ioctl remains authoritative for
++authorization and supported state.
 +
 +A CRIU core change is required to let a plugin claim an `ENXIO` map-file entry
 +before the generic unknown-map rejection. The revised interface must provide
@@ -3937,10 +3942,10 @@ index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fd
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..dfbd313fb67d8b403a245c54d0340a0e21abf4d5
+index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f09319158f1e
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,2987 @@
+@@ -0,0 +1,3021 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -4249,13 +4254,47 @@ index 0000000000000000000000000000000000000000..dfbd313fb67d8b403a245c54d0340a0e
 +	return fd < 0 ? -errno : fd;
 +}
 +
++static bool sysfs_fd_uses_i915(int fd)
++{
++	char path[PATH_MAX];
++	char driver[PATH_MAX];
++	struct stat st;
++	const char *name;
++	ssize_t length;
++	int written;
++
++	if (fstat(fd, &st) || !S_ISCHR(st.st_mode))
++		return false;
++	written = snprintf(path, sizeof(path),
++			   "/sys/dev/char/%u:%u/device/driver",
++			   major(st.st_rdev), minor(st.st_rdev));
++	if (written < 0 || (size_t)written >= sizeof(path))
++		return false;
++	length = readlink(path, driver, sizeof(driver) - 1);
++	if (length < 0)
++		return false;
++	driver[length] = '\0';
++	name = strrchr(driver, '/');
++	name = name ? name + 1 : driver;
++	return !strcmp(name, "i915");
++}
++
 +static bool is_i915_fd(int fd)
 +{
 +	drmVersionPtr version = drmGetVersion(fd);
-+	bool match = version && version->name && !strcmp(version->name, "i915");
++	int version_errno = errno;
++	bool match;
 +
-+	if (version)
++	if (version) {
++		match = version->name && !strcmp(version->name, "i915");
++		pr_debug("i915_plugin: fd %d reports DRM driver %.*s\n", fd,
++			 version->name_len, version->name ? version->name : "");
 +		drmFreeVersion(version);
++		return match;
++	}
++	match = sysfs_fd_uses_i915(fd);
++	pr_debug("i915_plugin: fd %d DRM version unavailable (%d); sysfs i915=%d\n",
++		 fd, version_errno, match);
 +	return match;
 +}
 +
