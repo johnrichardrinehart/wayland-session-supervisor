@@ -58,5 +58,7 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
       ${self}/tests/physical/run-niri-admission.sh
     grep -F 'no established SSH control session exists' \
       ${self}/tests/physical/run-niri-admission.sh
+    grep -F 'for _ in $(seq 1 600); do' \
+      ${self}/tests/physical/prove-watchdog.sh
     touch "$out"
   ''

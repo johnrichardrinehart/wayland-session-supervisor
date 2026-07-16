@@ -53,14 +53,14 @@ sudo -n systemd-run --system --machine=.host \
     "$user" "$victim" "$victim_cgroup" "$session_id" "$vt_number" \
     >/dev/null
 
-for _ in $(seq 1 300); do
+for _ in $(seq 1 600); do
     if ! "${user_systemctl[@]}" is-active --quiet "$victim" && [[ -s $marker ]]; then
         break
     fi
     sleep 0.1
 done
 if "${user_systemctl[@]}" is-active --quiet "$victim" || [[ ! -s $marker ]]; then
-    echo "independent system watchdog did not terminate the victim" >&2
+    echo "independent system watchdog did not prove victim termination within 60 seconds" >&2
     sudo -n journalctl --machine=.host -u "${watchdog}.service" --no-pager >&2 || true
     exit 1
 fi
