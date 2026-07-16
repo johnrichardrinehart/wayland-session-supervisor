@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..77ba8050e5b58b6b464b1152e0ed3e18fcac7ca0
+index 0000000000000000000000000000000000000000..5894dfdcf99833589a549b3d627a70b72e90180f
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,694 @@
+@@ -0,0 +1,710 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -592,6 +592,22 @@ index 0000000000000000000000000000000000000000..77ba8050e5b58b6b464b1152e0ed3e18
 +corruption transactionally, in addition to the earlier schema, sharing,
 +dma-buf, sync-file, callback, and custom-engine refusal cases.
 +
++ABI and private image version 10 narrow that historical custom-engine refusal
++to a reconstructible subset required by the physical Mesa iris client. A
++context may carry at most 64 ordered engine slots, each either the explicit
++invalid sentinel or one physical engine class/instance present on the target.
++The kernel refuses load-balanced, parallel, bonded, virtual, unknown, and
++per-engine SSEU state, and refuses any active engine before image creation.
++The image records every slot in order; restore validates the target engine
++identity and attaches the exact physical map to the proto-context before it can
++materialize. The staged suite turns the one-render-engine fixture into a
++positive exact-address/post-restore-submission case and adds a load-balanced
++virtual-engine negative. Physical Niri evidence at
++`/var/tmp/wss-physical-niri-admission-20260716T015424Z` established that its
++shared seatd/Niri primary-node description reaches the i915 transaction and is
++refused during ABI-9 begin validation; ABI-10 physical validation remains
++pending and must not be reported as compositor success.
++
 +An idle i915 engine treats a debugfs reset request as a successful no-op, so the
 +reset test now starts a separate render client only after the target dump
 +transaction reaches its deliberate pause and keeps a long batch stream queued.
@@ -787,10 +803,10 @@ index 70c607ec6cb5f9f7c98bccea470529acf9901b00..7ed28832990279b3714c54bbd6e75940
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f9d1423cc
+index 0000000000000000000000000000000000000000..4921147e94f4bcf7eca9f9b2f496f3f7a62daee9
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,231 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -799,7 +815,7 @@ index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 9
++#define I915_CRIU_ABI_VERSION 10
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -847,6 +863,8 @@ index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f
 +#define I915_CRIU_CONTEXT_BANNABLE (1u << 2)
 +#define I915_CRIU_CONTEXT_RECOVERABLE (1u << 3)
 +#define I915_CRIU_CONTEXT_PERSISTENCE (1u << 4)
++#define I915_CRIU_CONTEXT_USER_ENGINES (1u << 5)
++#define I915_CRIU_MAX_CONTEXT_ENGINES 64
 +#define I915_CRIU_BINDING_QUERY 1
 +#define I915_CRIU_BINDING_CREATE 2
 +#define I915_CRIU_BINDING_LOCAL (1u << 0)
@@ -964,6 +982,11 @@ index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f
 +	uint64_t reserved[4];
 +};
 +
++struct drm_i915_criu_engine {
++	uint16_t engine_class;
++	uint16_t engine_instance;
++};
++
 +struct drm_i915_criu_context {
 +	uint32_t version;
 +	uint32_t op;
@@ -972,7 +995,10 @@ index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f
 +	uint32_t flags;
 +	uint32_t vm_id;
 +	int32_t priority;
-+	uint64_t reserved[4];
++	uint32_t engine_count;
++	uint32_t pad;
++	uint64_t engines_ptr;
++	uint64_t reserved[2];
 +};
 +
 +struct drm_i915_criu_binding {
@@ -1014,10 +1040,10 @@ index 0000000000000000000000000000000000000000..f2a0dcf63e5011f826e876818af0f32f
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d458cb6fb79
+index 0000000000000000000000000000000000000000..60a53b52895bc817440cc187c70b20327cce29f2
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2498 @@
+@@ -0,0 +1,2716 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720..05bde40 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -1079,12 +1105,12 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000..4dae447
++index 0000000000000000000000000000000000000000..88477713ba15cb5acf2d8ab9adb01b535c4f68da
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,1861 @@
++@@ -0,0 +1,2065 @@
 ++// SPDX-License-Identifier: MIT
-++/* Experimental i915 checkpoint/restore transaction, ABI version 9. */
+++/* Experimental i915 checkpoint/restore transaction, ABI version 10. */
 ++
 ++#include <linux/capability.h>
 ++#include <linux/dma-buf.h>
@@ -1115,6 +1141,7 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++#include "gem/i915_gem_context.h"
 ++#include "gem/i915_gem_ioctls.h"
 ++#include "gem/i915_gem_object.h"
+++#include "gt/intel_engine_user.h"
 ++#include "display/intel_fb.h"
 ++#include "i915_gpu_error.h"
 ++#include "i915_request.h"
@@ -1295,13 +1322,21 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++static u32
 ++checkpoint_proto_context_flags(const struct i915_gem_proto_context *pc)
 ++{
-++	return checkpoint_user_context_flags(pc->user_flags,
-++					     pc->single_timeline);
+++	u32 flags = checkpoint_user_context_flags(pc->user_flags,
+++						 pc->single_timeline);
+++
+++	if (pc->num_user_engines >= 0)
+++		flags |= I915_CRIU_CONTEXT_USER_ENGINES;
+++	return flags;
 ++}
 ++
 ++static u32 checkpoint_active_context_flags(const struct i915_gem_context *ctx)
 ++{
-++	return checkpoint_user_context_flags(ctx->user_flags, !!ctx->syncobj);
+++	u32 flags = checkpoint_user_context_flags(ctx->user_flags, !!ctx->syncobj);
+++
+++	if (test_bit(CONTEXT_USER_ENGINES, &ctx->flags))
+++		flags |= I915_CRIU_CONTEXT_USER_ENGINES;
+++	return flags;
 ++}
 ++
 ++static bool object_has_file_handle(struct drm_file *file,
@@ -1329,28 +1364,72 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++	const unsigned long allowed_user_flags =
 ++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
 ++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
-++	struct i915_gem_engines_iter it;
 ++	struct i915_gem_engines *engines;
-++	struct intel_context *ce;
+++	bool user_engines;
+++	unsigned int i;
 ++	int ret = 0;
 ++
 ++	if (ctx->uses_protected_content ||
 ++	    ctx->user_flags & ~allowed_user_flags ||
-++	    test_bit(CONTEXT_USER_ENGINES, &ctx->flags) ||
 ++	    (require_tracked_vm && context_vm_id(fpriv, ctx->vm) == U32_MAX))
 ++		return -EOPNOTSUPP;
 ++
+++	user_engines = test_bit(CONTEXT_USER_ENGINES, &ctx->flags);
 ++	engines = i915_gem_context_lock_engines(ctx);
-++	for_each_gem_engine(ce, engines, it)
-++	{
+++	if (user_engines &&
+++	    (!engines || engines->num_engines > I915_CRIU_MAX_CONTEXT_ENGINES)) {
+++		ret = -EOPNOTSUPP;
+++		goto out_engines;
+++	}
+++	for (i = 0; engines && i < engines->num_engines; i++) {
+++		struct intel_context *ce = engines->engines[i];
+++
+++		if (!ce)
+++			continue;
+++		if (user_engines &&
+++		    (intel_engine_is_virtual(ce->engine) ||
+++		     memchr_inv(&ce->sseu, 0, sizeof(ce->sseu)))) {
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
 ++		if (!intel_context_pin_if_active(ce))
 ++			continue;
 ++		intel_context_unpin(ce);
 ++		ret = -EBUSY;
 ++		break;
 ++	}
+++out_engines:
 ++	i915_gem_context_unlock_engines(ctx);
 ++	return ret;
+++}
+++
+++static int
+++validate_proto_context_engines(const struct i915_gem_proto_context *pc)
+++{
+++	int i;
+++
+++	if (pc->num_user_engines < 0)
+++		return pc->user_engines ? -EOPNOTSUPP : 0;
+++	if (pc->num_user_engines > I915_CRIU_MAX_CONTEXT_ENGINES)
+++		return -EOPNOTSUPP;
+++	for (i = 0; i < pc->num_user_engines; i++) {
+++		const struct i915_gem_proto_engine *engine = &pc->user_engines[i];
+++
+++		if (engine->type == I915_GEM_ENGINE_TYPE_INVALID) {
+++			if (engine->engine || engine->num_siblings || engine->width ||
+++			    engine->siblings ||
+++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu)))
+++				return -EOPNOTSUPP;
+++		} else if (engine->type == I915_GEM_ENGINE_TYPE_PHYSICAL) {
+++			if (!engine->engine || engine->num_siblings || engine->width ||
+++			    engine->siblings ||
+++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu)))
+++				return -EOPNOTSUPP;
+++		} else {
+++			return -EOPNOTSUPP;
+++		}
+++	}
+++	return 0;
 ++}
 ++
 ++static int validate_checkpoint_contexts(struct drm_file *file)
@@ -1393,8 +1472,7 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++	xa_for_each(&fpriv->proto_context_xa, id, pc) {
 ++		context_count++;
 ++		context_max = max_t(u32, context_max, id);
-++		if (pc->num_user_engines != -1 || pc->user_engines ||
-++		    pc->uses_protected_content || pc->pxp_wakeref ||
+++		if (pc->uses_protected_content || pc->pxp_wakeref ||
 ++		    pc->user_flags & ~allowed_user_flags ||
 ++		    memchr_inv(&pc->legacy_rcs_sseu, 0,
 ++			       sizeof(pc->legacy_rcs_sseu)) ||
@@ -1402,6 +1480,9 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++			ret = -EOPNOTSUPP;
 ++			break;
 ++		}
+++		ret = validate_proto_context_engines(pc);
+++		if (ret)
+++			break;
 ++	}
 ++	mutex_unlock(&fpriv->proto_context_lock);
 ++	if (ret)
@@ -2654,6 +2735,141 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++	return i915_gem_context_setparam_ioctl(dev, &context_param, file);
 ++}
 ++
+++static int copy_context_engines_to_user(
+++	struct drm_i915_criu_context *args,
+++	struct i915_gem_context *ctx,
+++	const struct i915_gem_proto_context *pc)
+++{
+++	struct drm_i915_criu_engine image[I915_CRIU_MAX_CONTEXT_ENGINES];
+++	u32 capacity = args->engine_count;
+++	u32 count = 0;
+++	unsigned int i;
+++	int ret = 0;
+++
+++	if (ctx && test_bit(CONTEXT_USER_ENGINES, &ctx->flags)) {
+++		struct i915_gem_engines *engines =
+++			i915_gem_context_lock_engines(ctx);
+++
+++		count = engines ? engines->num_engines : 0;
+++		if (count > I915_CRIU_MAX_CONTEXT_ENGINES) {
+++			ret = -E2BIG;
+++			goto out_active;
+++		}
+++		for (i = 0; i < count; i++) {
+++			struct intel_context *ce = engines->engines[i];
+++
+++			if (!ce) {
+++				image[i].engine_class = (u16)I915_ENGINE_CLASS_INVALID;
+++				image[i].engine_instance =
+++					(u16)I915_ENGINE_CLASS_INVALID_NONE;
+++			} else {
+++				image[i].engine_class = ce->engine->uabi_class;
+++				image[i].engine_instance = ce->engine->uabi_instance;
+++			}
+++		}
+++out_active:
+++		i915_gem_context_unlock_engines(ctx);
+++		if (ret)
+++			return ret;
+++	} else if (pc && pc->num_user_engines >= 0) {
+++		count = pc->num_user_engines;
+++		if (count > I915_CRIU_MAX_CONTEXT_ENGINES)
+++			return -E2BIG;
+++		for (i = 0; i < count; i++) {
+++			const struct i915_gem_proto_engine *engine =
+++				&pc->user_engines[i];
+++
+++			if (engine->type == I915_GEM_ENGINE_TYPE_INVALID) {
+++				image[i].engine_class = (u16)I915_ENGINE_CLASS_INVALID;
+++				image[i].engine_instance =
+++					(u16)I915_ENGINE_CLASS_INVALID_NONE;
+++			} else if (engine->type == I915_GEM_ENGINE_TYPE_PHYSICAL) {
+++				image[i].engine_class = engine->engine->uabi_class;
+++				image[i].engine_instance = engine->engine->uabi_instance;
+++			} else {
+++				return -EOPNOTSUPP;
+++			}
+++		}
+++	}
+++
+++	args->engine_count = count;
+++	if (!count)
+++		return 0;
+++	if (capacity < count)
+++		return -ENOSPC;
+++	if (!args->engines_ptr)
+++		return -EINVAL;
+++	if (copy_to_user(u64_to_user_ptr(args->engines_ptr), image,
+++			 count * sizeof(image[0])))
+++		return -EFAULT;
+++	return 0;
+++}
+++
+++static int restore_context_engines(
+++	struct drm_i915_file_private *fpriv,
+++	const struct drm_i915_criu_context *args)
+++{
+++	struct drm_i915_criu_engine *image;
+++	struct i915_gem_proto_engine *engines;
+++	struct i915_gem_proto_context *pc;
+++	u32 i;
+++	int ret = 0;
+++
+++	if (!(args->flags & I915_CRIU_CONTEXT_USER_ENGINES))
+++		return args->engine_count || args->engines_ptr ? -EINVAL : 0;
+++	if (args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
+++	    (args->engine_count && !args->engines_ptr))
+++		return -EINVAL;
+++	image = memdup_user(u64_to_user_ptr(args->engines_ptr),
+++			    args->engine_count * sizeof(*image));
+++	if (IS_ERR(image))
+++		return PTR_ERR(image);
+++	engines = kcalloc(args->engine_count, sizeof(*engines), GFP_KERNEL);
+++	if (!engines && args->engine_count) {
+++		kfree(image);
+++		return -ENOMEM;
+++	}
+++	for (i = 0; i < args->engine_count; i++) {
+++		if (image[i].engine_class == (u16)I915_ENGINE_CLASS_INVALID &&
+++		    image[i].engine_instance ==
+++			    (u16)I915_ENGINE_CLASS_INVALID_NONE) {
+++			engines[i].type = I915_GEM_ENGINE_TYPE_INVALID;
+++			continue;
+++		}
+++		if (image[i].engine_class > U8_MAX ||
+++		    image[i].engine_instance > U8_MAX) {
+++			ret = -ENOENT;
+++			goto out_free;
+++		}
+++		engines[i].engine = intel_engine_lookup_user(
+++			fpriv->i915, image[i].engine_class,
+++			image[i].engine_instance);
+++		if (!engines[i].engine) {
+++			ret = -ENOENT;
+++			goto out_free;
+++		}
+++		engines[i].type = I915_GEM_ENGINE_TYPE_PHYSICAL;
+++	}
+++
+++	mutex_lock(&fpriv->proto_context_lock);
+++	pc = xa_load(&fpriv->proto_context_xa, args->id);
+++	if (!pc)
+++		ret = -ENOENT;
+++	else if (pc->num_user_engines >= 0 || pc->user_engines)
+++		ret = -EEXIST;
+++	else {
+++		pc->num_user_engines = args->engine_count;
+++		pc->user_engines = engines;
+++		engines = NULL;
+++	}
+++	mutex_unlock(&fpriv->proto_context_lock);
+++
+++out_free:
+++	kfree(engines);
+++	kfree(image);
+++	return ret;
+++}
+++
 ++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
 ++			    struct drm_file *file)
 ++{
@@ -2661,14 +2877,15 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++				    I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
 ++				    I915_CRIU_CONTEXT_BANNABLE |
 ++				    I915_CRIU_CONTEXT_RECOVERABLE |
-++				    I915_CRIU_CONTEXT_PERSISTENCE;
+++				    I915_CRIU_CONTEXT_PERSISTENCE |
+++				    I915_CRIU_CONTEXT_USER_ENGINES;
 ++	struct drm_i915_criu_context *args = data;
 ++	struct drm_i915_file_private *fpriv = file->driver_priv;
 ++	unsigned long id;
 ++	void *old;
 ++	int ret;
 ++
-++	if (args->version != I915_CRIU_ABI_VERSION ||
+++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
 ++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
 ++		return -EINVAL;
 ++
@@ -2676,7 +2893,8 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++	if (args->op == I915_CRIU_CONTEXT_QUERY_VM) {
 ++		struct i915_address_space *vm;
 ++
-++		if (args->flags || args->vm_id || args->priority) {
+++		if (args->flags || args->vm_id || args->priority ||
+++		    args->engine_count || args->engines_ptr) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2696,7 +2914,9 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++		struct i915_gem_context *ctx;
 ++
 ++		if (args->flags || args->vm_id || args->priority ||
-++		    args->id == U32_MAX) {
+++		    args->id == U32_MAX ||
+++		    args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
+++		    (args->engine_count && !args->engines_ptr)) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2718,12 +2938,14 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++			args->vm_id = context_vm_id(fpriv, pc->vm);
 ++			args->priority = pc->sched.priority;
 ++		}
+++		ret = ctx || pc ?
+++			copy_context_engines_to_user(args, ctx, pc) : -ENOENT;
 ++		mutex_unlock(&fpriv->proto_context_lock);
-++		ret = ctx || pc ? 0 : -ENOENT;
 ++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_VM) {
 ++		struct drm_i915_gem_vm_control create = { 0 };
 ++
-++		if (!args->id || args->flags || args->vm_id || args->priority) {
+++		if (!args->id || args->flags || args->vm_id || args->priority ||
+++		    args->engine_count || args->engines_ptr) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2757,7 +2979,12 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++		struct drm_i915_gem_context_destroy destroy;
 ++
 ++		if (!args->id || args->flags & ~supported_flags ||
-++		    args->vm_id == U32_MAX) {
+++		    args->vm_id == U32_MAX ||
+++		    args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
+++		    (!(args->flags & I915_CRIU_CONTEXT_USER_ENGINES) &&
+++		     (args->engine_count || args->engines_ptr)) ||
+++		    (args->flags & I915_CRIU_CONTEXT_USER_ENGINES &&
+++		     args->engine_count && !args->engines_ptr)) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2777,6 +3004,9 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++			ret = -ERANGE;
 ++			goto destroy_context;
 ++		}
+++		ret = restore_context_engines(fpriv, args);
+++		if (ret)
+++			goto destroy_context;
 ++		if (!(args->flags & I915_CRIU_CONTEXT_RECOVERABLE)) {
 ++			ret = restore_context_param(
 ++				dev, file, args->id,
@@ -3075,7 +3305,7 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68..7c00ac6 100644
++index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..17163018322e14cfe9b8e088d4fc36e6688ae953 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
@@ -3114,7 +3344,7 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3928,260 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3928,274 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -3137,11 +3367,13 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++ * DRM master ownership, single-plane linear framebuffers at exact IDs, and
 ++ * user-created KMS property blobs at exact IDs. Atomic property state remains
 ++ * a validated userspace image applied through generic DRM atomic ioctls. It
-++ * still refuses userptr, protected content, custom engine maps, active
-++ * requests, special VMA views, leases, pending events, unsupported sync_file
-++ * fence graphs, and unsupported KMS resources.
+++ * Version 9 adds exact per-VMA mmap-node provenance. Version 10 additionally
+++ * preserves bounded user-selected physical engine maps. It still refuses
+++ * userptr, protected content, virtual/balanced/parallel engines, per-engine
+++ * SSEU overrides, active requests, special VMA views, leases, pending events,
+++ * unsupported sync_file fence graphs, and unsupported KMS resources.
 ++ */
-++#define I915_CRIU_ABI_VERSION 9
+++#define I915_CRIU_ABI_VERSION 10
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -3339,6 +3571,14 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++#define I915_CRIU_CONTEXT_BANNABLE         (1u << 2)
 ++#define I915_CRIU_CONTEXT_RECOVERABLE      (1u << 3)
 ++#define I915_CRIU_CONTEXT_PERSISTENCE      (1u << 4)
+++#define I915_CRIU_CONTEXT_USER_ENGINES     (1u << 5)
+++
+++#define I915_CRIU_MAX_CONTEXT_ENGINES 64
+++
+++struct drm_i915_criu_engine {
+++	__u16 engine_class;
+++	__u16 engine_instance;
+++};
 ++
 ++struct drm_i915_criu_context {
 ++	__u32 version;
@@ -3349,7 +3589,11 @@ index 0000000000000000000000000000000000000000..e01c46ef9865e7f2bdabb608734f0d45
 ++	__u32 flags;
 ++	__u32 vm_id;
 ++	__s32 priority;
-++	__u64 reserved[4];
+++	/* QUERY capacity/output count; CREATE exact count. */
+++	__u32 engine_count;
+++	__u32 pad;
+++	__u64 engines_ptr;
+++	__u64 reserved[2];
 ++};
 ++
 ++#define I915_CRIU_BINDING_QUERY  1
@@ -3942,10 +4186,10 @@ index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fd
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f09319158f1e
+index 0000000000000000000000000000000000000000..2f0838650416b83f1aaa0179ba00d96442285e32
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,3021 @@
+@@ -0,0 +1,3092 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -3977,7 +4221,7 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +#include "../../contrib/i915-criu/i915_criu_uapi.h"
 +
 +#define I915_IMAGE_MAGIC		UINT64_C(0x4939313543524955)
-+#define I915_IMAGE_VERSION		9
++#define I915_IMAGE_VERSION		10
 +#define I915_IMAGE_KIND_DRM_FILE	1
 +#define I915_IMAGE_KIND_DMABUF		2
 +#define I915_IMAGE_KIND_SYNC_FILE	3
@@ -4062,7 +4306,13 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +	uint32_t flags;
 +	uint32_t vm_id;
 +	int32_t priority;
++	uint32_t engine_count;
++	uint32_t pad;
++	struct drm_i915_criu_engine engines[I915_CRIU_MAX_CONTEXT_ENGINES];
 +};
++
++_Static_assert(sizeof(struct i915_image_context) == 280,
++	       "i915 context image layout changed");
 +
 +struct i915_image_binding {
 +	uint32_t vm_id;
@@ -4746,21 +4996,33 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +	uint32_t cursor = 0;
 +
 +	for (;;) {
++		struct drm_i915_criu_engine
++			engines[I915_CRIU_MAX_CONTEXT_ENGINES] = {0};
 +		struct drm_i915_criu_context query = {
 +			.version = I915_CRIU_ABI_VERSION,
 +			.op = op,
 +			.cookie = cookie,
 +			.id = cursor,
 +		};
++		struct i915_image_context image;
 +		struct i915_image_context *grown;
 +
++		if (op == I915_CRIU_CONTEXT_QUERY_CONTEXT) {
++			query.engine_count = I915_CRIU_MAX_CONTEXT_ENGINES;
++			query.engines_ptr = (uintptr_t)engines;
++		}
 +		if (ioctl(fd, DRM_IOCTL_I915_CRIU_CONTEXT, &query) < 0) {
 +			if (errno == ENOENT)
 +				break;
 +			xfree(states);
 +			return -errno;
 +		}
-+		if (count == limit || query.id <= cursor) {
++		if (count == limit || query.id <= cursor ||
++		    query.engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
++		    (op == I915_CRIU_CONTEXT_QUERY_VM &&
++		     (query.engine_count || query.engines_ptr)) ||
++		    (op == I915_CRIU_CONTEXT_QUERY_CONTEXT && query.engine_count &&
++		     !(query.flags & I915_CRIU_CONTEXT_USER_ENGINES))) {
 +			xfree(states);
 +			return -E2BIG;
 +		}
@@ -4770,12 +5032,17 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +			return -ENOMEM;
 +		}
 +		states = grown;
-+		states[count++] = (struct i915_image_context){
++		image = (struct i915_image_context){
 +			.id = query.id,
 +			.flags = query.flags,
 +			.vm_id = query.vm_id,
 +			.priority = query.priority,
++			.engine_count = query.engine_count,
 +		};
++		if (query.engine_count)
++			memcpy(image.engines, engines,
++			       query.engine_count * sizeof(engines[0]));
++		states[count++] = image;
 +		cursor = query.id;
 +	}
 +	*result = states;
@@ -5498,6 +5765,7 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +	size_t kms_property_count = 0;
 +	uint32_t file_flags = 0;
 +	struct i915_device_identity identity = {0};
++	const char *stage = "classification";
 +	uint64_t cookie = 0;
 +	int ret;
 +
@@ -5526,42 +5794,65 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +	if (checkpoint_pid <= 0)
 +		return -EINVAL;
 +
++	stage = "session-begin";
 +	ret = session_ioctl(fd, I915_CRIU_SESSION_DUMP_BEGIN,
 +			    checkpoint_pid, &cookie);
-+	if (ret)
-+		return ret;
++	if (ret) {
++		pr_err("i915 dump file=%d stage=%s failed: %d\n", id, stage, ret);
++		return ret == -ENOTSUP ? -ENOTRECOVERABLE : ret;
++	}
++	stage = "file-state";
 +	ret = collect_dump_file_state(fd, cookie, &file_flags, &identity);
-+	if (!ret)
++	if (!ret) {
++		stage = "objects";
 +		ret = collect_dump_objects(fd, cookie, &objects, &count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "mappings";
 +		ret = collect_dump_mappings(fd, cookie, objects, count,
 +					    &mappings, &mapping_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "syncobjs";
 +		ret = collect_dump_syncobjs(fd, cookie, &syncobjs,
 +					    &syncobj_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "vms";
 +		ret = collect_dump_contexts(fd, cookie,
 +					    I915_CRIU_CONTEXT_QUERY_VM,
 +					    &vms, &vm_count,
 +					    I915_MAX_RESTORE_VMS);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "contexts";
 +		ret = collect_dump_contexts(fd, cookie,
 +					    I915_CRIU_CONTEXT_QUERY_CONTEXT,
 +					    &contexts, &context_count,
 +					    I915_MAX_RESTORE_CONTEXTS);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "bindings";
 +		ret = collect_dump_bindings(fd, cookie, vms, vm_count,
 +					    &bindings, &binding_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "framebuffers";
 +		ret = collect_dump_framebuffers(fd, cookie, &framebuffers,
 +						&framebuffer_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "blobs";
 +		ret = collect_dump_blobs(fd, cookie, &blobs, &blob_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "kms-properties";
 +		ret = collect_dump_kms_properties(fd, file_flags,
 +						  &kms_properties,
 +						  &kms_property_count);
-+	if (!ret)
++	}
++	if (!ret) {
++		stage = "image-write";
 +		ret = write_image(id, objects, count, mappings, mapping_count,
 +				  syncobjs, syncobj_count, vms, vm_count,
 +				  contexts, context_count,
@@ -5569,6 +5860,9 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +				  framebuffer_count, blobs, blob_count,
 +				  kms_properties, kms_property_count, file_flags,
 +				  &identity);
++	}
++	if (!ret)
++		stage = "session-commit";
 +	if (session_ioctl(fd, ret ? I915_CRIU_SESSION_ABORT : I915_CRIU_SESSION_COMMIT,
 +			  0, &cookie) &&
 +	    !ret)
@@ -5582,8 +5876,15 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +	xfree(framebuffers);
 +	free_dump_blobs(blobs, blob_count);
 +	xfree(kms_properties);
-+	if (!ret)
++	if (!ret) {
++		stage = "record-file";
 +		ret = record_dump_drm_file(id, fd);
++	}
++	if (ret) {
++		pr_err("i915 dump file=%d stage=%s failed: %d\n", id, stage, ret);
++		if (ret == -ENOTSUP)
++			ret = -ENOTRECOVERABLE;
++	}
 +	return ret;
 +}
 +CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__DUMP_EXT_FILE, i915_plugin_dump_file)
@@ -6037,8 +6338,10 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +{
 +	const uint32_t supported = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
 +				   I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
-+				   I915_CRIU_CONTEXT_BANNABLE | I915_CRIU_CONTEXT_RECOVERABLE |
-+				   I915_CRIU_CONTEXT_PERSISTENCE;
++				   I915_CRIU_CONTEXT_BANNABLE |
++				   I915_CRIU_CONTEXT_RECOVERABLE |
++				   I915_CRIU_CONTEXT_PERSISTENCE |
++				   I915_CRIU_CONTEXT_USER_ENGINES;
 +	struct drm_i915_criu_context create = {
 +		.version = I915_CRIU_ABI_VERSION,
 +		.op = op,
@@ -6047,15 +6350,27 @@ index 0000000000000000000000000000000000000000..4dda17cb4c31518da3b495cefea5f093
 +		.flags = image->flags,
 +		.vm_id = image->vm_id,
 +		.priority = image->priority,
++		.engine_count = image->engine_count,
++		.engines_ptr = image->engine_count ?
++			(uintptr_t)image->engines : 0,
 +	};
 +
-+	if (!image->id || image->id <= previous_id)
++	if (!image->id || image->id <= previous_id || image->pad ||
++	    image->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES)
 +		return -EINVAL;
++	for (uint32_t i = image->engine_count;
++	     i < I915_CRIU_MAX_CONTEXT_ENGINES; i++)
++		if (image->engines[i].engine_class ||
++		    image->engines[i].engine_instance)
++			return -EINVAL;
 +	if (op == I915_CRIU_CONTEXT_CREATE_VM) {
-+		if (image->flags || image->vm_id || image->priority)
++		if (image->flags || image->vm_id || image->priority ||
++		    image->engine_count)
 +			return -EINVAL;
 +	} else if (op == I915_CRIU_CONTEXT_CREATE_CONTEXT) {
-+		if (image->flags & ~supported)
++		if (image->flags & ~supported ||
++		    (image->engine_count &&
++		     !(image->flags & I915_CRIU_CONTEXT_USER_ENGINES)))
 +			return -EINVAL;
 +	} else {
 +		return -EINVAL;
@@ -7455,10 +7770,10 @@ index 0000000000000000000000000000000000000000..baeb62945c45d2be8df44448df666f09
 +			input_plugin_restore_file)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1e180a7d1
+index 0000000000000000000000000000000000000000..fc49184a7c8d6e417c77cc1eb0ee0c1d080eaec9
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,392 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -7649,6 +7964,7 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +	bool idle_context = argc == 2 && !strcmp(argv[1], "--idle-context");
 +	bool callback = argc == 2 && !strcmp(argv[1], "--callback");
 +	bool custom_engine = argc == 2 && !strcmp(argv[1], "--custom-engine");
++	bool virtual_engine = argc == 2 && !strcmp(argv[1], "--virtual-engine");
 +	struct drm_i915_gem_vm_control vm = { 0 };
 +	struct drm_i915_gem_context_create context = { 0 };
 +	struct drm_i915_gem_context_param context_vm;
@@ -7666,8 +7982,8 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +	int fd;
 +
 +	if (argc > 2 || (argc == 2 && !sync_only && !idle_context &&
-+				 !callback && !custom_engine)) {
-+		fprintf(stderr, "usage: %s [--sync-only|--sync-file|--external-sync-file-peer|--idle-context|--callback|--custom-engine]\n",
++				 !callback && !custom_engine && !virtual_engine)) {
++		fprintf(stderr, "usage: %s [--sync-only|--sync-file|--external-sync-file-peer|--idle-context|--callback|--custom-engine|--virtual-engine]\n",
 +			argv[0]);
 +		return EXIT_FAILURE;
 +	}
@@ -7676,10 +7992,14 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +		die("open render node");
 +	if (!sync_only && !callback) {
 +		xioctl(fd, DRM_IOCTL_I915_GEM_VM_CREATE, &vm, "GEM_VM_CREATE");
-+		if (custom_engine) {
-+			I915_DEFINE_CONTEXT_PARAM_ENGINES(engines, 1) = {
++		if (custom_engine || virtual_engine) {
++			I915_DEFINE_CONTEXT_ENGINES_LOAD_BALANCE(balance, 1) = {
++				.base.name = I915_CONTEXT_ENGINES_EXT_LOAD_BALANCE,
++				.engine_index = 0,
++				.num_siblings = 1,
 +				.engines = { { I915_ENGINE_CLASS_RENDER, 0 } },
 +			};
++			I915_DEFINE_CONTEXT_PARAM_ENGINES(engines, 1) = { 0 };
 +			struct drm_i915_gem_context_create_ext_setparam set_engines = {
 +				.base.name = I915_CONTEXT_CREATE_EXT_SETPARAM,
 +				.param = {
@@ -7693,6 +8013,17 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +				.extensions = (uintptr_t)&set_engines,
 +			};
 +
++			if (virtual_engine) {
++				engines.extensions = (uintptr_t)&balance;
++				engines.engines[0].engine_class =
++					I915_ENGINE_CLASS_INVALID;
++				engines.engines[0].engine_instance =
++					I915_ENGINE_CLASS_INVALID_NONE;
++			} else {
++				engines.engines[0].engine_class =
++					I915_ENGINE_CLASS_RENDER;
++				engines.engines[0].engine_instance = 0;
++			}
 +			xioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE_EXT, &create,
 +			       "GEM_CONTEXT_CREATE_EXT engines");
 +			context.ctx_id = create.ctx_id;
@@ -7791,7 +8122,7 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +		}
 +	}
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
-+	if (!idle_context && !sync_only && !callback && !custom_engine)
++	if (!idle_context && !sync_only && !callback && !virtual_engine)
 +		submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
 +		       &gpu_address_valid, false);
 +
@@ -7805,7 +8136,7 @@ index 0000000000000000000000000000000000000000..a6a02e0f6e0b45fc144f0114d433abc1
 +	while (!resume_test)
 +		pause();
 +
-+	if (callback || custom_engine || external_sync_file) {
++	if (callback || virtual_engine || external_sync_file) {
 +		fprintf(stderr, "unsupported mode must be refused before resume\n");
 +		return EXIT_FAILURE;
 +	}
@@ -9001,10 +9332,10 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..03b6b362e3d76a5573dd842dd6461f7bdd87ca39
+index 0000000000000000000000000000000000000000..b453ad3de298436229bc18fee8d409154d110aec
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,118 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -9024,6 +9355,7 @@ index 0000000000000000000000000000000000000000..03b6b362e3d76a5573dd842dd6461f7b
 +idle_context=${I915_CRIU_IDLE_CONTEXT:-0}
 +callback=${I915_CRIU_CALLBACK:-0}
 +custom_engine=${I915_CRIU_CUSTOM_ENGINE:-0}
++virtual_engine=${I915_CRIU_VIRTUAL_ENGINE:-0}
 +sync_file=${I915_CRIU_SYNC_FILE:-0}
 +external_sync_file=${I915_CRIU_EXTERNAL_SYNC_FILE:-0}
 +cc=${CC:-gcc}
@@ -9056,13 +9388,15 @@ index 0000000000000000000000000000000000000000..03b6b362e3d76a5573dd842dd6461f7b
 +
 +fixture_args=()
 +expected_pass='PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission'
-+if (( sync_only + idle_context + callback + custom_engine + sync_file + external_sync_file > 1 )); then
-+    echo 'sync-only, sync-file, external-sync-file, idle-context, callback, and custom-engine modes are mutually exclusive' >&2
++if (( sync_only + idle_context + callback + custom_engine + virtual_engine + sync_file + external_sync_file > 1 )); then
++    echo 'sync-only, sync-file, external-sync-file, idle-context, callback, custom-engine, and virtual-engine modes are mutually exclusive' >&2
 +    exit 2
 +elif [[ $callback == 1 ]]; then
 +    fixture_args+=(--callback)
 +elif [[ $custom_engine == 1 ]]; then
 +    fixture_args+=(--custom-engine)
++elif [[ $virtual_engine == 1 ]]; then
++    fixture_args+=(--virtual-engine)
 +elif [[ $sync_file == 1 ]]; then
 +    fixture_args+=(--sync-file)
 +    expected_pass='PASS: binary syncobj, retained sync_file identity, timeline, and GPU submission'
@@ -9461,10 +9795,10 @@ index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..58c6d3262e96a088702d775419266cea3550b069
+index 0000000000000000000000000000000000000000..e5f5104e6e9ab0dd889990baa18d18e091aff9ab
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,231 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -9650,10 +9984,15 @@ index 0000000000000000000000000000000000000000..58c6d3262e96a088702d775419266cea
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_TEST_DIR="$suite/context-vm-binding" \
 +    "$scripts/run-context-sync-criu.sh"
-+run_case custom-engine-refusal env "${common[@]}" \
-+    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++run_case custom-engine-context env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_CUSTOM_ENGINE=1 \
-+    I915_CRIU_TEST_DIR="$suite/custom-engine-refusal" \
++    I915_CRIU_TEST_DIR="$suite/custom-engine-context" \
++    "$scripts/run-context-sync-criu.sh"
++run_case virtual-engine-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=1 \
++    I915_CRIU_VIRTUAL_ENGINE=1 \
++    I915_CRIU_TEST_DIR="$suite/virtual-engine-refusal" \
 +    "$scripts/run-context-sync-criu.sh"
 +run_case physical-kms env "${common[@]}" \
 +    FIXTURE="$kms_fixture" I915_CRIU_TEST_DIR="$suite/physical-kms" \
@@ -9685,7 +10024,8 @@ index 0000000000000000000000000000000000000000..58c6d3262e96a088702d775419266cea
 +      "retained-dmabuf","external-dmabuf-refusal","synchronization",
 +      "retained-sync-file","external-sync-file-refusal",
 +      "idle-context-vm","sync-callback-refusal",
-+      "context-vm-binding","custom-engine-refusal","physical-kms",
++      "context-vm-binding","custom-engine-context",
++      "virtual-engine-refusal","physical-kms",
 +      "kms-role-corruption-refusal","kms-count-corruption-refusal",
 +      "kms-mapping-corruption-refusal","kms-device-mismatch-refusal",
 +      "kms-reset-refusal"]}' >"$suite/verdict.json"
