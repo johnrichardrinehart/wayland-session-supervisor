@@ -43,12 +43,12 @@ config=${WSS_PHYSICAL_NIRI_CONFIG:-$repo/tests/physical/niri-minimal-safe.kdl}
 wss_candidate=${WSS_PHYSICAL_WSS:-$(command -v wayland-session-supervisor || true)}
 [[ -n $wss_candidate ]] || fail "wayland-session-supervisor is not on PATH"
 wss=$(readlink -f "$wss_candidate") || fail "cannot resolve supervisor: $wss_candidate"
-criu=${WSS_PHYSICAL_CRIU:-/tmp/criu-i915-worktree}
+criu=${WSS_PHYSICAL_CRIU:-$repo/tests/physical/criu-diagnostic-wrapper.sh}
 niri_candidate=${WSS_PHYSICAL_NIRI:-$(command -v niri || true)}
 [[ -n $niri_candidate ]] || fail "Niri is not on PATH"
 niri=$(readlink -f "$niri_candidate") || fail "cannot resolve Niri: $niri_candidate"
-i915_plugin=${WSS_PHYSICAL_I915_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/i915/i915_plugin.so}
-input_plugin=${WSS_PHYSICAL_INPUT_PLUGIN:-/home/john/code/dev-worktrees/github.com/checkpoint-restore/criu/i915-plugin/plugins/input/input_plugin.so}
+i915_plugin=${WSS_PHYSICAL_I915_PLUGIN:-/run/current-system/sw/lib/criu/i915_plugin.so}
+input_plugin=${WSS_PHYSICAL_INPUT_PLUGIN:-/run/current-system/sw/lib/criu/input_plugin.so}
 production_scope=${WSS_PHYSICAL_PRODUCTION_SCOPE:-wayland-session-supervisor-default.scope}
 session_id=${XDG_SESSION_ID:-$(loginctl list-sessions --no-legend | awk -v uid="$uid" '$2 == uid && $4 == "seat0" { print $1; exit }')}
 vt_number=${XDG_VTNR:-$(loginctl show-session "$session_id" -p VTNr --value 2>/dev/null || true)}

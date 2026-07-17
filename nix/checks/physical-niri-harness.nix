@@ -14,6 +14,7 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
   ''
     scripts=(
       ${self}/tests/physical/run-niri-admission.sh
+      ${self}/tests/physical/criu-diagnostic-wrapper.sh
       ${self}/tests/physical/run-from-vt.sh
       ${self}/tests/physical/niri-admission-coordinator.sh
       ${self}/tests/physical/niri-admission-inner.sh
@@ -52,6 +53,10 @@ pkgs.runCommand "wayland-session-supervisor-physical-niri-harness"
       ${self}/tests/physical/niri-admission-inner.sh
     grep -F 'WSS_PHYSICAL_INPUT_PLUGIN' \
       ${self}/tests/physical/run-niri-admission.sh
+    grep -F '/run/current-system/sw/lib/criu/i915_plugin.so' \
+      ${self}/tests/physical/run-niri-admission.sh
+    grep -F '"$@" --libdir "$plugin_dir" -v4' \
+      ${self}/tests/physical/criu-diagnostic-wrapper.sh
     grep -F 'input_plugin_sha256' \
       ${self}/tests/physical/niri-admission-coordinator.sh
     grep -F 'WSS_PHYSICAL_NIRI_CONFIRM=stop-production-session' \
