@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4341517acf3fa8923b96950a6755cea76d72944c
+index 0000000000000000000000000000000000000000..f8a8feb0ef1cc500d9ea1add558666753d73d030
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,756 @@
+@@ -0,0 +1,770 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -751,6 +751,20 @@ index 0000000000000000000000000000000000000000..4341517acf3fa8923b96950a6755cea7
 +private dump log. This is diagnostic expansion only: it does not admit any
 +state or turn the current refusal into compositor evidence.
 +
++The first deployment of that diagnostic generation exposed an atomic patch
++artifact regression before reaching i915. Evidence
++`/var/tmp/wss-physical-niri-admission-20260717T202736Z` preserved the exact
++four-process domain but `EVIOCGCRIUSTATE` on seatd's `/dev/input/event2`
++returned `EINVAL`. A direct ABI probe reproduced the result against the booted
++kernel. The stable patch had been regenerated from a worktree whose baseline
++already contained the evdev changes, so its diff silently omitted
++`drivers/input/evdev.c` and `include/uapi/linux/input.h` even though the matching
++input plugin was packaged. This was a deployment-generation mismatch, not an
++unsupported input client. The stable kernel artifact again aggregates both the
++i915 transaction and evdev admission ABI, and the Nix evaluation check asserts
++that both diff sections and `EVIOCGCRIUSTATE` remain present. Kernel, plugin,
++image, and input ABI must continue to move as one reviewed generation.
++
 +## Privileged evidence policy
 +
 +The initial root inventory now records module policy values, effective GuC
@@ -1120,10 +1134,10 @@ index 0000000000000000000000000000000000000000..9d9cdeaed9ad472945fcf6a39615345f
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..0db4c05ad0bcb84628b35e42a6f511057a5130e1
+index 0000000000000000000000000000000000000000..419695cfdfbcd236c4debbd9704bfd50ff97e636
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2774 @@
+@@ -0,0 +1,2903 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720a1c2dba721fcc910a83643996d2ad3299..05bde40d88ee17f8112cea1d9143d4c96c45f703 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -3898,6 +3912,135 @@ index 0000000000000000000000000000000000000000..0db4c05ad0bcb84628b35e42a6f51105
 + 
 + static int check_ptrace_options(unsigned long data)
 + {
++diff --git a/drivers/input/evdev.c b/drivers/input/evdev.c
++index c732522..f006f07 100644
++--- a/drivers/input/evdev.c
+++++ b/drivers/input/evdev.c
++@@ -171,6 +171,22 @@ static void evdev_queue_syn_dropped(struct evdev_client *client)
++ 	spin_unlock_irqrestore(&client->buffer_lock, flags);
++ }
++ 
+++static unsigned int evdev_get_clk_id(const struct evdev_client *client)
+++{
+++	switch (client->clk_type) {
+++	case INPUT_CLK_REAL:
+++		return CLOCK_REALTIME;
+++	case INPUT_CLK_MONO:
+++		return CLOCK_MONOTONIC;
+++	case INPUT_CLK_BOOT:
+++		return CLOCK_BOOTTIME;
+++	case INPUT_CLK_MAX:
+++		return U32_MAX;
+++	}
+++
+++	return U32_MAX;
+++}
+++
++ static int evdev_set_clk_type(struct evdev_client *client, unsigned int clkid)
++ {
++ 	unsigned long flags;
++@@ -1024,6 +1040,50 @@ static int evdev_get_mask(struct evdev_client *client,
++ 	return 0;
++ }
++ 
+++static int evdev_get_criu_state(struct evdev *evdev,
+++				struct evdev_client *client, void __user *p)
+++{
+++	struct input_criu_state state;
+++	unsigned long irqflags;
+++	unsigned int i;
+++
+++	if (copy_from_user(&state, p, sizeof(state)))
+++		return -EFAULT;
+++	if (state.version != EVDEV_CRIU_STATE_VERSION ||
+++	    state.size != sizeof(state) || state.flags || state.clock_id ||
+++	    state.queued_events || state.buffer_size ||
+++	    memchr_inv(state.reserved, 0, sizeof(state.reserved)))
+++		return -EINVAL;
+++
+++	memset(&state, 0, sizeof(state));
+++	state.version = EVDEV_CRIU_STATE_VERSION;
+++	state.size = sizeof(state);
+++	state.clock_id = evdev_get_clk_id(client);
+++	state.buffer_size = client->bufsize;
+++
+++	spin_lock_irqsave(&client->buffer_lock, irqflags);
+++	state.queued_events = (client->head - client->tail) &
+++			      (client->bufsize - 1);
+++	if (state.queued_events)
+++		state.flags |= EVDEV_CRIU_STATE_QUEUE_NONEMPTY;
+++	for (i = 0; i < EV_CNT; i++) {
+++		if (client->evmasks[i]) {
+++			state.flags |= EVDEV_CRIU_STATE_FILTERED;
+++			break;
+++		}
+++	}
+++	spin_unlock_irqrestore(&client->buffer_lock, irqflags);
+++
+++	if (rcu_access_pointer(evdev->grab) == client)
+++		state.flags |= EVDEV_CRIU_STATE_GRABBED;
+++	if (test_bit(EV_FF, evdev->handle.dev->evbit))
+++		state.flags |= EVDEV_CRIU_STATE_FORCE_FEEDBACK;
+++
+++	if (copy_to_user(p, &state, sizeof(state)))
+++		return -EFAULT;
+++	return 0;
+++}
+++
++ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
++ 			   void __user *p, int compat_mode)
++ {
++@@ -1123,6 +1183,9 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
++ 
++ 		return evdev_set_clk_type(client, i);
++ 
+++	case EVIOCGCRIUSTATE:
+++		return evdev_get_criu_state(evdev, client, p);
+++
++ 	case EVIOCGKEYCODE:
++ 		return evdev_handle_get_keycode(dev, p);
++ 
++diff --git a/include/uapi/linux/input.h b/include/uapi/linux/input.h
++index 6aa703f..0fec679 100644
++--- a/include/uapi/linux/input.h
+++++ b/include/uapi/linux/input.h
++@@ -129,6 +129,28 @@ struct input_mask {
++ 	__u64 codes_ptr;
++ };
++ 
+++/*
+++ * Conservative checkpoint admission for one evdev file description.
+++ *
+++ * Version 1 deliberately exposes no queued input payload. Userspace may
+++ * checkpoint only the default empty subset and must refuse every flag below.
+++ */
+++#define EVDEV_CRIU_STATE_VERSION	1
+++#define EVDEV_CRIU_STATE_QUEUE_NONEMPTY	(1ULL << 0)
+++#define EVDEV_CRIU_STATE_GRABBED	(1ULL << 1)
+++#define EVDEV_CRIU_STATE_FILTERED	(1ULL << 2)
+++#define EVDEV_CRIU_STATE_FORCE_FEEDBACK	(1ULL << 3)
+++
+++struct input_criu_state {
+++	__u32 version;
+++	__u32 size;
+++	__u64 flags;
+++	__u32 clock_id;
+++	__u32 queued_events;
+++	__u32 buffer_size;
+++	__u32 reserved[9];
+++};
+++
++ #define EVIOCGVERSION		_IOR('E', 0x01, int)			/* get driver version */
++ #define EVIOCGID		_IOR('E', 0x02, struct input_id)	/* get device ID */
++ #define EVIOCGREP		_IOR('E', 0x03, unsigned int[2])	/* get repeat settings */
++@@ -241,6 +263,7 @@ struct input_mask {
++ #define EVIOCSMASK		_IOW('E', 0x93, struct input_mask)	/* Set event-masks */
++ 
++ #define EVIOCSCLOCKID		_IOW('E', 0xa0, int)			/* Set clockid to be used for timestamps */
+++#define EVIOCGCRIUSTATE		_IOWR('E', 0xa1, struct input_criu_state)
++ 
++ /*
++  * IDs.
 diff --git a/contrib/input-criu/input_criu_uapi.h b/contrib/input-criu/input_criu_uapi.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..c92aa8f2363b1667f4a4c00cebbc4e354d69ac14
