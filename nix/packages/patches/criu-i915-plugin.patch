@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..a2578f18dcac9e6e49adebb090e7599696560bf3
+index 0000000000000000000000000000000000000000..4341517acf3fa8923b96950a6755cea76d72944c
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,756 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -631,8 +631,13 @@ index 0000000000000000000000000000000000000000..a2578f18dcac9e6e49adebb090e75996
 +The corrected fixture queries `DRM_I915_QUERY_ENGINE_INFO`, selects two actual
 +same-class siblings, and supplies both to the load-balancing constructor. On
 +the Framework target it records video instances 0 and 1 and creates a genuine
-+virtual engine. A complete hierarchy rerun remains required; the incomplete
-+run has no verdict and is not compositor evidence.
++virtual engine. The coherent rerun at
++`/var/tmp/i915-criu-physical-abi10-20260717T015906Z` passes all 19 cases. Its
++metadata binds source `0285dd031`, ABI/image 10, boot
++`056cf70a-c5fe-4f51-8819-63c73bc86c39`, system closure `9b3fr3x...`, i915
++module SHA-256 `a437f7ab...`, plugin SHA-256 `0be54766...`, and corrected
++context fixture SHA-256 `4f1c1d0f...`. This completes the isolated ABI-10
++hierarchy, not compositor restoration.
 +
 +An idle i915 engine treats a debugfs reset request as a successful no-op, so the
 +reset test now starts a separate render client only after the target dump
@@ -730,6 +735,21 @@ index 0000000000000000000000000000000000000000..a2578f18dcac9e6e49adebb090e75996
 +compositor is no longer a process in logind's active session scope, so login1
 +cannot authorize Niri's non-interactive switch request. Production must use the
 +already-tested in-domain seat authority rather than weakening login1 policy.
++
++The source-authenticated ABI-10 Niri admission at
++`/var/tmp/wss-physical-niri-admission-20260717T020633Z` again preserved the
++exact four-process cgroup/tree, admitted all 15 evdev descriptions, and loaded
++the packaged i915 and input plugins whose hashes match the proven hierarchy.
++The shared seatd/Niri primary-node file description reached ABI-10 dump begin
++and was refused with `EOPNOTSUPP`. The transaction previously returned only the
++outer `session-begin` label, which was insufficient to distinguish context,
++engine-map, VM/VMA, synchronization, or authorization refusal. ABI-10 now uses
++three formerly reserved, zero-on-input session fields as output-only
++`failure_stage`, `failure_reason`, and `failure_id` diagnostics. The kernel
++sets the first failing resource and branch before returning an error, and the
++plugin includes stable stage/reason names and the resource identity in CRIU's
++private dump log. This is diagnostic expansion only: it does not admit any
++state or turn the current refusal into compositor evidence.
 +
 +## Privileged evidence policy
 +
@@ -829,10 +849,10 @@ index 70c607ec6cb5f9f7c98bccea470529acf9901b00..7ed28832990279b3714c54bbd6e75940
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4921147e94f4bcf7eca9f9b2f496f3f7a62daee9
+index 0000000000000000000000000000000000000000..9d9cdeaed9ad472945fcf6a39615345f12a3021a
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,265 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -846,6 +866,37 @@ index 0000000000000000000000000000000000000000..4921147e94f4bcf7eca9f9b2f496f3f7
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
 +#define I915_CRIU_SESSION_ABORT 4
++#define I915_CRIU_FAILURE_STAGE_NONE 0
++#define I915_CRIU_FAILURE_STAGE_AUTHORIZATION 1
++#define I915_CRIU_FAILURE_STAGE_CONTEXT 2
++#define I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT 3
++#define I915_CRIU_FAILURE_STAGE_CONTEXT_IDS 4
++#define I915_CRIU_FAILURE_STAGE_VM 5
++#define I915_CRIU_FAILURE_STAGE_VMA 6
++#define I915_CRIU_FAILURE_STAGE_SYNCOBJ 7
++#define I915_CRIU_FAILURE_ACCESS 1
++#define I915_CRIU_FAILURE_PROTECTED_CONTENT 2
++#define I915_CRIU_FAILURE_USER_FLAGS 3
++#define I915_CRIU_FAILURE_UNTRACKED_VM 4
++#define I915_CRIU_FAILURE_ENGINE_COUNT 5
++#define I915_CRIU_FAILURE_VIRTUAL_ENGINE 6
++#define I915_CRIU_FAILURE_ENGINE_SSEU 7
++#define I915_CRIU_FAILURE_ACTIVE_REQUEST 8
++#define I915_CRIU_FAILURE_DEFAULT_VM_BINDINGS 9
++#define I915_CRIU_FAILURE_LEGACY_SSEU 10
++#define I915_CRIU_FAILURE_INVALID_ENGINE 11
++#define I915_CRIU_FAILURE_PHYSICAL_ENGINE 12
++#define I915_CRIU_FAILURE_ENGINE_TYPE 13
++#define I915_CRIU_FAILURE_ID_GAP 14
++#define I915_CRIU_FAILURE_UNBOUND_VMA 15
++#define I915_CRIU_FAILURE_VMA_NODE 16
++#define I915_CRIU_FAILURE_VMA_GUARD 17
++#define I915_CRIU_FAILURE_VMA_SIZE 18
++#define I915_CRIU_FAILURE_VMA_VIEW 19
++#define I915_CRIU_FAILURE_VMA_ACTIVE 20
++#define I915_CRIU_FAILURE_VMA_BIND_FLAGS 21
++#define I915_CRIU_FAILURE_VMA_FLAGS 22
++#define I915_CRIU_FAILURE_VMA_MISSING_HANDLE 23
 +#define I915_CRIU_OBJECT_QUERY 1
 +#define I915_CRIU_OBJECT_CREATE 2
 +#define I915_CRIU_OBJECT_IMPORT 3
@@ -901,7 +952,10 @@ index 0000000000000000000000000000000000000000..4921147e94f4bcf7eca9f9b2f496f3f7
 +	int32_t target_pid;
 +	uint32_t flags;
 +	uint64_t cookie;
-+	uint64_t reserved[4];
++	uint32_t failure_stage;
++	uint32_t failure_reason;
++	uint64_t failure_id;
++	uint64_t reserved[2];
 +};
 +
 +struct drm_i915_criu_object {
@@ -1066,12 +1120,12 @@ index 0000000000000000000000000000000000000000..4921147e94f4bcf7eca9f9b2f496f3f7
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb47044222
+index 0000000000000000000000000000000000000000..0db4c05ad0bcb84628b35e42a6f511057a5130e1
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2718 @@
+@@ -0,0 +1,2774 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
-+index b677720..05bde40 100644
++index b677720a1c2dba721fcc910a83643996d2ad3299..05bde40d88ee17f8112cea1d9143d4c96c45f703 100644
 +--- a/drivers/gpu/drm/i915/Makefile
 ++++ b/drivers/gpu/drm/i915/Makefile
 +@@ -25,6 +25,7 @@ subdir-ccflags-y += -I$(src)
@@ -1083,7 +1137,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 	i915_drm_client.o \
 + 	i915_edram.o \
 +diff --git a/drivers/gpu/drm/i915/gem/i915_gem_context.c b/drivers/gpu/drm/i915/gem/i915_gem_context.c
-+index 6ac0f23..11f4c46 100644
++index 6ac0f23570f335791e92bc2b32d3c6bd338720d2..11f4c46815ab82fddfd83c4ddc737f4fe5d54701 100644
 +--- a/drivers/gpu/drm/i915/gem/i915_gem_context.c
 ++++ b/drivers/gpu/drm/i915/gem/i915_gem_context.c
 +@@ -2366,10 +2366,12 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
@@ -1116,7 +1170,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 	ctx = __context_lookup(file_priv, args->ctx_id);
 + 	if (!ctx) {
 +diff --git a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
-+index 969f6ea..2071840 100644
++index 969f6ea2b855c7bb801ac86d9ddd8ff078d49aab..2071840da3d74f3131b0167b990bd30461d2bc65 100644
 +--- a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
 ++++ b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
 +@@ -250,6 +250,9 @@ struct drm_i915_gem_object {
@@ -1131,10 +1185,10 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000000000000000000000000000000000000..6a0df3c1ff11c3198f2c82f93eff7df8d1e088b7
++index 0000000000000000000000000000000000000000..ec9a4b5d18830ff801171226ba62107bd64d223c
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,2067 @@
++@@ -0,0 +1,2214 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 10. */
 ++
@@ -1384,9 +1438,26 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	return found;
 ++}
 ++
+++static void set_session_failure(struct drm_i915_criu_session *args,
+++				u32 stage, u32 reason, u64 id)
+++{
+++	if (args->failure_stage)
+++		return;
+++	args->failure_stage = stage;
+++	args->failure_reason = reason;
+++	args->failure_id = id;
+++}
+++
+++static u64 context_engine_id(unsigned long context_id, unsigned int engine_id)
+++{
+++	return (u64)(u32)context_id << 32 | (u32)engine_id;
+++}
+++
 ++static int validate_active_context(struct drm_i915_file_private *fpriv,
 ++				   struct i915_gem_context *ctx,
-++				   bool require_tracked_vm)
+++				   unsigned long context_id,
+++				   bool require_tracked_vm,
+++				   struct drm_i915_criu_session *args)
 ++{
 ++	const unsigned long allowed_user_flags =
 ++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
@@ -1396,15 +1467,29 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	unsigned int i;
 ++	int ret = 0;
 ++
-++	if (ctx->uses_protected_content ||
-++	    ctx->user_flags & ~allowed_user_flags ||
-++	    (require_tracked_vm && context_vm_id(fpriv, ctx->vm) == U32_MAX))
+++	if (ctx->uses_protected_content) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++				    I915_CRIU_FAILURE_PROTECTED_CONTENT,
+++				    context_id);
 ++		return -EOPNOTSUPP;
+++	}
+++	if (ctx->user_flags & ~allowed_user_flags) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++				    I915_CRIU_FAILURE_USER_FLAGS, context_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (require_tracked_vm && context_vm_id(fpriv, ctx->vm) == U32_MAX) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++				    I915_CRIU_FAILURE_UNTRACKED_VM, context_id);
+++		return -EOPNOTSUPP;
+++	}
 ++
 ++	user_engines = test_bit(CONTEXT_USER_ENGINES, &ctx->flags);
 ++	engines = i915_gem_context_lock_engines(ctx);
 ++	if (user_engines &&
 ++	    (!engines || engines->num_engines > I915_CRIU_MAX_CONTEXT_ENGINES)) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
 ++		ret = -EOPNOTSUPP;
 ++		goto out_engines;
 ++	}
@@ -1413,16 +1498,27 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++
 ++		if (!ce)
 ++			continue;
+++		if (user_engines && intel_engine_is_virtual(ce->engine)) {
+++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++					    I915_CRIU_FAILURE_VIRTUAL_ENGINE,
+++					    context_engine_id(context_id, i));
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
 ++		if (user_engines &&
-++		    (intel_engine_is_virtual(ce->engine) ||
-++		     memcmp(&ce->sseu, &ce->engine->sseu,
-++			    sizeof(ce->sseu)))) {
+++		    memcmp(&ce->sseu, &ce->engine->sseu, sizeof(ce->sseu))) {
+++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++					    I915_CRIU_FAILURE_ENGINE_SSEU,
+++					    context_engine_id(context_id, i));
 ++			ret = -EOPNOTSUPP;
 ++			break;
 ++		}
 ++		if (!intel_context_pin_if_active(ce))
 ++			continue;
 ++		intel_context_unpin(ce);
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++				    I915_CRIU_FAILURE_ACTIVE_REQUEST,
+++				    context_engine_id(context_id, i));
 ++		ret = -EBUSY;
 ++		break;
 ++	}
@@ -1431,36 +1527,60 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	return ret;
 ++}
 ++
-++static int
-++validate_proto_context_engines(const struct i915_gem_proto_context *pc)
+++static int validate_proto_context_engines(
+++	const struct i915_gem_proto_context *pc, unsigned long context_id,
+++	struct drm_i915_criu_session *args)
 ++{
 ++	int i;
 ++
-++	if (pc->num_user_engines < 0)
-++		return pc->user_engines ? -EOPNOTSUPP : 0;
-++	if (pc->num_user_engines > I915_CRIU_MAX_CONTEXT_ENGINES)
+++	if (pc->num_user_engines < 0) {
+++		if (!pc->user_engines)
+++			return 0;
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
 ++		return -EOPNOTSUPP;
+++	}
+++	if (pc->num_user_engines > I915_CRIU_MAX_CONTEXT_ENGINES) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
+++		return -EOPNOTSUPP;
+++	}
 ++	for (i = 0; i < pc->num_user_engines; i++) {
 ++		const struct i915_gem_proto_engine *engine = &pc->user_engines[i];
 ++
 ++		if (engine->type == I915_GEM_ENGINE_TYPE_INVALID) {
 ++			if (engine->engine || engine->num_siblings || engine->width ||
 ++			    engine->siblings ||
-++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu)))
+++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu))) {
+++				set_session_failure(
+++					args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					I915_CRIU_FAILURE_INVALID_ENGINE,
+++					context_engine_id(context_id, i));
 ++				return -EOPNOTSUPP;
+++			}
 ++		} else if (engine->type == I915_GEM_ENGINE_TYPE_PHYSICAL) {
 ++			if (!engine->engine || engine->num_siblings || engine->width ||
 ++			    engine->siblings ||
-++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu)))
+++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu))) {
+++				set_session_failure(
+++					args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					I915_CRIU_FAILURE_PHYSICAL_ENGINE,
+++					context_engine_id(context_id, i));
 ++				return -EOPNOTSUPP;
+++			}
 ++		} else {
+++			set_session_failure(args,
+++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					    I915_CRIU_FAILURE_ENGINE_TYPE,
+++					    context_engine_id(context_id, i));
 ++			return -EOPNOTSUPP;
 ++		}
 ++	}
 ++	return 0;
 ++}
 ++
-++static int validate_checkpoint_contexts(struct drm_file *file)
+++static int validate_checkpoint_contexts(
+++	struct drm_file *file, struct drm_i915_criu_session *args)
 ++{
 ++	const unsigned long allowed_user_flags =
 ++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
@@ -1477,7 +1597,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	int ret = 0;
 ++
 ++	xa_for_each(&fpriv->context_xa, id, ctx) {
-++		ret = validate_active_context(fpriv, ctx, id != 0);
+++		ret = validate_active_context(fpriv, ctx, id, id != 0, args);
 ++		if (ret)
 ++			return ret;
 ++		if (id == 0) {
@@ -1485,8 +1605,12 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++				continue;
 ++			mutex_lock(&ctx->vm->mutex);
 ++			if (!list_empty(&ctx->vm->bound_list) ||
-++			    !list_empty(&ctx->vm->unbound_list))
+++			    !list_empty(&ctx->vm->unbound_list)) {
+++				set_session_failure(
+++					args, I915_CRIU_FAILURE_STAGE_CONTEXT,
+++					I915_CRIU_FAILURE_DEFAULT_VM_BINDINGS, 0);
 ++				ret = -EOPNOTSUPP;
+++			}
 ++			mutex_unlock(&ctx->vm->mutex);
 ++			if (ret)
 ++				return ret;
@@ -1500,45 +1624,113 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	xa_for_each(&fpriv->proto_context_xa, id, pc) {
 ++		context_count++;
 ++		context_max = max_t(u32, context_max, id);
-++		if (pc->uses_protected_content || pc->pxp_wakeref ||
-++		    pc->user_flags & ~allowed_user_flags ||
-++		    memchr_inv(&pc->legacy_rcs_sseu, 0,
-++			       sizeof(pc->legacy_rcs_sseu)) ||
-++		    context_vm_id(fpriv, pc->vm) == U32_MAX) {
+++		if (pc->uses_protected_content || pc->pxp_wakeref) {
+++			set_session_failure(
+++				args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++				I915_CRIU_FAILURE_PROTECTED_CONTENT, id);
 ++			ret = -EOPNOTSUPP;
 ++			break;
 ++		}
-++		ret = validate_proto_context_engines(pc);
+++		if (pc->user_flags & ~allowed_user_flags) {
+++			set_session_failure(args,
+++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					    I915_CRIU_FAILURE_USER_FLAGS, id);
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
+++		if (memchr_inv(&pc->legacy_rcs_sseu, 0,
+++			       sizeof(pc->legacy_rcs_sseu))) {
+++			set_session_failure(args,
+++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					    I915_CRIU_FAILURE_LEGACY_SSEU, id);
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
+++		if (context_vm_id(fpriv, pc->vm) == U32_MAX) {
+++			set_session_failure(args,
+++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
+++					    I915_CRIU_FAILURE_UNTRACKED_VM, id);
+++			ret = -EOPNOTSUPP;
+++			break;
+++		}
+++		ret = validate_proto_context_engines(pc, id, args);
 ++		if (ret)
 ++			break;
 ++	}
 ++	mutex_unlock(&fpriv->proto_context_lock);
 ++	if (ret)
 ++		return ret;
-++	if (context_count != context_max)
+++	if (context_count != context_max) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT_IDS,
+++				    I915_CRIU_FAILURE_ID_GAP, context_max);
 ++		return -EOPNOTSUPP;
+++	}
 ++
 ++	xa_for_each(&fpriv->vm_xa, id, vm) {
-++		if (id != expected_vm++)
+++		if (id != expected_vm++) {
+++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VM,
+++					    I915_CRIU_FAILURE_ID_GAP, id);
 ++			return -EOPNOTSUPP;
+++		}
 ++		mutex_lock(&vm->mutex);
 ++		if (!list_empty(&vm->unbound_list)) {
+++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VM,
+++					    I915_CRIU_FAILURE_UNBOUND_VMA, id);
 ++			ret = -EOPNOTSUPP;
 ++			goto unlock_vm;
 ++		}
 ++		list_for_each_entry(vma, &vm->bound_list, vm_link) {
 ++			int flags = atomic_read(&vma->flags);
 ++
-++			if (!drm_mm_node_allocated(&vma->node) || vma->guard ||
-++			    vma->size != vma->obj->base.size ||
-++			    vma->gtt_view.type != I915_GTT_VIEW_NORMAL ||
-++			    i915_vma_is_active(vma) ||
-++			    (flags & I915_VMA_BIND_MASK) !=
-++				    I915_VMA_LOCAL_BIND ||
-++			    flags & (I915_VMA_GLOBAL_BIND | I915_VMA_ERROR |
+++			if (!drm_mm_node_allocated(&vma->node)) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_NODE, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (vma->guard) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_GUARD, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (vma->size != vma->obj->base.size) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_SIZE, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (vma->gtt_view.type != I915_GTT_VIEW_NORMAL) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_VIEW, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (i915_vma_is_active(vma)) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_ACTIVE, id);
+++				ret = -EBUSY;
+++				break;
+++			}
+++			if ((flags & I915_VMA_BIND_MASK) != I915_VMA_LOCAL_BIND) {
+++				set_session_failure(
+++					args, I915_CRIU_FAILURE_STAGE_VMA,
+++					I915_CRIU_FAILURE_VMA_BIND_FLAGS, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (flags & (I915_VMA_GLOBAL_BIND | I915_VMA_ERROR |
 ++				     I915_VMA_GGTT | I915_VMA_CAN_FENCE |
-++				     I915_VMA_USERFAULT | I915_VMA_SCANOUT) ||
-++			    !object_has_file_handle(file, vma->obj)) {
+++				     I915_VMA_USERFAULT | I915_VMA_SCANOUT)) {
+++				set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++						    I915_CRIU_FAILURE_VMA_FLAGS, id);
+++				ret = -EOPNOTSUPP;
+++				break;
+++			}
+++			if (!object_has_file_handle(file, vma->obj)) {
+++				set_session_failure(
+++					args, I915_CRIU_FAILURE_STAGE_VMA,
+++					I915_CRIU_FAILURE_VMA_MISSING_HANDLE, id);
 ++				ret = -EOPNOTSUPP;
 ++				break;
 ++			}
@@ -1616,7 +1808,8 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	return attachment_count ? -EOPNOTSUPP : 0;
 ++}
 ++
-++static int validate_syncobjs(struct drm_file *file)
+++static int validate_syncobjs(struct drm_file *file,
+++			     struct drm_i915_criu_session *args)
 ++{
 ++	struct drm_syncobj *syncobj;
 ++	unsigned long index;
@@ -1629,8 +1822,11 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++		drm_syncobj_get(syncobj);
 ++		ret = describe_syncobj(syncobj, &flags, &point);
 ++		drm_syncobj_put(syncobj);
-++		if (ret)
+++		if (ret) {
+++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_SYNCOBJ,
+++					    -ret, index);
 ++			break;
+++		}
 ++	}
 ++	return ret;
 ++}
@@ -1667,6 +1863,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++	int ret = 0;
 ++
 ++	if (args->version != I915_CRIU_ABI_VERSION || args->flags ||
+++	    args->failure_stage || args->failure_reason || args->failure_id ||
 ++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
 ++		return -EINVAL;
 ++
@@ -1678,12 +1875,16 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++			break;
 ++		}
 ++		ret = authorize_dump_target(args->target_pid);
+++		if (ret) {
+++			set_session_failure(
+++				args, I915_CRIU_FAILURE_STAGE_AUTHORIZATION,
+++				I915_CRIU_FAILURE_ACCESS, args->target_pid);
+++			break;
+++		}
+++		ret = validate_checkpoint_contexts(file, args);
 ++		if (ret)
 ++			break;
-++		ret = validate_checkpoint_contexts(file);
-++		if (ret)
-++			break;
-++		ret = validate_syncobjs(file);
+++		ret = validate_syncobjs(file, args);
 ++		if (ret)
 ++			break;
 ++		fpriv->criu_reset_epoch = i915_criu_reset_epoch(fpriv->i915);
@@ -3204,7 +3405,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++}
 +diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
 +new file mode 100644
-+index 0000000..aacf12f
++index 0000000000000000000000000000000000000000..aacf12f64540c0c47cbab6517545fab082161269
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.h
 +@@ -0,0 +1,34 @@
@@ -3243,7 +3444,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++
 ++#endif
 +diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
-+index d9be7a5..636cd79 100644
++index d9be7a5a239c167bba88b1dd069c0607cb700e92..636cd794677a8708dd53731d2a6c3c965b02d233 100644
 +--- a/drivers/gpu/drm/i915/i915_driver.c
 ++++ b/drivers/gpu/drm/i915/i915_driver.c
 +@@ -100,6 +100,7 @@
@@ -3281,7 +3482,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 
 + /*
 +diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
-+index c9cb8ee..55b8d16 100644
++index c9cb8eecacde02192c35154c97ede24aaba72000..55b8d1663f462a66fd314142785a3b693ab11552 100644
 +--- a/drivers/gpu/drm/i915/i915_file_private.h
 ++++ b/drivers/gpu/drm/i915/i915_file_private.h
 +@@ -106,6 +106,19 @@ struct drm_i915_file_private {
@@ -3305,7 +3506,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 
 + #endif /* __I915_FILE_PRIVATE_H__ */
 +diff --git a/drivers/gpu/drm/i915/i915_gem.c b/drivers/gpu/drm/i915/i915_gem.c
-+index a432daf..5beb4ff 100644
++index a432daf8038a5c2b0b1b34c97bbaf0c059390bac..5beb4ff63495a776578161b1c31eabf0862997f7 100644
 +--- a/drivers/gpu/drm/i915/i915_gem.c
 ++++ b/drivers/gpu/drm/i915/i915_gem.c
 +@@ -54,6 +54,7 @@
@@ -3333,7 +3534,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + err_client:
 + 	kfree(file_priv);
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..17163018322e14cfe9b8e088d4fc36e6688ae953 100644
++index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..1668f0ef9cb4b2ed9244c38d2529a90b727c447a 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
@@ -3372,7 +3573,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3928,274 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3928,312 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -3408,13 +3609,51 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 ++#define I915_CRIU_SESSION_COMMIT        3
 ++#define I915_CRIU_SESSION_ABORT         4
 ++
+++#define I915_CRIU_FAILURE_STAGE_NONE          0
+++#define I915_CRIU_FAILURE_STAGE_AUTHORIZATION 1
+++#define I915_CRIU_FAILURE_STAGE_CONTEXT       2
+++#define I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT 3
+++#define I915_CRIU_FAILURE_STAGE_CONTEXT_IDS   4
+++#define I915_CRIU_FAILURE_STAGE_VM            5
+++#define I915_CRIU_FAILURE_STAGE_VMA           6
+++#define I915_CRIU_FAILURE_STAGE_SYNCOBJ       7
+++
+++#define I915_CRIU_FAILURE_ACCESS               1
+++#define I915_CRIU_FAILURE_PROTECTED_CONTENT    2
+++#define I915_CRIU_FAILURE_USER_FLAGS           3
+++#define I915_CRIU_FAILURE_UNTRACKED_VM         4
+++#define I915_CRIU_FAILURE_ENGINE_COUNT         5
+++#define I915_CRIU_FAILURE_VIRTUAL_ENGINE       6
+++#define I915_CRIU_FAILURE_ENGINE_SSEU          7
+++#define I915_CRIU_FAILURE_ACTIVE_REQUEST       8
+++#define I915_CRIU_FAILURE_DEFAULT_VM_BINDINGS  9
+++#define I915_CRIU_FAILURE_LEGACY_SSEU         10
+++#define I915_CRIU_FAILURE_INVALID_ENGINE      11
+++#define I915_CRIU_FAILURE_PHYSICAL_ENGINE     12
+++#define I915_CRIU_FAILURE_ENGINE_TYPE         13
+++#define I915_CRIU_FAILURE_ID_GAP              14
+++#define I915_CRIU_FAILURE_UNBOUND_VMA         15
+++#define I915_CRIU_FAILURE_VMA_NODE            16
+++#define I915_CRIU_FAILURE_VMA_GUARD           17
+++#define I915_CRIU_FAILURE_VMA_SIZE            18
+++#define I915_CRIU_FAILURE_VMA_VIEW            19
+++#define I915_CRIU_FAILURE_VMA_ACTIVE          20
+++#define I915_CRIU_FAILURE_VMA_BIND_FLAGS      21
+++#define I915_CRIU_FAILURE_VMA_FLAGS           22
+++#define I915_CRIU_FAILURE_VMA_MISSING_HANDLE  23
+++
 ++struct drm_i915_criu_session {
 ++	__u32 version;
 ++	__u32 op;
 ++	__s32 target_pid;
 ++	__u32 flags;
 ++	__u64 cookie;
-++	__u64 reserved[4];
+++	/* Output-only diagnostics retained even when the ioctl returns an error. */
+++	__u32 failure_stage;
+++	__u32 failure_reason;
+++	/* Stage-specific resource identity; context/engine pairs use high/low u32. */
+++	__u64 failure_id;
+++	__u64 reserved[2];
 ++};
 ++
 ++#define I915_CRIU_OBJECT_QUERY  1
@@ -3648,7 +3887,7 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + #define I915_PROTECTED_CONTENT_DEFAULT_SESSION 0xf
 + 
 +diff --git a/kernel/ptrace.c b/kernel/ptrace.c
-+index 130043b..0e0e1ff 100644
++index 130043bfc2091c12ccb0a90957baed75e9803735..0e0e1ffdffe6b429ff1ff5c6acac7b4a12f34347 100644
 +--- a/kernel/ptrace.c
 ++++ b/kernel/ptrace.c
 +@@ -364,6 +364,7 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
@@ -3659,135 +3898,6 @@ index 0000000000000000000000000000000000000000..53bf41e1bd5d6c20c448a7189ef8eefb
 + 
 + static int check_ptrace_options(unsigned long data)
 + {
-+diff --git a/drivers/input/evdev.c b/drivers/input/evdev.c
-+index c732522..f006f07 100644
-+--- a/drivers/input/evdev.c
-++++ b/drivers/input/evdev.c
-+@@ -171,6 +171,22 @@ static void evdev_queue_syn_dropped(struct evdev_client *client)
-+ 	spin_unlock_irqrestore(&client->buffer_lock, flags);
-+ }
-+ 
-++static unsigned int evdev_get_clk_id(const struct evdev_client *client)
-++{
-++	switch (client->clk_type) {
-++	case INPUT_CLK_REAL:
-++		return CLOCK_REALTIME;
-++	case INPUT_CLK_MONO:
-++		return CLOCK_MONOTONIC;
-++	case INPUT_CLK_BOOT:
-++		return CLOCK_BOOTTIME;
-++	case INPUT_CLK_MAX:
-++		return U32_MAX;
-++	}
-++
-++	return U32_MAX;
-++}
-++
-+ static int evdev_set_clk_type(struct evdev_client *client, unsigned int clkid)
-+ {
-+ 	unsigned long flags;
-+@@ -1024,6 +1040,50 @@ static int evdev_get_mask(struct evdev_client *client,
-+ 	return 0;
-+ }
-+ 
-++static int evdev_get_criu_state(struct evdev *evdev,
-++				struct evdev_client *client, void __user *p)
-++{
-++	struct input_criu_state state;
-++	unsigned long irqflags;
-++	unsigned int i;
-++
-++	if (copy_from_user(&state, p, sizeof(state)))
-++		return -EFAULT;
-++	if (state.version != EVDEV_CRIU_STATE_VERSION ||
-++	    state.size != sizeof(state) || state.flags || state.clock_id ||
-++	    state.queued_events || state.buffer_size ||
-++	    memchr_inv(state.reserved, 0, sizeof(state.reserved)))
-++		return -EINVAL;
-++
-++	memset(&state, 0, sizeof(state));
-++	state.version = EVDEV_CRIU_STATE_VERSION;
-++	state.size = sizeof(state);
-++	state.clock_id = evdev_get_clk_id(client);
-++	state.buffer_size = client->bufsize;
-++
-++	spin_lock_irqsave(&client->buffer_lock, irqflags);
-++	state.queued_events = (client->head - client->tail) &
-++			      (client->bufsize - 1);
-++	if (state.queued_events)
-++		state.flags |= EVDEV_CRIU_STATE_QUEUE_NONEMPTY;
-++	for (i = 0; i < EV_CNT; i++) {
-++		if (client->evmasks[i]) {
-++			state.flags |= EVDEV_CRIU_STATE_FILTERED;
-++			break;
-++		}
-++	}
-++	spin_unlock_irqrestore(&client->buffer_lock, irqflags);
-++
-++	if (rcu_access_pointer(evdev->grab) == client)
-++		state.flags |= EVDEV_CRIU_STATE_GRABBED;
-++	if (test_bit(EV_FF, evdev->handle.dev->evbit))
-++		state.flags |= EVDEV_CRIU_STATE_FORCE_FEEDBACK;
-++
-++	if (copy_to_user(p, &state, sizeof(state)))
-++		return -EFAULT;
-++	return 0;
-++}
-++
-+ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
-+ 			   void __user *p, int compat_mode)
-+ {
-+@@ -1123,6 +1183,9 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
-+ 
-+ 		return evdev_set_clk_type(client, i);
-+ 
-++	case EVIOCGCRIUSTATE:
-++		return evdev_get_criu_state(evdev, client, p);
-++
-+ 	case EVIOCGKEYCODE:
-+ 		return evdev_handle_get_keycode(dev, p);
-+ 
-+diff --git a/include/uapi/linux/input.h b/include/uapi/linux/input.h
-+index 6aa703f..0fec679 100644
-+--- a/include/uapi/linux/input.h
-++++ b/include/uapi/linux/input.h
-+@@ -129,6 +129,28 @@ struct input_mask {
-+ 	__u64 codes_ptr;
-+ };
-+ 
-++/*
-++ * Conservative checkpoint admission for one evdev file description.
-++ *
-++ * Version 1 deliberately exposes no queued input payload. Userspace may
-++ * checkpoint only the default empty subset and must refuse every flag below.
-++ */
-++#define EVDEV_CRIU_STATE_VERSION	1
-++#define EVDEV_CRIU_STATE_QUEUE_NONEMPTY	(1ULL << 0)
-++#define EVDEV_CRIU_STATE_GRABBED	(1ULL << 1)
-++#define EVDEV_CRIU_STATE_FILTERED	(1ULL << 2)
-++#define EVDEV_CRIU_STATE_FORCE_FEEDBACK	(1ULL << 3)
-++
-++struct input_criu_state {
-++	__u32 version;
-++	__u32 size;
-++	__u64 flags;
-++	__u32 clock_id;
-++	__u32 queued_events;
-++	__u32 buffer_size;
-++	__u32 reserved[9];
-++};
-++
-+ #define EVIOCGVERSION		_IOR('E', 0x01, int)			/* get driver version */
-+ #define EVIOCGID		_IOR('E', 0x02, struct input_id)	/* get device ID */
-+ #define EVIOCGREP		_IOR('E', 0x03, unsigned int[2])	/* get repeat settings */
-+@@ -241,6 +263,7 @@ struct input_mask {
-+ #define EVIOCSMASK		_IOW('E', 0x93, struct input_mask)	/* Set event-masks */
-+ 
-+ #define EVIOCSCLOCKID		_IOW('E', 0xa0, int)			/* Set clockid to be used for timestamps */
-++#define EVIOCGCRIUSTATE		_IOWR('E', 0xa1, struct input_criu_state)
-+ 
-+ /*
-+  * IDs.
 diff --git a/contrib/input-criu/input_criu_uapi.h b/contrib/input-criu/input_criu_uapi.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..c92aa8f2363b1667f4a4c00cebbc4e354d69ac14
@@ -4214,10 +4324,10 @@ index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fd
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f0838650416b83f1aaa0179ba00d96442285e32
+index 0000000000000000000000000000000000000000..fb3a1e793492f7aac84be4dafedf4f83f71f86a3
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,3092 @@
+@@ -0,0 +1,3186 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -4710,6 +4820,90 @@ index 0000000000000000000000000000000000000000..2f0838650416b83f1aaa0179ba00d964
 +	return 0;
 +}
 +
++static struct drm_i915_criu_session last_session_diagnostic;
++
++static const char *failure_stage_name(uint32_t stage)
++{
++	switch (stage) {
++	case I915_CRIU_FAILURE_STAGE_NONE:
++		return "none";
++	case I915_CRIU_FAILURE_STAGE_AUTHORIZATION:
++		return "authorization";
++	case I915_CRIU_FAILURE_STAGE_CONTEXT:
++		return "context";
++	case I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT:
++		return "proto-context";
++	case I915_CRIU_FAILURE_STAGE_CONTEXT_IDS:
++		return "context-ids";
++	case I915_CRIU_FAILURE_STAGE_VM:
++		return "vm";
++	case I915_CRIU_FAILURE_STAGE_VMA:
++		return "vma";
++	case I915_CRIU_FAILURE_STAGE_SYNCOBJ:
++		return "syncobj";
++	default:
++		return "unknown";
++	}
++}
++
++static const char *failure_reason_name(uint32_t stage, uint32_t reason)
++{
++	if (stage == I915_CRIU_FAILURE_STAGE_SYNCOBJ)
++		return strerror(reason);
++	switch (reason) {
++	case 0:
++		return "none";
++	case I915_CRIU_FAILURE_ACCESS:
++		return "access";
++	case I915_CRIU_FAILURE_PROTECTED_CONTENT:
++		return "protected-content";
++	case I915_CRIU_FAILURE_USER_FLAGS:
++		return "user-flags";
++	case I915_CRIU_FAILURE_UNTRACKED_VM:
++		return "untracked-vm";
++	case I915_CRIU_FAILURE_ENGINE_COUNT:
++		return "engine-count";
++	case I915_CRIU_FAILURE_VIRTUAL_ENGINE:
++		return "virtual-engine";
++	case I915_CRIU_FAILURE_ENGINE_SSEU:
++		return "engine-sseu";
++	case I915_CRIU_FAILURE_ACTIVE_REQUEST:
++		return "active-request";
++	case I915_CRIU_FAILURE_DEFAULT_VM_BINDINGS:
++		return "default-vm-bindings";
++	case I915_CRIU_FAILURE_LEGACY_SSEU:
++		return "legacy-sseu";
++	case I915_CRIU_FAILURE_INVALID_ENGINE:
++		return "invalid-engine-payload";
++	case I915_CRIU_FAILURE_PHYSICAL_ENGINE:
++		return "physical-engine-payload";
++	case I915_CRIU_FAILURE_ENGINE_TYPE:
++		return "engine-type";
++	case I915_CRIU_FAILURE_ID_GAP:
++		return "id-gap";
++	case I915_CRIU_FAILURE_UNBOUND_VMA:
++		return "unbound-vma";
++	case I915_CRIU_FAILURE_VMA_NODE:
++		return "vma-node";
++	case I915_CRIU_FAILURE_VMA_GUARD:
++		return "vma-guard";
++	case I915_CRIU_FAILURE_VMA_SIZE:
++		return "vma-size";
++	case I915_CRIU_FAILURE_VMA_VIEW:
++		return "vma-view";
++	case I915_CRIU_FAILURE_VMA_ACTIVE:
++		return "vma-active";
++	case I915_CRIU_FAILURE_VMA_BIND_FLAGS:
++		return "vma-bind-flags";
++	case I915_CRIU_FAILURE_VMA_FLAGS:
++		return "vma-flags";
++	case I915_CRIU_FAILURE_VMA_MISSING_HANDLE:
++		return "vma-missing-handle";
++	default:
++		return "errno-or-unknown";
++	}
++}
++
 +static int session_ioctl(int fd, uint32_t op, int pid, uint64_t *cookie)
 +{
 +	struct drm_i915_criu_session session = {
@@ -4718,8 +4912,11 @@ index 0000000000000000000000000000000000000000..2f0838650416b83f1aaa0179ba00d964
 +		.target_pid = pid,
 +		.cookie = *cookie,
 +	};
++	int ret;
 +
-+	if (ioctl(fd, DRM_IOCTL_I915_CRIU_SESSION, &session) < 0)
++	ret = ioctl(fd, DRM_IOCTL_I915_CRIU_SESSION, &session);
++	last_session_diagnostic = session;
++	if (ret < 0)
 +		return -errno;
 +	*cookie = session.cookie;
 +	return 0;
@@ -5826,7 +6023,14 @@ index 0000000000000000000000000000000000000000..2f0838650416b83f1aaa0179ba00d964
 +	ret = session_ioctl(fd, I915_CRIU_SESSION_DUMP_BEGIN,
 +			    checkpoint_pid, &cookie);
 +	if (ret) {
-+		pr_err("i915 dump file=%d stage=%s failed: %d\n", id, stage, ret);
++		pr_err("i915 dump file=%d stage=%s kernel-stage=%s(%u) kernel-reason=%s(%u) kernel-id=%#" PRIx64 " failed: %d\n",
++		       id, stage,
++		       failure_stage_name(last_session_diagnostic.failure_stage),
++		       last_session_diagnostic.failure_stage,
++		       failure_reason_name(last_session_diagnostic.failure_stage,
++				   last_session_diagnostic.failure_reason),
++		       last_session_diagnostic.failure_reason,
++		       last_session_diagnostic.failure_id, ret);
 +		return ret == -ENOTSUP ? -ENOTRECOVERABLE : ret;
 +	}
 +	stage = "file-state";
