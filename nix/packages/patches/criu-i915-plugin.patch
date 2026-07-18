@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..db89fc00ffbd6e706512ade8f54c8f5816826b79
+index 0000000000000000000000000000000000000000..d0615c08fc473a9937c61e8a73e39e5a50adac04
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,795 @@
+@@ -0,0 +1,807 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -786,9 +786,21 @@ index 0000000000000000000000000000000000000000..db89fc00ffbd6e706512ade8f54c8f58
 +The staged hierarchy adds a default-context exact-address/post-restore
 +submission case, a corrupted default-VM identity refusal, and a duplicate
 +binding fault that forces abort after the first default binding was created.
-+This support does
-+not admit active requests, special views, missing object handles, nonlocal
-+bindings, or any previously unsupported engine state.
++This support does not admit active requests, special views, missing object
++handles, nonlocal bindings, or any previously unsupported engine state.
++
++The first ABI-11 hierarchy at
++`/var/tmp/i915-criu-physical-abi11-20260718T015750Z` passed the eleven inherited
++cases through explicit context/VM restoration, then failed the new default-VM
++positive at binding index zero with `EINVAL`. Dump had correctly recorded VM ID
++zero, object ID 11, address zero, and size 16384; explicit VM restoration at the
++same address already passed. The failure came after binding validation when the
++transaction attempted `xa_alloc()` on a rollback tracker initialized as an
++ordinary xarray. Allocation-mode xarray APIs require `XA_FLAGS_ALLOC`; the
++tracker now uses that flag both at file initialization and after commit-time
++reinitialization. The duplicate-binding negative exercises this rollback
++tracker, so future physical hierarchy success covers the corrected allocation
++path rather than merely the default-VM image syntax.
 +
 +## Privileged evidence policy
 +
@@ -1160,7 +1172,7 @@ index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..999735bda4c6b4ff9b8f04bcd49290fa907e04b1
+index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96c9d29a71
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 @@ -0,0 +1,2996 @@
@@ -1225,7 +1237,7 @@ index 0000000000000000000000000000000000000000..999735bda4c6b4ff9b8f04bcd49290fa
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000000000000000000000000000000000000..8d89aeed08fb31b5b728949df22f16928d7b754d
++index 0000000000000000000000000000000000000000..0ab8eea6d33dc2c5368b90a5026b7992b130335b
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
 +@@ -0,0 +1,2304 @@
@@ -1394,7 +1406,7 @@ index 0000000000000000000000000000000000000000..999735bda4c6b4ff9b8f04bcd49290fa
 ++	xa_init(&fpriv->criu_restore_syncobjs);
 ++	xa_init(&fpriv->criu_restore_contexts);
 ++	xa_init(&fpriv->criu_restore_vms);
-++	xa_init(&fpriv->criu_restore_bindings);
+++	xa_init_flags(&fpriv->criu_restore_bindings, XA_FLAGS_ALLOC);
 ++	xa_init(&fpriv->criu_restore_fbs);
 ++	xa_init(&fpriv->criu_restore_blobs);
 ++}
@@ -2000,7 +2012,7 @@ index 0000000000000000000000000000000000000000..999735bda4c6b4ff9b8f04bcd49290fa
 ++			}
 ++		}
 ++		xa_destroy(&fpriv->criu_restore_bindings);
-++		xa_init(&fpriv->criu_restore_bindings);
+++		xa_init_flags(&fpriv->criu_restore_bindings, XA_FLAGS_ALLOC);
 ++		fpriv->criu_restore_default_vm = false;
 ++		xa_destroy(&fpriv->criu_restore_vms);
 ++		xa_init(&fpriv->criu_restore_vms);
