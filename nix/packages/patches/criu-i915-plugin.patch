@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0615c08fc473a9937c61e8a73e39e5a50adac04
+index 0000000000000000000000000000000000000000..d0c4b40ab3648740b52beba25854742240c13197
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,833 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -800,7 +800,33 @@ index 0000000000000000000000000000000000000000..d0615c08fc473a9937c61e8a73e39e5a
 +tracker now uses that flag both at file initialization and after commit-time
 +reinitialization. The duplicate-binding negative exercises this rollback
 +tracker, so future physical hierarchy success covers the corrected allocation
-+path rather than merely the default-VM image syntax.
++path rather than merely the default-VM image syntax. The corrected 22-case
++source-authenticated hierarchy passed at
++`/var/tmp/i915-criu-physical-abi11-20260718T093345Z` on boot
++`a564217a-cb17-4942-8344-e786da4cf256`.
++
++The immediately following physical Niri admission at
++`/var/tmp/wss-physical-niri-admission-20260718T093753Z` preserved the exact
++four-process domain and advanced past context-zero restoration before refusing
++VM ID 1 with `vm/unbound-vma`. Mesa retains ordinary, idle, normal-view VMA
++instances in an explicit VM after a failed or retired address placement even
++when no page-table node remains allocated. These are object/VM relationships,
++not active GPU mappings, and dropping them would violate exact object-graph
++restoration.
++
++ABI and private image version 12 therefore distinguish `BINDING_LOCAL` from
++`BINDING_UNBOUND`. Dump validates both classes against the same file-owned,
++normal-view, full-object, inactive subset. Bound records retain exact GPU
++addresses; unbound records require address zero and preserve only the singleton
++object/VM VMA identity. Query order is canonical per VM: bound records by GPU
++address, then unbound records by opaque object ID. Restore recreates unbound
++records with `i915_vma_instance()` but does not bind or pin them. Every restored
++VMA, bound or unbound and default or explicit, is registered in the transaction
++tracker; duplicate records fail, abort unbinds only bound records before
++object/VM teardown, and commit releases tracker references without changing the
++restored graph. The hierarchy adds a deterministic failed-pinned-placement
++fixture, post-restore submission, nonzero-address corruption, and duplicate
++unbound-record rollback, expanding the physical suite from 22 to 25 cases.
 +
 +## Privileged evidence policy
 +
@@ -900,10 +926,10 @@ index 70c607ec6cb5f9f7c98bccea470529acf9901b00..7ed28832990279b3714c54bbd6e75940
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a81d31fc6
+index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df4bf4515c
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,268 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -912,7 +938,7 @@ index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 11
++#define I915_CRIU_ABI_VERSION 12
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -997,6 +1023,7 @@ index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a
 +#define I915_CRIU_BINDING_QUERY 1
 +#define I915_CRIU_BINDING_CREATE 2
 +#define I915_CRIU_BINDING_LOCAL (1u << 0)
++#define I915_CRIU_BINDING_UNBOUND (1u << 1)
 +
 +struct drm_i915_criu_session {
 +	uint32_t version;
@@ -1141,6 +1168,7 @@ index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a
 +	uint32_t flags;
 +	uint64_t object_id;
 +	uint64_t cursor;
++	/* Zero on query input; exact bound address or zero if unbound. */
 +	uint64_t address;
 +	uint64_t size;
 +	uint64_t reserved[3];
@@ -1172,10 +1200,10 @@ index 0000000000000000000000000000000000000000..f7ccfa01ba96f540950bd6e3578e1c5a
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96c9d29a71
+index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05074439cd
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,2996 @@
+@@ -0,0 +1,3073 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720a1c2dba721fcc910a83643996d2ad3299..05bde40d88ee17f8112cea1d9143d4c96c45f703 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -1237,10 +1265,10 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000000000000000000000000000000000000..0ab8eea6d33dc2c5368b90a5026b7992b130335b
++index 0000000000000000000000000000000000000000..60ec69fcf8f664a297d4754b557b47ef70b45e23
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,2304 @@
++@@ -0,0 +1,2377 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 11. */
 ++
@@ -1359,7 +1387,8 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++		struct i915_vma *vma = entry;
 ++
 ++		xa_erase(&fpriv->criu_restore_bindings, index);
-++		WARN_ON(i915_vma_unbind(vma));
+++		if (i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
+++			WARN_ON(i915_vma_unbind(vma));
 ++		i915_vma_put(vma);
 ++	}
 ++	fpriv->criu_restore_default_vm = false;
@@ -1651,6 +1680,59 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++	return 0;
 ++}
 ++
+++static int validate_checkpoint_vma(struct drm_file *file,
+++				   struct i915_vma *vma, u32 vm_id,
+++				   bool bound,
+++				   struct drm_i915_criu_session *args)
+++{
+++	int flags = atomic_read(&vma->flags);
+++
+++	if (drm_mm_node_allocated(&vma->node) != bound) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_NODE, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (vma->guard) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_GUARD, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (vma->size != vma->obj->base.size) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_SIZE, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (vma->gtt_view.type != I915_GTT_VIEW_NORMAL) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_VIEW, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (i915_vma_is_active(vma)) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_ACTIVE, vm_id);
+++		return -EBUSY;
+++	}
+++	if ((flags & I915_VMA_BIND_MASK) !=
+++	    (bound ? I915_VMA_LOCAL_BIND : 0)) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_BIND_FLAGS, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (flags & (I915_VMA_PIN_MASK | I915_VMA_GLOBAL_BIND |
+++		     I915_VMA_ERROR | I915_VMA_GGTT | I915_VMA_CAN_FENCE |
+++		     I915_VMA_USERFAULT | I915_VMA_SCANOUT)) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_FLAGS, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	if (!object_has_file_handle(file, vma->obj)) {
+++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
+++				    I915_CRIU_FAILURE_VMA_MISSING_HANDLE, vm_id);
+++		return -EOPNOTSUPP;
+++	}
+++	return 0;
+++}
+++
 ++static int validate_checkpoint_vm(struct drm_file *file,
 ++				  struct i915_address_space *vm, u32 vm_id,
 ++				  struct drm_i915_criu_session *args)
@@ -1659,66 +1741,15 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++	int ret = 0;
 ++
 ++	mutex_lock(&vm->mutex);
-++	if (!list_empty(&vm->unbound_list)) {
-++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VM,
-++				    I915_CRIU_FAILURE_UNBOUND_VMA, vm_id);
-++		ret = -EOPNOTSUPP;
-++		goto out;
-++	}
 ++	list_for_each_entry(vma, &vm->bound_list, vm_link) {
-++		int flags = atomic_read(&vma->flags);
-++
-++		if (!drm_mm_node_allocated(&vma->node)) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_NODE, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (vma->guard) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_GUARD, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (vma->size != vma->obj->base.size) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_SIZE, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (vma->gtt_view.type != I915_GTT_VIEW_NORMAL) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_VIEW, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (i915_vma_is_active(vma)) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_ACTIVE, vm_id);
-++			ret = -EBUSY;
-++			break;
-++		}
-++		if ((flags & I915_VMA_BIND_MASK) != I915_VMA_LOCAL_BIND) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_BIND_FLAGS, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (flags & (I915_VMA_GLOBAL_BIND | I915_VMA_ERROR |
-++			     I915_VMA_GGTT | I915_VMA_CAN_FENCE |
-++			     I915_VMA_USERFAULT | I915_VMA_SCANOUT)) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_FLAGS, vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
-++		if (!object_has_file_handle(file, vma->obj)) {
-++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
-++					    I915_CRIU_FAILURE_VMA_MISSING_HANDLE,
-++					    vm_id);
-++			ret = -EOPNOTSUPP;
-++			break;
-++		}
+++		ret = validate_checkpoint_vma(file, vma, vm_id, true, args);
+++		if (ret)
+++			goto out;
+++	}
+++	list_for_each_entry(vma, &vm->unbound_list, vm_link) {
+++		ret = validate_checkpoint_vma(file, vma, vm_id, false, args);
+++		if (ret)
+++			goto out;
 ++	}
 ++out:
 ++	mutex_unlock(&vm->mutex);
@@ -3429,9 +3460,11 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++	mutex_lock(&fpriv->criu_lock);
 ++	if (args->op == I915_CRIU_BINDING_QUERY) {
 ++		struct i915_vma *candidate = NULL;
-++		u64 candidate_address = U64_MAX;
+++		u64 bound_count = 0;
+++		u64 ordinal;
 ++
-++		if (args->flags || args->object_id || args->size) {
+++		if (args->flags || args->object_id || args->address ||
+++		    args->size || args->cursor == U64_MAX) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -3445,34 +3478,81 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++			goto out;
 ++		}
 ++		mutex_lock(&vm->mutex);
-++		list_for_each_entry(vma, &vm->bound_list, vm_link) {
-++			u64 address = i915_vma_offset(vma);
+++		list_for_each_entry(vma, &vm->bound_list, vm_link)
+++			bound_count++;
+++		if (args->cursor < bound_count) {
+++			u64 previous = 0;
+++			bool have_previous = false;
 ++
-++			if ((!args->cursor || address > args->address) &&
-++			    address < candidate_address) {
-++				candidate = vma;
-++				candidate_address = address;
+++			for (ordinal = 0; ordinal <= args->cursor; ordinal++) {
+++				u64 candidate_address = U64_MAX;
+++
+++				candidate = NULL;
+++				list_for_each_entry(vma, &vm->bound_list, vm_link) {
+++					u64 address = i915_vma_offset(vma);
+++
+++					if ((!have_previous || address > previous) &&
+++					    address < candidate_address) {
+++						candidate = vma;
+++						candidate_address = address;
+++					}
+++				}
+++				if (!candidate)
+++					break;
+++				previous = candidate_address;
+++				have_previous = true;
 ++			}
+++			if (candidate) {
+++				args->flags = I915_CRIU_BINDING_LOCAL;
+++				args->address = i915_vma_offset(candidate);
+++			}
+++		} else {
+++			u64 unbound_ordinal = args->cursor - bound_count;
+++			u64 previous_id = 0;
+++			bool have_previous = false;
+++
+++			for (ordinal = 0; ordinal <= unbound_ordinal; ordinal++) {
+++				u64 candidate_id = U64_MAX;
+++
+++				candidate = NULL;
+++				list_for_each_entry(vma, &vm->unbound_list, vm_link) {
+++					u64 object_id = checkpoint_object_id(vma->obj);
+++
+++					if ((!have_previous || object_id > previous_id) &&
+++					    object_id < candidate_id) {
+++						candidate = vma;
+++						candidate_id = object_id;
+++					}
+++				}
+++				if (!candidate)
+++					break;
+++				previous_id = candidate_id;
+++				have_previous = true;
+++			}
+++			if (candidate)
+++				args->flags = I915_CRIU_BINDING_UNBOUND;
 ++		}
 ++		if (candidate) {
-++			args->flags = I915_CRIU_BINDING_LOCAL;
 ++			args->object_id = checkpoint_object_id(candidate->obj);
 ++			args->cursor++;
-++			args->address = candidate_address;
 ++			args->size = candidate->size;
 ++		}
 ++		mutex_unlock(&vm->mutex);
 ++		ret = candidate ? 0 : -ENOENT;
 ++	} else if (args->op == I915_CRIU_BINDING_CREATE) {
+++		unsigned long tracked_index;
+++		struct i915_vma *tracked;
+++		bool local = args->flags == I915_CRIU_BINDING_LOCAL;
+++		bool unbound = args->flags == I915_CRIU_BINDING_UNBOUND;
+++		bool newly_bound = false;
 ++		void *entry;
 ++		u32 handle;
-++		u64 pin_flags;
 ++
-++		if (args->flags != I915_CRIU_BINDING_LOCAL || args->cursor ||
-++		    !args->object_id || !args->size ||
-++		    args->address & ~PIN_OFFSET_MASK ||
-++		    !IS_ALIGNED(args->address, I915_GTT_PAGE_SIZE) ||
-++		    !IS_ALIGNED(args->size, I915_GTT_PAGE_SIZE)) {
+++		if ((!local && !unbound) || args->cursor || !args->object_id ||
+++		    !args->size || !IS_ALIGNED(args->size, I915_GTT_PAGE_SIZE) ||
+++		    (local && (args->address & ~PIN_OFFSET_MASK ||
+++			       !IS_ALIGNED(args->address, I915_GTT_PAGE_SIZE))) ||
+++		    (unbound && args->address)) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -3513,15 +3593,36 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++			ret = PTR_ERR(vma);
 ++			goto put_object;
 ++		}
-++		/* PIN_VALIDATE binds without incrementing the VMA pin count. */
-++		pin_flags = args->address | PIN_OFFSET_FIXED | PIN_USER |
-++			    PIN_NOEVICT | PIN_VALIDATE;
-++		ret = i915_vma_pin(vma, args->size, 0, pin_flags);
-++		if (!ret && (i915_vma_offset(vma) != args->address ||
-++			     vma->size != args->size ||
-++			     !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND)))
+++		xa_for_each(&fpriv->criu_restore_bindings, tracked_index, tracked) {
+++			if (tracked == vma) {
+++				ret = -EEXIST;
+++				goto put_object;
+++			}
+++		}
+++		if (local) {
+++			u64 pin_flags = args->address | PIN_OFFSET_FIXED | PIN_USER |
+++					PIN_NOEVICT | PIN_VALIDATE;
+++
+++			if (i915_vma_is_bound(vma, I915_VMA_BIND_MASK)) {
+++				ret = -EEXIST;
+++				goto put_object;
+++			}
+++			/* PIN_VALIDATE binds without incrementing the pin count. */
+++			ret = i915_vma_pin(vma, args->size, 0, pin_flags);
+++			newly_bound = !ret;
+++			if (!ret && (i915_vma_offset(vma) != args->address ||
+++				     vma->size != args->size ||
+++				     !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND)))
+++				ret = -EIO;
+++		} else if (drm_mm_node_allocated(&vma->node) || vma->guard ||
+++			   vma->size != args->size ||
+++			   vma->gtt_view.type != I915_GTT_VIEW_NORMAL ||
+++			   i915_vma_is_active(vma) || atomic_read(&vma->flags)) {
 ++			ret = -EIO;
-++		if (!args->vm_id && !ret) {
+++		} else {
+++			ret = 0;
+++		}
+++		if (!ret) {
 ++			u32 index;
 ++			int xa_ret;
 ++
@@ -3533,7 +3634,7 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++				ret = xa_ret;
 ++			}
 ++		}
-++		if (!args->vm_id && ret &&
+++		if (ret && newly_bound &&
 ++		    i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
 ++			WARN_ON(i915_vma_unbind(vma));
 ++put_object:
@@ -3766,7 +3867,7 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 + 		return evdev_handle_get_keycode(dev, p);
 + 
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..a806e6392931056eefd31ddf62378e79ed968f47 100644
++index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..acd67e22dab2d7ae01fc72a97a60e760ecd66536 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
@@ -3805,7 +3906,7 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3928,313 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3928,317 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -3827,14 +3928,17 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++ * Version 8 preserves primary/render node role, client capabilities, current
 ++ * DRM master ownership, single-plane linear framebuffers at exact IDs, and
 ++ * user-created KMS property blobs at exact IDs. Atomic property state remains
-++ * a validated userspace image applied through generic DRM atomic ioctls. It
+++ * a validated userspace image applied through generic DRM atomic ioctls.
 ++ * Version 9 adds exact per-VMA mmap-node provenance. Version 10 additionally
-++ * preserves bounded user-selected physical engine maps. It still refuses
-++ * userptr, protected content, virtual/balanced/parallel engines, per-engine
+++ * preserves bounded user-selected physical engine maps. Version 11 preserves
+++ * the implicit default-context VM and its exact local bindings. Version 12
+++ * preserves idle, normal-view unbound VMA identities without creating a GPU
+++ * page-table binding. It still refuses userptr, protected content,
+++ * virtual/balanced/parallel engines, per-engine
 ++ * SSEU overrides, active requests, special VMA views, leases, pending events,
 ++ * unsupported sync_file fence graphs, and unsupported KMS resources.
 ++ */
-++#define I915_CRIU_ABI_VERSION 11
+++#define I915_CRIU_ABI_VERSION 12
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -4100,6 +4204,7 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++#define I915_CRIU_BINDING_CREATE 2
 ++
 ++#define I915_CRIU_BINDING_LOCAL (1u << 0)
+++#define I915_CRIU_BINDING_UNBOUND (1u << 1)
 ++
 ++struct drm_i915_criu_binding {
 ++	__u32 version;
@@ -4110,7 +4215,7 @@ index 0000000000000000000000000000000000000000..d0efbb2e947ea3195a1e1a2cc533bd96
 ++	__u64 object_id;
 ++	/* Zero starts query; incremented on output. Must be zero for create. */
 ++	__u64 cursor;
-++	/* Previous query address on input; exact address on output/create. */
+++	/* Zero on query input; exact bound address or zero if unbound. */
 ++	__u64 address;
 ++	__u64 size;
 ++	__u64 reserved[3];
@@ -4598,10 +4703,10 @@ index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fd
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b35516861f4f
+index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8bef1cdab
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,3200 @@
+@@ -0,0 +1,3218 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -4649,6 +4754,7 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +#define I915_MAX_RESTORE_FILES		32
 +#define I915_MAX_OBJECT_SIZE		(UINT64_C(1) << 30)
 +#define I915_MAX_BLOB_SIZE		(UINT32_C(1) << 20)
++#define I915_GTT_PAGE_SIZE_IMAGE	UINT64_C(4096)
 +
 +struct i915_image_header {
 +	uint64_t magic;
@@ -5567,7 +5673,8 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +
 +	for (size_t vm_index = 0; vm_index < vm_count; vm_index++) {
 +		uint64_t cursor = 0;
-+		uint64_t previous_address = 0;
++		uint32_t previous_flags = 0;
++		uint64_t previous_key = 0;
 +
 +		for (;;) {
 +			struct drm_i915_criu_binding query = {
@@ -5576,9 +5683,9 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +				.cookie = cookie,
 +				.vm_id = vms[vm_index].id,
 +				.cursor = cursor,
-+				.address = previous_address,
 +			};
 +			struct i915_image_binding *grown;
++			uint64_t key;
 +
 +			if (ioctl(fd, DRM_IOCTL_I915_CRIU_BINDING, &query) < 0) {
 +				if (errno == ENOENT)
@@ -5586,9 +5693,14 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +				xfree(bindings);
 +				return -errno;
 +			}
++			key = query.flags == I915_CRIU_BINDING_LOCAL ?
++				query.address : query.object_id;
 +			if (count == I915_MAX_RESTORE_BINDINGS ||
 +			    query.cursor != cursor + 1 ||
-+			    (cursor && query.address <= previous_address)) {
++			    (query.flags != I915_CRIU_BINDING_LOCAL &&
++			     query.flags != I915_CRIU_BINDING_UNBOUND) ||
++			    (cursor && (query.flags < previous_flags ||
++				(query.flags == previous_flags && key <= previous_key)))) {
 +				xfree(bindings);
 +				return -E2BIG;
 +			}
@@ -5607,7 +5719,8 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +				.size = query.size,
 +			};
 +			cursor = query.cursor;
-+			previous_address = query.address;
++			previous_flags = query.flags;
++			previous_key = key;
 +		}
 +	}
 +	*result = bindings;
@@ -6899,8 +7012,8 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +
 +static int restore_binding(int fd, uint64_t cookie,
 +			   const struct i915_image_binding *image,
-+			   uint32_t previous_vm, uint64_t previous_address,
-+			   bool first)
++			   uint32_t previous_vm, uint32_t previous_flags,
++			   uint64_t previous_key, bool first)
 +{
 +	struct drm_i915_criu_binding create = {
 +		.version = I915_CRIU_ABI_VERSION,
@@ -6912,13 +7025,20 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +		.address = image->address,
 +		.size = image->size,
 +	};
++	bool local = image->flags == I915_CRIU_BINDING_LOCAL;
++	bool unbound = image->flags == I915_CRIU_BINDING_UNBOUND;
++	uint64_t key = local ? image->address : image->object_id;
 +	bool object_found = false;
 +
-+	if (!image->object_id || !image->size ||
-+	    image->flags != I915_CRIU_BINDING_LOCAL ||
++	if (!image->object_id || !image->size || (!local && !unbound) ||
++	    image->size % I915_GTT_PAGE_SIZE_IMAGE ||
++	    (local && image->address % I915_GTT_PAGE_SIZE_IMAGE) ||
++	    (unbound && image->address) ||
 +	    (!first && (image->vm_id < previous_vm ||
 +		       (image->vm_id == previous_vm &&
-+			image->address <= previous_address))))
++			(image->flags < previous_flags ||
++			 (image->flags == previous_flags &&
++			  key <= previous_key))))))
 +		return -EINVAL;
 +	for (size_t i = 0; i < restore_object_count; i++) {
 +		if (restore_objects[i].object_id == image->object_id) {
@@ -7231,7 +7351,8 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +	}
 +	{
 +		uint32_t previous_vm = 0;
-+		uint64_t previous_address = 0;
++		uint32_t previous_flags = 0;
++		uint64_t previous_key = 0;
 +
 +		for (uint32_t i = 0; !ret && i < header.binding_count; i++) {
 +			struct i915_image_binding binding;
@@ -7242,16 +7363,18 @@ index 0000000000000000000000000000000000000000..2be96c81d048b5668a0eca549854b355
 +			ret = read_all(image, &binding, sizeof(binding));
 +			if (!ret)
 +				resource_id = binding.object_id;
-+			if (!ret && binding.vm_id != previous_vm)
-+				previous_address = 0;
 +			if (!ret)
 +				ret = restore_binding(fd, cookie, &binding,
 +						      previous_vm,
-+						      previous_address,
++						      previous_flags,
++						      previous_key,
 +						      i == 0);
 +			if (!ret) {
 +				previous_vm = binding.vm_id;
-+				previous_address = binding.address;
++				previous_flags = binding.flags;
++				previous_key = binding.flags ==
++					I915_CRIU_BINDING_LOCAL ?
++					binding.address : binding.object_id;
 +			}
 +		}
 +	}
@@ -8290,10 +8413,10 @@ index 0000000000000000000000000000000000000000..baeb62945c45d2be8df44448df666f09
 +			input_plugin_restore_file)
 diff --git a/test/others/i915-criu/i915-context-sync.c b/test/others/i915-criu/i915-context-sync.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a289e66b7ec
+index 0000000000000000000000000000000000000000..0e3cf312f577b2f6be8df80e47222e7f3c400e76
 --- /dev/null
 +++ b/test/others/i915-criu/i915-context-sync.c
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,480 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -8475,6 +8598,37 @@ index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a28
 +	       "SYNCOBJ_TIMELINE_WAIT");
 +}
 +
++static void create_unbound_vma(int fd, uint32_t context, uint32_t handle,
++			       void *mapping)
++{
++	uint32_t *batch = (uint32_t *)((char *)mapping + OBJECT_SIZE - 8);
++	struct drm_i915_gem_exec_object2 object = {
++		.handle = handle,
++		.offset = 1,
++		.flags = EXEC_OBJECT_PINNED,
++	};
++	struct drm_i915_gem_execbuffer2 execbuf = {
++		.buffers_ptr = (uintptr_t)&object,
++		.buffer_count = 1,
++		.batch_start_offset = OBJECT_SIZE - 8,
++		.batch_len = 8,
++		.flags = I915_EXEC_RENDER,
++		.rsvd1 = context,
++	};
++
++	batch[0] = 0x05000000;
++	batch[1] = 0;
++	errno = 0;
++	if (ioctl(fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf) != -1 ||
++	    errno != EINVAL) {
++		errno = EPROTO;
++		die("EXECBUFFER2 unbound-VMA premise");
++	}
++	fprintf(stderr,
++		"UNBOUND-VMA context=%u handle=%u rejected_address=%#" PRIx64 "\n",
++		context, handle, (uint64_t)object.offset);
++}
++
 +static void submit(int fd, uint32_t context, uint32_t handle, void *mapping,
 +		   uint64_t *gpu_address, bool *gpu_address_valid,
 +		   bool require_exact_address, bool user_engine)
@@ -8531,6 +8685,7 @@ index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a28
 +	bool custom_engine = argc == 2 && !strcmp(argv[1], "--custom-engine");
 +	bool virtual_engine = argc == 2 && !strcmp(argv[1], "--virtual-engine");
 +	bool default_context = argc == 2 && !strcmp(argv[1], "--default-context");
++	bool unbound_vma = argc == 2 && !strcmp(argv[1], "--unbound-vma");
 +	struct drm_i915_gem_vm_control vm = { 0 };
 +	struct drm_i915_gem_context_create context = { 0 };
 +	struct drm_i915_gem_context_param context_vm;
@@ -8549,8 +8704,8 @@ index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a28
 +
 +	if (argc > 2 || (argc == 2 && !sync_only && !idle_context &&
 +				 !callback && !custom_engine && !virtual_engine &&
-+				 !default_context)) {
-+		fprintf(stderr, "usage: %s [--sync-only|--sync-file|--external-sync-file-peer|--idle-context|--callback|--custom-engine|--virtual-engine|--default-context]\n",
++				 !default_context && !unbound_vma)) {
++		fprintf(stderr, "usage: %s [--sync-only|--sync-file|--external-sync-file-peer|--idle-context|--callback|--custom-engine|--virtual-engine|--default-context|--unbound-vma]\n",
 +			argv[0]);
 +		return EXIT_FAILURE;
 +	}
@@ -8692,7 +8847,9 @@ index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a28
 +		}
 +	}
 +	signal_timeline(fd, timeline.handle, TIMELINE_POINT);
-+	if (!idle_context && !sync_only && !callback && !virtual_engine)
++	if (unbound_vma)
++		create_unbound_vma(fd, context.ctx_id, object.handle, mapping);
++	else if (!idle_context && !sync_only && !callback && !virtual_engine)
 +		submit(fd, context.ctx_id, object.handle, mapping, &gpu_address,
 +		       &gpu_address_valid, false, custom_engine);
 +
@@ -8734,6 +8891,8 @@ index 0000000000000000000000000000000000000000..4ebfca8b9d5106ed4e2a16eba1291a28
 +		puts("PASS: idle context, explicit VM, binary syncobj, timeline, and GPU submission");
 +	else if (default_context)
 +		puts("PASS: default context VM, exact GPU address, binary syncobj, timeline, and GPU submission");
++	else if (unbound_vma)
++		puts("PASS: unbound VMA identity restored and accepted new GPU submission");
 +	else
 +		puts("PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission");
 +	return EXIT_SUCCESS;
@@ -9904,10 +10063,10 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +}
 diff --git a/test/others/i915-criu/run-context-sync-criu.sh b/test/others/i915-criu/run-context-sync-criu.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..bb2f4c33d1a0c1640d825bfdd5e3659526f42fc3
+index 0000000000000000000000000000000000000000..1cb51de3e33409116e5b6e65b36fb63e25fb24ea
 --- /dev/null
 +++ b/test/others/i915-criu/run-context-sync-criu.sh
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,253 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -9929,9 +10088,11 @@ index 0000000000000000000000000000000000000000..bb2f4c33d1a0c1640d825bfdd5e36595
 +custom_engine=${I915_CRIU_CUSTOM_ENGINE:-0}
 +virtual_engine=${I915_CRIU_VIRTUAL_ENGINE:-0}
 +default_context=${I915_CRIU_DEFAULT_CONTEXT:-0}
++unbound_vma=${I915_CRIU_UNBOUND_VMA:-0}
 +sync_file=${I915_CRIU_SYNC_FILE:-0}
 +external_sync_file=${I915_CRIU_EXTERNAL_SYNC_FILE:-0}
 +default_vm_fault=${I915_CRIU_DEFAULT_VM_FAULT:-}
++unbound_vma_fault=${I915_CRIU_UNBOUND_VMA_FAULT:-}
 +cc=${CC:-gcc}
 +fixture="$work/i915-context-sync"
 +fixture_source=${FIXTURE:-/tmp/i915-context-sync}
@@ -9962,8 +10123,8 @@ index 0000000000000000000000000000000000000000..bb2f4c33d1a0c1640d825bfdd5e36595
 +
 +fixture_args=()
 +expected_pass='PASS: materialized context, explicit VM, exact GPU address, binary syncobj, timeline, and GPU submission'
-+if (( sync_only + idle_context + callback + custom_engine + virtual_engine + default_context + sync_file + external_sync_file > 1 )); then
-+    echo 'sync-only, sync-file, external-sync-file, idle-context, callback, custom-engine, virtual-engine, and default-context modes are mutually exclusive' >&2
++if (( sync_only + idle_context + callback + custom_engine + virtual_engine + default_context + unbound_vma + sync_file + external_sync_file > 1 )); then
++    echo 'sync-only, sync-file, external-sync-file, idle-context, callback, custom-engine, virtual-engine, default-context, and unbound-VMA modes are mutually exclusive' >&2
 +    exit 2
 +elif [[ $callback == 1 ]]; then
 +    fixture_args+=(--callback)
@@ -9974,6 +10135,9 @@ index 0000000000000000000000000000000000000000..bb2f4c33d1a0c1640d825bfdd5e36595
 +elif [[ $default_context == 1 ]]; then
 +    fixture_args+=(--default-context)
 +    expected_pass='PASS: default context VM, exact GPU address, binary syncobj, timeline, and GPU submission'
++elif [[ $unbound_vma == 1 ]]; then
++    fixture_args+=(--unbound-vma)
++    expected_pass='PASS: unbound VMA identity restored and accepted new GPU submission'
 +elif [[ $sync_file == 1 ]]; then
 +    fixture_args+=(--sync-file)
 +    expected_pass='PASS: binary syncobj, retained sync_file identity, timeline, and GPU submission'
@@ -10081,6 +10245,66 @@ index 0000000000000000000000000000000000000000..bb2f4c33d1a0c1640d825bfdd5e36595
 +        "$images/restore.log"
 +    printf 'PASS: default VM fault mode=%s refused transactionally (status=%s)\n' \
 +        "$default_vm_fault" "$restore_status"
++    exit 0
++fi
++if [[ -n $unbound_vma_fault ]]; then
++    i915_images=("$images"/i915-criu-*.img)
++    if [[ $unbound_vma != 1 || ${#i915_images[@]} != 1 ]]; then
++        echo 'unbound-VMA fault injection requires one unbound-VMA i915 image' >&2
++        exit 2
++    fi
++    image=${i915_images[0]}
++    object_count=$(od -An -tu4 -j 16 -N 4 "$image" | tr -d ' ')
++    syncobj_count=$(od -An -tu4 -j 20 -N 4 "$image" | tr -d ' ')
++    vm_count=$(od -An -tu4 -j 24 -N 4 "$image" | tr -d ' ')
++    context_count=$(od -An -tu4 -j 28 -N 4 "$image" | tr -d ' ')
++    binding_count=$(od -An -tu4 -j 32 -N 4 "$image" | tr -d ' ')
++    framebuffer_count=$(od -An -tu4 -j 36 -N 4 "$image" | tr -d ' ')
++    blob_count=$(od -An -tu4 -j 40 -N 4 "$image" | tr -d ' ')
++    kms_count=$(od -An -tu4 -j 44 -N 4 "$image" | tr -d ' ')
++    mapping_count=$(od -An -tu4 -j 64 -N 4 "$image" | tr -d ' ')
++    binding_offset=72
++    for _ in $(seq 1 "$object_count"); do
++        object_size=$(od -An -tu8 -j $((binding_offset + 8)) -N 8 "$image" | tr -d ' ')
++        binding_offset=$((binding_offset + 48 + object_size))
++    done
++    binding_offset=$((binding_offset + mapping_count * 32 + syncobj_count * 16 +
++        vm_count * 280 + context_count * 280))
++    if [[ $binding_count != 1 || $framebuffer_count != 0 ||
++          $blob_count != 0 || $kms_count != 0 ||
++          $(od -An -tu4 -j $((binding_offset + 4)) -N 4 "$image" | tr -d ' ') != 2 ]]; then
++        echo 'image does not contain the expected sole unbound VMA record' >&2
++        exit 1
++    fi
++    case $unbound_vma_fault in
++        address)
++            printf '\000\020\000\000\000\000\000\000' | dd of="$image" bs=1 \
++                seek=$((binding_offset + 16)) conv=notrunc status=none
++            ;;
++        duplicate)
++            dd if="$image" bs=1 skip="$binding_offset" count=32 status=none \
++                >>"$image"
++            printf '\002\000\000\000' | dd of="$image" bs=1 \
++                seek=32 conv=notrunc status=none
++            ;;
++        *)
++            echo "unknown unbound VMA fault: $unbound_vma_fault" >&2
++            exit 2
++            ;;
++    esac
++    set +e
++    "$criu" restore -D "$images" --shell-job --restore-detached \
++        "${plugin_args[@]}" --log-file restore.log -v4
++    restore_status=$?
++    set -e
++    if (( restore_status == 0 || restore_status >= 128 )); then
++        echo "unbound VMA fault did not fail safely: mode=$unbound_vma_fault status=$restore_status" >&2
++        exit 1
++    fi
++    grep -Eq 'Restoring FAILED|Failed to prepare restore plugins' \
++        "$images/restore.log"
++    printf 'PASS: unbound VMA fault mode=%s refused transactionally (status=%s)\n' \
++        "$unbound_vma_fault" "$restore_status"
 +    exit 0
 +fi
 +"$criu" restore -D "$images" --shell-job --restore-detached \
@@ -10437,10 +10661,10 @@ index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..a49c3581b41bb1e85f2b38c14d81da64366e941a
+index 0000000000000000000000000000000000000000..3da5d88641e5834ffe05e0efc011c51075f84766
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,291 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -10669,6 +10893,20 @@ index 0000000000000000000000000000000000000000..a49c3581b41bb1e85f2b38c14d81da64
 +    I915_CRIU_DEFAULT_VM_FAULT=duplicate-binding \
 +    I915_CRIU_TEST_DIR="$suite/default-vm-rollback-refusal" \
 +    "$scripts/run-context-sync-criu.sh"
++run_case unbound-vma env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_UNBOUND_VMA=1 I915_CRIU_TEST_DIR="$suite/unbound-vma" \
++    "$scripts/run-context-sync-criu.sh"
++run_case unbound-vma-corruption-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_UNBOUND_VMA=1 I915_CRIU_UNBOUND_VMA_FAULT=address \
++    I915_CRIU_TEST_DIR="$suite/unbound-vma-corruption-refusal" \
++    "$scripts/run-context-sync-criu.sh"
++run_case unbound-vma-rollback-refusal env "${common[@]}" \
++    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
++    I915_CRIU_UNBOUND_VMA=1 I915_CRIU_UNBOUND_VMA_FAULT=duplicate \
++    I915_CRIU_TEST_DIR="$suite/unbound-vma-rollback-refusal" \
++    "$scripts/run-context-sync-criu.sh"
 +run_case custom-engine-context env "${common[@]}" \
 +    FIXTURE="$context_fixture" I915_CRIU_EXPECT_UNSUPPORTED=0 \
 +    I915_CRIU_CUSTOM_ENGINE=1 \
@@ -10711,7 +10949,8 @@ index 0000000000000000000000000000000000000000..a49c3581b41bb1e85f2b38c14d81da64
 +      "idle-context-vm","sync-callback-refusal",
 +      "context-vm-binding","default-context-vm",
 +      "default-vm-corruption-refusal","default-vm-rollback-refusal",
-+      "custom-engine-context",
++      "unbound-vma","unbound-vma-corruption-refusal",
++      "unbound-vma-rollback-refusal","custom-engine-context",
 +      "virtual-engine-refusal","physical-kms",
 +      "kms-role-corruption-refusal","kms-count-corruption-refusal",
 +      "kms-mapping-corruption-refusal","kms-device-mismatch-refusal",
