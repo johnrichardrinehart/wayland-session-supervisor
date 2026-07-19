@@ -1,9 +1,9 @@
 diff --git a/Documentation/i915-checkpoint-contract.md b/Documentation/i915-checkpoint-contract.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0c4b40ab3648740b52beba25854742240c13197
+index 0000000000000000000000000000000000000000..d92059894e0c07ab5b87dd0128ae4373b3e4b2a2
 --- /dev/null
 +++ b/Documentation/i915-checkpoint-contract.md
-@@ -0,0 +1,833 @@
+@@ -0,0 +1,855 @@
 +# i915 checkpoint/restore capability map and contract
 +
 +## Scope and target
@@ -827,6 +827,28 @@ index 0000000000000000000000000000000000000000..d0c4b40ab3648740b52beba258547422
 +restored graph. The hierarchy adds a deterministic failed-pinned-placement
 +fixture, post-restore submission, nonzero-address corruption, and duplicate
 +unbound-record rollback, expanding the physical suite from 22 to 25 cases.
++The source-authenticated ABI-12 hierarchy passed all 25 cases at
++`/var/tmp/i915-criu-physical-abi12-20260719T000633Z` on boot
++`3a185e8e-92a2-4d27-b55e-43eae1a25875`.
++
++Physical Niri then passed session, object, mapping, synchronization, VM,
++context, and bound/unbound VMA collection before refusing its first
++framebuffer at `/var/tmp/wss-physical-niri-admission-20260719T001011Z`.
++Unlike the existing dumb-buffer fixture, Niri allocates scanout through GBM
++with explicit i915 modifiers. ABI and image version 13 admit only the bounded
++one-plane local subset: XRGB8888, zero offset, shmem backing, no import or
++userptr, legacy object tiling `NONE`, and modifiers linear, i915 X-tiled, or
++i915 Y-tiled. Raw GEM bytes and the exact framebuffer modifier and pitch are
++preserved; restore sets `DRM_MODE_FB_MODIFIERS` for tiled records and continues
++to reject CCS, compression, multiple planes, nonzero offsets, legacy object
++tiling/stride, and other formats or modifiers.
++
++The framebuffer ioctl keeps its size while adding output diagnostics for plane
++count, object tiling/stride, and a structured layout/modifier/object/tiling/
++format failure reason. The plugin emits those fields on refusal. X- and
++Y-tiled physical KMS fixtures each require exact IDs, raw contents, active
++atomic scanout, and a new post-restore page flip, increasing the hierarchy to
++27 cases before another Niri admission is accepted as evidence.
 +
 +## Privileged evidence policy
 +
@@ -926,10 +948,10 @@ index 70c607ec6cb5f9f7c98bccea470529acf9901b00..7ed28832990279b3714c54bbd6e75940
  .PHONY: uninstall
 diff --git a/contrib/i915-criu/i915_criu_uapi.h b/contrib/i915-criu/i915_criu_uapi.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df4bf4515c
+index 0000000000000000000000000000000000000000..222130e081754fe019a5fcbc696777e80caa3098
 --- /dev/null
 +++ b/contrib/i915-criu/i915_criu_uapi.h
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,281 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef I915_CRIU_UAPI_H
 +#define I915_CRIU_UAPI_H
@@ -938,7 +960,7 @@ index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df
 +#include <sys/ioctl.h>
 +#include <drm/i915_drm.h>
 +
-+#define I915_CRIU_ABI_VERSION 12
++#define I915_CRIU_ABI_VERSION 13
 +#define I915_CRIU_SESSION_DUMP_BEGIN 1
 +#define I915_CRIU_SESSION_RESTORE_BEGIN 2
 +#define I915_CRIU_SESSION_COMMIT 3
@@ -1004,7 +1026,16 @@ index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df
 +#define I915_CRIU_FILE_WRITEBACK_CONNECTORS (1u << 8)
 +#define I915_CRIU_FRAMEBUFFER_QUERY 1
 +#define I915_CRIU_FRAMEBUFFER_CREATE 2
-+#define I915_CRIU_FRAMEBUFFER_LINEAR (1u << 0)
++#define I915_CRIU_FRAMEBUFFER_LINEAR  (1u << 0)
++#define I915_CRIU_FRAMEBUFFER_X_TILED (1u << 1)
++#define I915_CRIU_FRAMEBUFFER_Y_TILED (1u << 2)
++
++#define I915_CRIU_FRAMEBUFFER_FAILURE_NONE       0
++#define I915_CRIU_FRAMEBUFFER_FAILURE_LAYOUT     1
++#define I915_CRIU_FRAMEBUFFER_FAILURE_MODIFIER   2
++#define I915_CRIU_FRAMEBUFFER_FAILURE_OBJECT     3
++#define I915_CRIU_FRAMEBUFFER_FAILURE_TILING     4
++#define I915_CRIU_FRAMEBUFFER_FAILURE_FORMAT     5
 +#define I915_CRIU_BLOB_QUERY 1
 +#define I915_CRIU_BLOB_CREATE 2
 +#define I915_CRIU_BLOB_READ 3
@@ -1126,9 +1157,13 @@ index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df
 +	uint32_t pixel_format;
 +	uint32_t pitch;
 +	uint32_t offset;
-+	uint32_t pad;
++	uint32_t num_planes;
 +	uint64_t modifier;
-+	uint64_t reserved[3];
++	uint32_t object_tiling;
++	uint32_t object_stride;
++	uint32_t failure_reason;
++	uint32_t pad;
++	uint64_t reserved;
 +};
 +
 +struct drm_i915_criu_blob {
@@ -1200,10 +1235,10 @@ index 0000000000000000000000000000000000000000..9bfbecaa88b791abe0bdad2203c442df
 +#endif
 diff --git a/contrib/i915-criu/linux-7.1.3-i915-criu.patch b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05074439cd
+index 0000000000000000000000000000000000000000..67238ba2295bf787a36ba9eb46a81872c49c6191
 --- /dev/null
 +++ b/contrib/i915-criu/linux-7.1.3-i915-criu.patch
-@@ -0,0 +1,3073 @@
+@@ -0,0 +1,3151 @@
 +diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
 +index b677720a1c2dba721fcc910a83643996d2ad3299..05bde40d88ee17f8112cea1d9143d4c96c45f703 100644
 +--- a/drivers/gpu/drm/i915/Makefile
@@ -1265,10 +1300,10 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 + 		 * @vma.lock: protect the list/tree of vmas
 +diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
 +new file mode 100644
-+index 0000000000000000000000000000000000000000..60ec69fcf8f664a297d4754b557b47ef70b45e23
++index 0000000000000000000000000000000000000000..165291c3510b047155f1434c7e0e9c1fa865f4e6
 +--- /dev/null
 ++++ b/drivers/gpu/drm/i915/i915_criu.c
-+@@ -0,0 +1,2377 @@
++@@ -0,0 +1,2437 @@
 ++// SPDX-License-Identifier: MIT
 ++/* Experimental i915 checkpoint/restore transaction, ABI version 11. */
 ++
@@ -2798,6 +2833,20 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++	return found;
 ++}
 ++
+++static u32 checkpoint_framebuffer_flag(u64 modifier)
+++{
+++	switch (modifier) {
+++	case DRM_FORMAT_MOD_LINEAR:
+++		return I915_CRIU_FRAMEBUFFER_LINEAR;
+++	case I915_FORMAT_MOD_X_TILED:
+++		return I915_CRIU_FRAMEBUFFER_X_TILED;
+++	case I915_FORMAT_MOD_Y_TILED:
+++		return I915_CRIU_FRAMEBUFFER_Y_TILED;
+++	default:
+++		return 0;
+++	}
+++}
+++
 ++int i915_criu_framebuffer_ioctl(struct drm_device *dev, void *data,
 ++				struct drm_file *file)
 ++{
@@ -2806,8 +2855,8 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++	struct drm_framebuffer *fb;
 ++	int ret;
 ++
-++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
-++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
+++	if (args->version != I915_CRIU_ABI_VERSION || args->failure_reason ||
+++	    args->pad || args->reserved)
 ++		return -EINVAL;
 ++
 ++	mutex_lock(&fpriv->criu_lock);
@@ -2816,7 +2865,8 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++
 ++		if (args->flags || args->object_id || args->width ||
 ++		    args->height || args->pixel_format || args->pitch ||
-++		    args->offset || args->modifier) {
+++		    args->offset || args->num_planes || args->modifier ||
+++		    args->object_tiling || args->object_stride) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2828,26 +2878,54 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++			ret = -ENOENT;
 ++			goto out;
 ++		}
+++		args->id = fb->base.id;
+++		args->width = fb->width;
+++		args->height = fb->height;
+++		args->num_planes = fb->format ? fb->format->num_planes : 0;
+++		args->pixel_format = fb->format ? fb->format->format : 0;
+++		args->pitch = fb->pitches[0];
+++		args->offset = fb->offsets[0];
+++		args->modifier = fb->modifier;
 ++		if (!fb->format || fb->format->num_planes != 1 || !fb->obj[0] ||
-++		    fb->modifier != DRM_FORMAT_MOD_LINEAR || fb->offsets[0]) {
+++		    fb->offsets[0]) {
+++			args->failure_reason =
+++				I915_CRIU_FRAMEBUFFER_FAILURE_LAYOUT;
+++			ret = -EOPNOTSUPP;
+++			goto put_fb;
+++		}
+++		args->flags = checkpoint_framebuffer_flag(fb->modifier);
+++		if (!args->flags) {
+++			args->failure_reason =
+++				I915_CRIU_FRAMEBUFFER_FAILURE_MODIFIER;
+++			ret = -EOPNOTSUPP;
+++			goto put_fb;
+++		}
+++		if (fb->format->format != DRM_FORMAT_XRGB8888) {
+++			args->failure_reason =
+++				I915_CRIU_FRAMEBUFFER_FAILURE_FORMAT;
 ++			ret = -EOPNOTSUPP;
 ++			goto put_fb;
 ++		}
 ++		obj = to_intel_bo(fb->obj[0]);
+++		args->object_id = checkpoint_object_id(obj);
+++		i915_gem_object_lock(obj, NULL);
+++		args->object_tiling = i915_gem_object_get_tiling(obj);
+++		args->object_stride = i915_gem_object_get_stride(obj);
+++		i915_gem_object_unlock(obj);
 ++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
 ++		    i915_gem_object_is_userptr(obj)) {
+++			args->failure_reason =
+++				I915_CRIU_FRAMEBUFFER_FAILURE_OBJECT;
 ++			ret = -EOPNOTSUPP;
 ++			goto put_fb;
 ++		}
-++		args->id = fb->base.id;
-++		args->flags = I915_CRIU_FRAMEBUFFER_LINEAR;
-++		args->object_id = checkpoint_object_id(obj);
-++		args->width = fb->width;
-++		args->height = fb->height;
-++		args->pixel_format = fb->format->format;
-++		args->pitch = fb->pitches[0];
-++		args->offset = fb->offsets[0];
-++		args->modifier = fb->modifier;
+++		if (args->object_tiling != I915_TILING_NONE ||
+++		    args->object_stride) {
+++			args->failure_reason =
+++				I915_CRIU_FRAMEBUFFER_FAILURE_TILING;
+++			ret = -EOPNOTSUPP;
+++			goto put_fb;
+++		}
 ++		ret = 0;
 ++put_fb:
 ++		drm_framebuffer_put(fb);
@@ -2855,6 +2933,8 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++		const struct drm_format_info *info;
 ++		struct drm_mode_fb_cmd2 command = {
 ++			.fb_id = 0,
+++			.flags = args->modifier == DRM_FORMAT_MOD_LINEAR ?
+++				0 : DRM_MODE_FB_MODIFIERS,
 ++			.width = args->width,
 ++			.height = args->height,
 ++			.pixel_format = args->pixel_format,
@@ -2862,6 +2942,7 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++			.offsets = { args->offset },
 ++			.modifier = { args->modifier },
 ++		};
+++		struct drm_i915_gem_object *obj;
 ++		void *entry;
 ++		u32 handle;
 ++
@@ -2873,10 +2954,12 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++			ret = -EOPNOTSUPP;
 ++			goto out;
 ++		}
-++		if (!args->id || args->flags != I915_CRIU_FRAMEBUFFER_LINEAR ||
-++		    !args->object_id || !args->width || !args->height ||
+++		if (!args->id ||
+++		    args->flags != checkpoint_framebuffer_flag(args->modifier) ||
+++		    !args->flags || !args->object_id || !args->width ||
+++		    !args->height || args->num_planes != 1 ||
 ++		    args->pixel_format != DRM_FORMAT_XRGB8888 || !args->pitch ||
-++		    args->offset || args->modifier != DRM_FORMAT_MOD_LINEAR) {
+++		    args->offset || args->object_tiling || args->object_stride) {
 ++			ret = -EINVAL;
 ++			goto out;
 ++		}
@@ -2886,6 +2969,18 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++			goto out;
 ++		}
 ++		handle = xa_to_value(entry);
+++		obj = i915_gem_object_lookup(file, handle);
+++		if (!obj) {
+++			ret = -ENOENT;
+++			goto out;
+++		}
+++		i915_gem_object_lock(obj, NULL);
+++		ret = i915_gem_object_get_tiling(obj) != I915_TILING_NONE ||
+++		      i915_gem_object_get_stride(obj) ? -EOPNOTSUPP : 0;
+++		i915_gem_object_unlock(obj);
+++		i915_gem_object_put(obj);
+++		if (ret)
+++			goto out;
 ++		command.handles[0] = handle;
 ++		if (command.width < dev->mode_config.min_width ||
 ++		    command.width > dev->mode_config.max_width ||
@@ -3867,7 +3962,7 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 + 		return evdev_handle_get_keycode(dev, p);
 + 
 +diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
-+index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..acd67e22dab2d7ae01fc72a97a60e760ecd66536 100644
++index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..2a31e46e1188c4110d3268122595cce5d1ccfb54 100644
 +--- a/include/uapi/drm/i915_drm.h
 ++++ b/include/uapi/drm/i915_drm.h
 +@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
@@ -3906,7 +4001,7 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 + #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
 + #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
 + #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
-+@@ -3906,6 +3928,317 @@ struct drm_i915_gem_create_ext_set_pat {
++@@ -3906,6 +3928,335 @@ struct drm_i915_gem_create_ext_set_pat {
 + 	__u32 rsvd;
 + };
 + 
@@ -3933,12 +4028,14 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++ * preserves bounded user-selected physical engine maps. Version 11 preserves
 ++ * the implicit default-context VM and its exact local bindings. Version 12
 ++ * preserves idle, normal-view unbound VMA identities without creating a GPU
-++ * page-table binding. It still refuses userptr, protected content,
-++ * virtual/balanced/parallel engines, per-engine
+++ * page-table binding. Version 13 preserves one-plane X/Y-tiled local i915
+++ * framebuffers while retaining their exact modifier and raw GEM contents. It
+++ * still refuses userptr, protected content, virtual/balanced/parallel engines,
+++ * per-engine
 ++ * SSEU overrides, active requests, special VMA views, leases, pending events,
 ++ * unsupported sync_file fence graphs, and unsupported KMS resources.
 ++ */
-++#define I915_CRIU_ABI_VERSION 12
+++#define I915_CRIU_ABI_VERSION 13
 ++
 ++#define I915_CRIU_SESSION_DUMP_BEGIN    1
 ++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
@@ -4129,7 +4226,16 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++#define I915_CRIU_FRAMEBUFFER_QUERY  1
 ++#define I915_CRIU_FRAMEBUFFER_CREATE 2
 ++
-++#define I915_CRIU_FRAMEBUFFER_LINEAR (1u << 0)
+++#define I915_CRIU_FRAMEBUFFER_LINEAR  (1u << 0)
+++#define I915_CRIU_FRAMEBUFFER_X_TILED (1u << 1)
+++#define I915_CRIU_FRAMEBUFFER_Y_TILED (1u << 2)
+++
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_NONE       0
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_LAYOUT     1
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_MODIFIER   2
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_OBJECT     3
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_TILING     4
+++#define I915_CRIU_FRAMEBUFFER_FAILURE_FORMAT     5
 ++
 ++struct drm_i915_criu_framebuffer {
 ++	__u32 version;
@@ -4144,9 +4250,16 @@ index 0000000000000000000000000000000000000000..4903f824dcfe11e4ea3a32465588bf05
 ++	__u32 pixel_format;
 ++	__u32 pitch;
 ++	__u32 offset;
-++	__u32 pad;
+++	/* QUERY output; CREATE must be exactly one. */
+++	__u32 num_planes;
 ++	__u64 modifier;
-++	__u64 reserved[3];
+++	/* QUERY diagnostics; CREATE requires NONE tiling and zero stride. */
+++	__u32 object_tiling;
+++	__u32 object_stride;
+++	/* Output diagnostic retained when QUERY returns an error. */
+++	__u32 failure_reason;
+++	__u32 pad;
+++	__u64 reserved;
 ++};
 ++
 ++#define I915_CRIU_BLOB_QUERY  1
@@ -4703,10 +4816,10 @@ index 0000000000000000000000000000000000000000..92ad72dde40ef3e13ee5fe303d7780fd
 +.PHONY: all clean install
 diff --git a/plugins/i915/i915_plugin.c b/plugins/i915/i915_plugin.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8bef1cdab
+index 0000000000000000000000000000000000000000..9fe68f5487ca1292638f5e8330a2c50e43c30510
 --- /dev/null
 +++ b/plugins/i915/i915_plugin.c
-@@ -0,0 +1,3218 @@
+@@ -0,0 +1,3249 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#include <dirent.h>
 +#include <errno.h>
@@ -4860,9 +4973,12 @@ index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8
 +	uint32_t pixel_format;
 +	uint32_t pitch;
 +	uint32_t offset;
-+	uint32_t pad;
++	uint32_t num_planes;
 +	uint64_t modifier;
 +};
++
++_Static_assert(sizeof(struct i915_image_framebuffer) == 48,
++	       "i915 framebuffer image layout changed");
 +
 +struct i915_image_blob {
 +	uint32_t id;
@@ -5765,6 +5881,20 @@ index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8
 +	return 0;
 +}
 +
++static uint32_t image_framebuffer_flag(uint64_t modifier)
++{
++	switch (modifier) {
++	case DRM_FORMAT_MOD_LINEAR:
++		return I915_CRIU_FRAMEBUFFER_LINEAR;
++	case I915_FORMAT_MOD_X_TILED:
++		return I915_CRIU_FRAMEBUFFER_X_TILED;
++	case I915_FORMAT_MOD_Y_TILED:
++		return I915_CRIU_FRAMEBUFFER_Y_TILED;
++	default:
++		return 0;
++	}
++}
++
 +static int collect_dump_framebuffers(int fd, uint64_t cookie,
 +				     struct i915_image_framebuffer **result,
 +				     size_t *result_count)
@@ -5783,12 +5913,23 @@ index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8
 +		struct i915_image_framebuffer *grown;
 +
 +		if (ioctl(fd, DRM_IOCTL_I915_CRIU_FRAMEBUFFER, &query) < 0) {
++			int ret = -errno;
++
 +			if (errno == ENOENT)
 +				break;
++			pr_err("i915 framebuffer id=%u reason=%u planes=%u format=%#x modifier=%#" PRIx64 " pitch=%u offset=%u object=%#" PRIx64 " tiling=%u stride=%u failed: %d\n",
++			       query.id, query.failure_reason, query.num_planes,
++			       query.pixel_format, query.modifier, query.pitch,
++			       query.offset, query.object_id, query.object_tiling,
++			       query.object_stride, ret);
 +			xfree(framebuffers);
-+			return -errno;
++			return ret;
 +		}
-+		if (count == I915_MAX_RESTORE_FRAMEBUFFERS || query.id <= cursor) {
++		if (count == I915_MAX_RESTORE_FRAMEBUFFERS || query.id <= cursor ||
++		    query.flags != image_framebuffer_flag(query.modifier) ||
++		    !query.flags || query.num_planes != 1 ||
++		    query.object_tiling || query.object_stride ||
++		    query.failure_reason) {
 +			xfree(framebuffers);
 +			return -E2BIG;
 +		}
@@ -5808,6 +5949,7 @@ index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8
 +			.pixel_format = query.pixel_format,
 +			.pitch = query.pitch,
 +			.offset = query.offset,
++			.num_planes = query.num_planes,
 +			.modifier = query.modifier,
 +		};
 +		cursor = query.id;
@@ -7069,14 +7211,16 @@ index 0000000000000000000000000000000000000000..9a519b422937e7e58bf15be2706074b8
 +		.pixel_format = image->pixel_format,
 +		.pitch = image->pitch,
 +		.offset = image->offset,
++		.num_planes = image->num_planes,
 +		.modifier = image->modifier,
 +	};
 +
 +	if (!image->id || image->id <= previous_id ||
-+	    image->flags != I915_CRIU_FRAMEBUFFER_LINEAR ||
-+	    !image->object_id || !image->width || !image->height ||
++	    image->flags != image_framebuffer_flag(image->modifier) ||
++	    !image->flags || !image->object_id || !image->width ||
++	    !image->height || image->num_planes != 1 ||
 +	    image->pixel_format != DRM_FORMAT_XRGB8888 || !image->pitch ||
-+	    image->offset || image->pad || image->modifier != DRM_FORMAT_MOD_LINEAR)
++	    image->offset)
 +		return -EINVAL;
 +	if (ioctl(fd, DRM_IOCTL_I915_CRIU_FRAMEBUFFER, &create) < 0)
 +		return -errno;
@@ -9498,10 +9642,10 @@ index 0000000000000000000000000000000000000000..dfd0160de122e8950d44be9da30ffd06
 +}
 diff --git a/test/others/i915-criu/i915-kms-atomic.c b/test/others/i915-criu/i915-kms-atomic.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f81e4b9fa
+index 0000000000000000000000000000000000000000..492b15027bfc712890b00191fc31147f43601051
 --- /dev/null
 +++ b/test/others/i915-criu/i915-kms-atomic.c
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,607 @@
 +// SPDX-License-Identifier: GPL-2.0
 +#define _GNU_SOURCE
 +#include <errno.h>
@@ -9531,6 +9675,7 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +	uint32_t pitch;
 +	uint64_t size;
 +	uint32_t fb_id;
++	uint64_t modifier;
 +	uint32_t *mapping;
 +};
 +
@@ -9804,37 +9949,76 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +	}
 +}
 +
-+static void create_dumb_buffer(int fd, uint32_t width, uint32_t height,
-+			       uint32_t phase, struct dumb_buffer *buffer)
++static uint64_t align_u64(uint64_t value, uint64_t alignment)
 +{
-+	struct drm_mode_create_dumb create = {
-+		.width = width,
-+		.height = height,
-+		.bpp = 32,
-+	};
-+	struct drm_mode_map_dumb map = { 0 };
++	return (value + alignment - 1) & ~(alignment - 1);
++}
++
++static void create_buffer(int fd, uint32_t width, uint32_t height,
++			  uint32_t phase, uint64_t modifier,
++			  struct dumb_buffer *buffer)
++{
 +	uint32_t handles[4] = { 0 };
 +	uint32_t pitches[4] = { 0 };
 +	uint32_t offsets[4] = { 0 };
++	uint64_t modifiers[4] = { modifier };
 +
-+	if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
-+		die("DRM_IOCTL_MODE_CREATE_DUMB");
-+	buffer->handle = create.handle;
-+	buffer->pitch = create.pitch;
-+	buffer->size = create.size;
-+	map.handle = create.handle;
-+	if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
-+		die("DRM_IOCTL_MODE_MAP_DUMB");
-+	buffer->mapping = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
-+			       MAP_SHARED, fd, map.offset);
++	buffer->modifier = modifier;
++	if (modifier == DRM_FORMAT_MOD_LINEAR) {
++		struct drm_mode_create_dumb create = {
++			.width = width,
++			.height = height,
++			.bpp = 32,
++		};
++		struct drm_mode_map_dumb map = { 0 };
++
++		if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
++			die("DRM_IOCTL_MODE_CREATE_DUMB");
++		buffer->handle = create.handle;
++		buffer->pitch = create.pitch;
++		buffer->size = create.size;
++		map.handle = create.handle;
++		if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
++			die("DRM_IOCTL_MODE_MAP_DUMB");
++		buffer->mapping = mmap(NULL, create.size,
++				       PROT_READ | PROT_WRITE, MAP_SHARED,
++				       fd, map.offset);
++	} else {
++		struct drm_i915_gem_create create = {
++			.size = align_u64(align_u64((uint64_t)width * 4, 512) *
++					 align_u64(height, 32), 4096),
++		};
++		struct drm_i915_gem_mmap_offset map = {
++			.flags = I915_MMAP_OFFSET_WB,
++		};
++
++		if (ioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &create) < 0)
++			die("tiled GEM_CREATE");
++		buffer->handle = create.handle;
++		buffer->pitch = align_u64((uint64_t)width * 4, 512);
++		buffer->size = create.size;
++		map.handle = create.handle;
++		if (ioctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &map) < 0)
++			die("tiled GEM_MMAP_OFFSET");
++		buffer->mapping = mmap(NULL, create.size,
++				       PROT_READ | PROT_WRITE, MAP_SHARED,
++				       fd, map.offset);
++	}
 +	if (buffer->mapping == MAP_FAILED)
-+		die("mmap dumb buffer");
++		die("mmap framebuffer buffer");
 +	fill_buffer(buffer, width, height, phase);
-+	handles[0] = create.handle;
-+	pitches[0] = create.pitch;
-+	if (drmModeAddFB2(fd, width, height, DRM_FORMAT_XRGB8888,
-+			  handles, pitches, offsets, &buffer->fb_id, 0))
-+		die("drmModeAddFB2");
++	handles[0] = buffer->handle;
++	pitches[0] = buffer->pitch;
++	if (modifier == DRM_FORMAT_MOD_LINEAR) {
++		if (drmModeAddFB2(fd, width, height, DRM_FORMAT_XRGB8888,
++				  handles, pitches, offsets, &buffer->fb_id, 0))
++			die("drmModeAddFB2");
++	} else if (drmModeAddFB2WithModifiers(
++			   fd, width, height, DRM_FORMAT_XRGB8888,
++			   handles, pitches, offsets, modifiers,
++			   &buffer->fb_id, DRM_MODE_FB_MODIFIERS)) {
++		die("drmModeAddFB2WithModifiers");
++	}
 +}
 +
 +static struct kms_properties get_properties(int fd, uint32_t connector_id,
@@ -9928,7 +10112,7 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +		die("drmModeGetFB2");
 +	if (fb->fb_id != buffer->fb_id || fb->width != width ||
 +	    fb->height != height || fb->pixel_format != DRM_FORMAT_XRGB8888 ||
-+	    fb->pitches[0] != buffer->pitch)
++	    fb->pitches[0] != buffer->pitch || fb->modifier != buffer->modifier)
 +		fail("restored framebuffer metadata differs");
 +	for (unsigned int i = 0; i < 4; i++) {
 +		if (!fb->handles[i])
@@ -9980,10 +10164,16 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +{
 +	struct sigaction action = { .sa_handler = on_signal };
 +
++	uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
++
 +	if (argc == 2 && !strcmp(argv[1], "--reset-load"))
 +		return run_reset_load();
-+	if (argc != 1)
-+		fail("usage: i915-kms-atomic [--reset-load]");
++	if (argc == 2 && !strcmp(argv[1], "--x-tiled"))
++		modifier = I915_FORMAT_MOD_X_TILED;
++	else if (argc == 2 && !strcmp(argv[1], "--y-tiled"))
++		modifier = I915_FORMAT_MOD_Y_TILED;
++	else if (argc != 1)
++		fail("usage: i915-kms-atomic [--reset-load|--x-tiled|--y-tiled]");
 +	struct dumb_buffer buffers[2] = { 0 };
 +	struct kms_properties properties;
 +	drmModeResPtr resources;
@@ -10021,8 +10211,10 @@ index 0000000000000000000000000000000000000000..bde2e8706cf92d460f8f49917db22d5f
 +					      sizeof(reservation_data),
 +					      &reservations[i]))
 +			die("drmModeCreatePropertyBlob reservation");
-+	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 1, &buffers[0]);
-+	create_dumb_buffer(fd, mode.hdisplay, mode.vdisplay, 2, &buffers[1]);
++	create_buffer(fd, mode.hdisplay, mode.vdisplay, 1, modifier,
++		      &buffers[0]);
++	create_buffer(fd, mode.hdisplay, mode.vdisplay, 2, modifier,
++		      &buffers[1]);
 +	if (drmModeCreatePropertyBlob(fd, &mode, sizeof(mode), &mode_blob))
 +		die("drmModeCreatePropertyBlob");
 +	commit_initial_state(fd, connector_id, crtc_id, plane_id, &properties,
@@ -10322,10 +10514,10 @@ index 0000000000000000000000000000000000000000..1cb51de3e33409116e5b6e65b36fb63e
 +    "$original_pid" "$original_address"
 diff --git a/test/others/i915-criu/run-kms-criu.sh b/test/others/i915-criu/run-kms-criu.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..3ab28c747abec3713fe566164bffc1ab3cd2f132
+index 0000000000000000000000000000000000000000..ca9efa32dcaa2865db71394336bb43bdc5914894
 --- /dev/null
 +++ b/test/others/i915-criu/run-kms-criu.sh
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,215 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -10348,6 +10540,7 @@ index 0000000000000000000000000000000000000000..3ab28c747abec3713fe566164bffc1ab
 +log="$work/fixture.log"
 +corrupt_mode=${I915_CRIU_KMS_CORRUPT_MODE:-}
 +reset_fault=${I915_CRIU_KMS_RESET_FAULT:-0}
++modifier=${I915_CRIU_KMS_MODIFIER:-linear}
 +expected='PASS: exact DRM master, blob/framebuffer IDs, atomic scanout, contents, and post-restore page flip'
 +
 +cleanup() {
@@ -10375,7 +10568,14 @@ index 0000000000000000000000000000000000000000..3ab28c747abec3713fe566164bffc1ab
 +    exit 2
 +fi
 +
-+"$fixture" >"$log" 2>&1 &
++case $modifier in
++    linear) fixture_args=() ;;
++    x-tiled) fixture_args=(--x-tiled) ;;
++    y-tiled) fixture_args=(--y-tiled) ;;
++    *) echo "unknown KMS modifier: $modifier" >&2; exit 2 ;;
++esac
++
++"$fixture" "${fixture_args[@]}" >"$log" 2>&1 &
 +fixture_pid=$!
 +for _ in $(seq 1 200); do
 +    grep -q '^READY ' "$log" && break
@@ -10661,10 +10861,10 @@ index 0000000000000000000000000000000000000000..6ddfd4867ae1643767b8d42757c9e6c8
 +    "$original_pid" "$original_address" "$original_offset"
 diff --git a/test/others/i915-criu/run-physical-suite.sh b/test/others/i915-criu/run-physical-suite.sh
 new file mode 100755
-index 0000000000000000000000000000000000000000..3da5d88641e5834ffe05e0efc011c51075f84766
+index 0000000000000000000000000000000000000000..1e0f3689a8bb4600617e4e7f126f99edf1b9aaf9
 --- /dev/null
 +++ b/test/others/i915-criu/run-physical-suite.sh
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,299 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -10920,6 +11120,14 @@ index 0000000000000000000000000000000000000000..3da5d88641e5834ffe05e0efc011c510
 +run_case physical-kms env "${common[@]}" \
 +    FIXTURE="$kms_fixture" I915_CRIU_TEST_DIR="$suite/physical-kms" \
 +    "$scripts/run-kms-criu.sh"
++run_case physical-kms-x-tiled env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_MODIFIER=x-tiled \
++    I915_CRIU_TEST_DIR="$suite/physical-kms-x-tiled" \
++    "$scripts/run-kms-criu.sh"
++run_case physical-kms-y-tiled env "${common[@]}" \
++    FIXTURE="$kms_fixture" I915_CRIU_KMS_MODIFIER=y-tiled \
++    I915_CRIU_TEST_DIR="$suite/physical-kms-y-tiled" \
++    "$scripts/run-kms-criu.sh"
 +run_case kms-role-corruption-refusal env "${common[@]}" \
 +    FIXTURE="$kms_fixture" I915_CRIU_KMS_CORRUPT_MODE=role \
 +    I915_CRIU_TEST_DIR="$suite/kms-role-corruption-refusal" \
@@ -10951,8 +11159,8 @@ index 0000000000000000000000000000000000000000..3da5d88641e5834ffe05e0efc011c510
 +      "default-vm-corruption-refusal","default-vm-rollback-refusal",
 +      "unbound-vma","unbound-vma-corruption-refusal",
 +      "unbound-vma-rollback-refusal","custom-engine-context",
-+      "virtual-engine-refusal","physical-kms",
-+      "kms-role-corruption-refusal","kms-count-corruption-refusal",
++      "virtual-engine-refusal","physical-kms","physical-kms-x-tiled",
++      "physical-kms-y-tiled","kms-role-corruption-refusal","kms-count-corruption-refusal",
 +      "kms-mapping-corruption-refusal","kms-device-mismatch-refusal",
 +      "kms-reset-refusal"]}' >"$suite/verdict.json"
 +printf 'PASS: physical i915 suite evidence=%s\n' "$suite"
